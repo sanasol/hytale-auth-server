@@ -256,8 +256,88 @@ function handleRequest(req, res) {
   });
 }
 
+function parseJwtPayload(token) {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length < 2) return null;
+  try {
+    return JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+  } catch (e) {
+    return null;
+  }
+}
+
+function extractJwtFromHeaders(headers) {
+  if (!headers || !headers.authorization) return null;
+  const value = String(headers.authorization).trim();
+  if (!value) return null;
+  if (value.toLowerCase().startsWith('bearer ')) {
+    return value.slice(7).trim();
+  }
+  return value;
+}
+
+function extractJwtFromBody(body) {
+  if (!body || typeof body !== 'object') return null;
+  const fields = [
+    'identityToken',
+    'identity_token',
+    'sessionToken',
+    'session_token',
+    'accessToken',
+    'access_token',
+    'authorizationGrant',
+    'authorization_grant'
+  ];
+  for (const field of fields) {
+    if (typeof body[field] === 'string' && body[field].includes('.')) {
+      return body[field];
+    }
+  }
+  return null;
+}
+
+function normalizeIssuerToUrl(issuer) {
+  if (!issuer || typeof issuer !== 'string') return null;
+  const hasScheme = /^[a-zA-Z][a-zA-Z\d+-.]*:/.test(issuer);
+  const raw = hasScheme ? issuer : `https://${issuer}`;
+  try {
+    return new URL(raw);
+  } catch (e) {
+    return null;
+  }
+}
+
+function buildIssuerRedirectUrl(issuer, req) {
+  const parsed = normalizeIssuerToUrl(issuer);
+  if (!parsed) return null;
+  const targetHost = parsed.host.toLowerCase();
+  const currentHost = (req.headers.host || '').toLowerCase();
+  if (currentHost && currentHost === targetHost) return null;
+  const protocol = parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.protocol : 'https:';
+  return `${protocol}//${parsed.host}${req.url}`;
+}
+
+function maybeRedirectToIssuer(req, res, body, headers) {
+  const token = extractJwtFromHeaders(headers) || extractJwtFromBody(body);
+  if (!token) return false;
+  const payload = parseJwtPayload(token);
+  const issuer = payload && typeof payload.iss === 'string' ? payload.iss : null;
+  if (!issuer) return false;
+  const targetUrl = buildIssuerRedirectUrl(issuer, req);
+  if (!targetUrl) return false;
+  res.writeHead(307, { Location: targetUrl });
+  res.end();
+  console.log(`Redirected request to issuer: ${targetUrl}`);
+  return true;
+}
+
 function routeRequest(req, res, url, body, headers) {
   const urlPath = url.pathname;
+
+  if (maybeRedirectToIssuer(req, res, body, headers)) {
+    return;
+  }
 
   // Extract UUID from Authorization header if present
   let uuid = body.uuid || crypto.randomUUID();
