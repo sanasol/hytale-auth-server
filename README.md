@@ -58,19 +58,30 @@ This is part of a complete Hytale F2P setup:
 
 | Project | Description |
 |---------|-------------|
-| [hytale-auth-server](https://github.com/sanasol/hytale-auth-server) | Authentication server (this repo) |
+| [hytale-auth-server](https://github.com/sanasol/hytale-auth-server) | Authentication server + DualAuthPatcher (this repo) |
 | [Hytale F2P Launcher](https://github.com/amiayweb/Hytale-F2P) | Game launcher with dual auth support |
 | [hytale-server-docker](https://github.com/sanasol/hytale-server-docker) | Dedicated server Docker image |
+
+## DualAuthPatcher
+
+This repository contains the **authoritative source** for `DualAuthPatcher.java` - the bytecode patcher that enables dual authentication on Hytale servers.
+
+- Location: [`patcher/`](patcher/)
+- Documentation: [`patcher/README.md`](patcher/README.md)
+- Other projects (hytale-server-docker, Hytale-F2P) download from here
 
 ## Requirements (for running your own server)
 
 > **Skip this section** if you're using the public `sanasol.ws` test server.
 
 - Docker and Docker Compose
-- A domain with exactly **10 characters** (same length as `hytale.com`)
-  - Examples: `sanasol.ws`, `example.co`, `myserver.x`
+- A domain with **4-16 characters**
+  - Default: `auth.sanasol.ws` (14 chars, public test server)
+  - Examples: `auth.example.com`, `my.server.io`, `game.host.net`
 - DNS records pointing to your server
 - (Optional) `Assets.zip` from the game for cosmetics
+
+> **Note**: Both client and server patchers support variable-length domains from 4 to 16 characters. The unified endpoint approach routes all traffic to `https://{domain}` (no subdomains needed).
 
 ## Quick Start (Own Server)
 
@@ -83,24 +94,22 @@ cd hytale-auth-server
 
 ### 2. Configure your domain
 
-Edit `compose.yaml` and replace all occurrences of `sanasol.ws` with your 10-character domain:
+Edit `compose.yaml` and set your domain:
 
 ```yaml
 environment:
-  DOMAIN: "yourdomain"  # Must be exactly 10 characters!
+  DOMAIN: "auth.yourdomain.com"  # Your auth domain (4-16 characters)
 labels:
-  - "traefik.http.routers.sessions.rule=Host(`sessions.yourdomain`)"
-  - "traefik.http.routers.accountdata.rule=Host(`account-data.yourdomain`)"
-  - "traefik.http.routers.telemetry.rule=Host(`telemetry.yourdomain`)"
+  - "traefik.http.routers.auth.rule=Host(`auth.yourdomain.com`)"
 ```
 
 ### 3. Set up DNS records
 
-Create the following DNS A records pointing to your server IP:
+Create a DNS A record pointing to your server IP:
 
-- `sessions.yourdomain`
-- `account-data.yourdomain`
-- `telemetry.yourdomain`
+- `auth.yourdomain.com` (or your chosen domain)
+
+> **Note**: The unified endpoint approach uses a single domain. No need for multiple subdomains (sessions., account-data., telemetry.) - the auth server handles all routes on one domain.
 
 ### 4. (Optional) Add Assets.zip for cosmetics
 
@@ -133,7 +142,7 @@ curl https://sessions.yourdomain/health
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DOMAIN` | `sanasol.ws` | Your 10-character domain |
+| `DOMAIN` | `sanasol.ws` | Your domain (4-16 characters) |
 | `PORT` | `3000` | Server port |
 | `DATA_DIR` | `/app/data` | Directory for persistent data |
 | `ASSETS_PATH` | `/app/assets/Assets.zip` | Path to Assets.zip for cosmetics |
@@ -360,7 +369,7 @@ The launcher will:
 
 ### "Domain length mismatch"
 
-Your domain must be exactly 10 characters. This is because the game binary is patched by replacing `hytale.com` (10 chars) with your domain byte-for-byte.
+Your domain must be 4-16 characters. The patchers support variable-length domains within this range.
 
 ### "JWT signature verification failed"
 

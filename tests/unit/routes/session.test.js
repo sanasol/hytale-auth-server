@@ -8,12 +8,17 @@ const sessionRoutes = require('../../../src/routes/session');
 
 describe('Session Routes', () => {
   let mockRes;
+  let mockReq;
 
   beforeEach(() => {
     jest.clearAllMocks();
     mockRes = {
       writeHead: jest.fn(),
       end: jest.fn(),
+    };
+    // Default mock request with headers for dynamic issuer
+    mockReq = {
+      headers: { host: 'auth.sanasol.ws' }
     };
 
     // Default mock implementations
@@ -31,21 +36,19 @@ describe('Session Routes', () => {
 
   describe('handleGameSessionNew', () => {
     it('should create new game session', () => {
-      const req = {};
       const body = { uuid: 'test-uuid', name: 'TestPlayer' };
 
-      sessionRoutes.handleGameSessionNew(req, mockRes, body, body.uuid, body.name);
+      sessionRoutes.handleGameSessionNew(mockReq, mockRes, body, body.uuid, body.name);
 
-      expect(auth.generateIdentityToken).toHaveBeenCalledWith('test-uuid', 'TestPlayer', null);
-      expect(auth.generateSessionToken).toHaveBeenCalledWith('test-uuid');
+      expect(auth.generateIdentityToken).toHaveBeenCalledWith('test-uuid', 'TestPlayer', null, ['game.base'], 'auth.sanasol.ws');
+      expect(auth.generateSessionToken).toHaveBeenCalledWith('test-uuid', 'auth.sanasol.ws');
       expect(mockRes.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
     });
 
     it('should include session token and identity token in response', () => {
-      const req = {};
       const body = {};
 
-      sessionRoutes.handleGameSessionNew(req, mockRes, body, 'uuid', 'name');
+      sessionRoutes.handleGameSessionNew(mockReq, mockRes, body, 'uuid', 'name');
 
       const response = JSON.parse(mockRes.end.mock.calls[0][0]);
       expect(response.sessionToken).toBeDefined();
@@ -56,11 +59,10 @@ describe('Session Routes', () => {
 
   describe('handleGameSessionRefresh', () => {
     it('should refresh session', async () => {
-      const req = {};
       const body = { sessionToken: 'old-token' };
       const headers = {};
 
-      await sessionRoutes.handleGameSessionRefresh(req, mockRes, body, 'uuid', 'name', headers);
+      await sessionRoutes.handleGameSessionRefresh(mockReq, mockRes, body, 'uuid', 'name', headers);
 
       expect(mockRes.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
     });
@@ -68,11 +70,10 @@ describe('Session Routes', () => {
     it('should extract info from existing token', async () => {
       auth.extractServerAudienceFromHeaders.mockReturnValue('server-audience');
 
-      const req = {};
       const body = { sessionToken: 'jwt.token.here' };
       const headers = { authorization: 'Bearer jwt.token.here' };
 
-      await sessionRoutes.handleGameSessionRefresh(req, mockRes, body, 'uuid', 'name', headers);
+      await sessionRoutes.handleGameSessionRefresh(mockReq, mockRes, body, 'uuid', 'name', headers);
 
       expect(auth.extractServerAudienceFromHeaders).toHaveBeenCalledWith(headers);
       expect(storage.registerSession).toHaveBeenCalled();
@@ -81,21 +82,19 @@ describe('Session Routes', () => {
 
   describe('handleGameSessionChild', () => {
     it('should create child session with identity token', () => {
-      const req = {};
       const body = { scopes: ['hytale:server', 'hytale:editor'] };
 
-      sessionRoutes.handleGameSessionChild(req, mockRes, body, 'uuid', 'name');
+      sessionRoutes.handleGameSessionChild(mockReq, mockRes, body, 'uuid', 'name');
 
-      expect(auth.generateIdentityToken).toHaveBeenCalledWith('uuid', 'name', ['hytale:server', 'hytale:editor']);
+      expect(auth.generateIdentityToken).toHaveBeenCalledWith('uuid', 'name', ['hytale:server', 'hytale:editor'], ['game.base'], 'auth.sanasol.ws');
       expect(auth.generateSessionToken).toHaveBeenCalled();
       expect(mockRes.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
     });
 
     it('should return identity and session tokens', () => {
-      const req = {};
       const body = {};
 
-      sessionRoutes.handleGameSessionChild(req, mockRes, body, 'uuid', 'name');
+      sessionRoutes.handleGameSessionChild(mockReq, mockRes, body, 'uuid', 'name');
 
       const response = JSON.parse(mockRes.end.mock.calls[0][0]);
       expect(response.identityToken).toBeDefined();
@@ -103,21 +102,19 @@ describe('Session Routes', () => {
     });
 
     it('should pass scopes as array to generateIdentityToken', () => {
-      const req = {};
       const body = { scopes: ['hytale:server', 'hytale:editor'] };
 
-      sessionRoutes.handleGameSessionChild(req, mockRes, body, 'uuid', 'name');
+      sessionRoutes.handleGameSessionChild(mockReq, mockRes, body, 'uuid', 'name');
 
-      expect(auth.generateIdentityToken).toHaveBeenCalledWith('uuid', 'name', ['hytale:server', 'hytale:editor']);
+      expect(auth.generateIdentityToken).toHaveBeenCalledWith('uuid', 'name', ['hytale:server', 'hytale:editor'], ['game.base'], 'auth.sanasol.ws');
     });
 
     it('should pass scopes as string to generateIdentityToken', () => {
-      const req = {};
       const body = { scope: 'hytale:server hytale:editor' };
 
-      sessionRoutes.handleGameSessionChild(req, mockRes, body, 'uuid', 'name');
+      sessionRoutes.handleGameSessionChild(mockReq, mockRes, body, 'uuid', 'name');
 
-      expect(auth.generateIdentityToken).toHaveBeenCalledWith('uuid', 'name', 'hytale:server hytale:editor');
+      expect(auth.generateIdentityToken).toHaveBeenCalledWith('uuid', 'name', 'hytale:server hytale:editor', ['game.base'], 'auth.sanasol.ws');
     });
   });
 
@@ -144,11 +141,10 @@ describe('Session Routes', () => {
 
   describe('handleAuthorizationGrant', () => {
     it('should generate authorization grant', () => {
-      const req = {};
       const body = { audience: 'server-123' };
       const headers = {};
 
-      sessionRoutes.handleAuthorizationGrant(req, mockRes, body, 'uuid', 'name', headers);
+      sessionRoutes.handleAuthorizationGrant(mockReq, mockRes, body, 'uuid', 'name', headers);
 
       expect(auth.generateAuthorizationGrant).toHaveBeenCalled();
       expect(storage.registerAuthGrant).toHaveBeenCalled();
@@ -157,14 +153,13 @@ describe('Session Routes', () => {
     it('should extract from identity token if present', () => {
       auth.parseToken.mockReturnValue({ uuid: 'token-uuid', name: 'TokenName' });
 
-      const req = {};
       const body = {
         identityToken: 'valid.jwt.token',
         audience: 'server-123',
       };
       const headers = {};
 
-      sessionRoutes.handleAuthorizationGrant(req, mockRes, body, 'uuid', 'name', headers);
+      sessionRoutes.handleAuthorizationGrant(mockReq, mockRes, body, 'uuid', 'name', headers);
 
       expect(auth.generateAuthorizationGrant).toHaveBeenCalled();
     });
@@ -178,11 +173,10 @@ describe('Session Routes', () => {
         aud: 'server-123',
       });
 
-      const req = {};
       const body = { authorizationGrant: 'valid.auth.grant' };
       const headers = {};
 
-      sessionRoutes.handleTokenExchange(req, mockRes, body, 'uuid', 'name', headers);
+      sessionRoutes.handleTokenExchange(mockReq, mockRes, body, 'uuid', 'name', headers);
 
       expect(auth.generateAccessToken).toHaveBeenCalled();
       expect(storage.registerSession).toHaveBeenCalled();
@@ -191,31 +185,30 @@ describe('Session Routes', () => {
     it('should include certificate fingerprint when provided', () => {
       auth.parseToken.mockReturnValue({ uuid: 'uuid', name: 'name', aud: 'aud' });
 
-      const req = {};
       const body = {
         authorizationGrant: 'grant',
         x509Fingerprint: 'fingerprint123',
       };
       const headers = {};
 
-      sessionRoutes.handleTokenExchange(req, mockRes, body, 'uuid', 'name', headers);
+      sessionRoutes.handleTokenExchange(mockReq, mockRes, body, 'uuid', 'name', headers);
 
       expect(auth.generateAccessToken).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(String),
         expect.any(String),
         'fingerprint123',
-        null
+        null,
+        'auth.sanasol.ws'
       );
     });
   });
 
   describe('handleSession (generic)', () => {
     it('should return session response', () => {
-      const req = {};
       const body = {};
 
-      sessionRoutes.handleSession(req, mockRes, body, 'uuid', 'name');
+      sessionRoutes.handleSession(mockReq, mockRes, body, 'uuid', 'name');
 
       expect(mockRes.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
     });
@@ -223,10 +216,9 @@ describe('Session Routes', () => {
 
   describe('handleAuth (generic)', () => {
     it('should return auth response', () => {
-      const req = {};
       const body = {};
 
-      sessionRoutes.handleAuth(req, mockRes, body, 'uuid', 'name');
+      sessionRoutes.handleAuth(mockReq, mockRes, body, 'uuid', 'name');
 
       expect(mockRes.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
     });
@@ -234,10 +226,9 @@ describe('Session Routes', () => {
 
   describe('handleToken (generic)', () => {
     it('should return token response', () => {
-      const req = {};
       const body = {};
 
-      sessionRoutes.handleToken(req, mockRes, body, 'uuid', 'name');
+      sessionRoutes.handleToken(mockReq, mockRes, body, 'uuid', 'name');
 
       expect(mockRes.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
     });
@@ -245,10 +236,9 @@ describe('Session Routes', () => {
 
   describe('handleValidate', () => {
     it('should validate and return success', () => {
-      const req = {};
       const body = {};
 
-      sessionRoutes.handleValidate(req, mockRes, body, 'uuid', 'name');
+      sessionRoutes.handleValidate(mockReq, mockRes, body, 'uuid', 'name');
 
       const response = JSON.parse(mockRes.end.mock.calls[0][0]);
       expect(response.valid).toBe(true);
@@ -257,10 +247,9 @@ describe('Session Routes', () => {
 
   describe('handleRefresh', () => {
     it('should refresh and return new tokens', () => {
-      const req = {};
       const body = {};
 
-      sessionRoutes.handleRefresh(req, mockRes, body, 'uuid', 'name');
+      sessionRoutes.handleRefresh(mockReq, mockRes, body, 'uuid', 'name');
 
       const response = JSON.parse(mockRes.end.mock.calls[0][0]);
       expect(response.session_token).toBeDefined();

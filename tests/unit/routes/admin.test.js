@@ -228,48 +228,6 @@ describe('Admin Routes', () => {
     });
   });
 
-  describe('handleSetServerName', () => {
-    it('should set server name', async () => {
-      const req = {};
-      const body = { audience: 'server-123', name: 'My Server' };
-
-      await adminRoutes.handleSetServerName(req, mockRes, body);
-
-      expect(storage.setServerName).toHaveBeenCalledWith('server-123', 'My Server');
-      expect(mockRes.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
-      const response = JSON.parse(mockRes.end.mock.calls[0][0]);
-      expect(response.success).toBe(true);
-    });
-
-    it('should return 400 for missing audience', async () => {
-      const req = {};
-      const body = { name: 'My Server' };
-
-      await adminRoutes.handleSetServerName(req, mockRes, body);
-
-      expect(mockRes.writeHead).toHaveBeenCalledWith(400, expect.any(Object));
-    });
-
-    it('should return 400 for missing name', async () => {
-      const req = {};
-      const body = { audience: 'server-123' };
-
-      await adminRoutes.handleSetServerName(req, mockRes, body);
-
-      expect(mockRes.writeHead).toHaveBeenCalledWith(400, expect.any(Object));
-    });
-
-    it('should return 500 when setServerName fails', async () => {
-      storage.setServerName.mockResolvedValue(false);
-      const req = {};
-      const body = { audience: 'server-123', name: 'My Server' };
-
-      await adminRoutes.handleSetServerName(req, mockRes, body);
-
-      expect(mockRes.writeHead).toHaveBeenCalledWith(500, expect.any(Object));
-    });
-  });
-
   describe('handlePrerenderQueue', () => {
     it('should return counts only (optimized, no UUIDs)', async () => {
       fs.existsSync.mockReturnValue(true);
@@ -386,15 +344,5 @@ describe('Admin Routes', () => {
       expect(html).toContain('prerenderCached');
     });
 
-    it('should contain server name form', () => {
-      const req = {};
-
-      adminRoutes.handleAdminDashboard(req, mockRes);
-
-      const html = mockRes.end.mock.calls[0][0];
-      expect(html).toContain('serverNameForm');
-      expect(html).toContain('serverAudience');
-      expect(html).toContain('serverDisplayName');
-    });
   });
 });

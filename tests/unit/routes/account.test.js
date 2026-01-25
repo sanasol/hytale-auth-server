@@ -16,6 +16,7 @@ describe('Account Routes', () => {
     mockRes = {
       writeHead: jest.fn(),
       end: jest.fn(),
+      setHeader: jest.fn(),
     };
 
     // Default mocks

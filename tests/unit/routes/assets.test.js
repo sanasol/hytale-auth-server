@@ -16,32 +16,34 @@ describe('Assets Routes', () => {
       end: jest.fn(),
     };
 
+    // Mock data must pass isItemComplete check (needs Model + GreyscaleTexture or Textures)
     assets.loadCosmeticConfigs.mockReturnValue({
       haircut: {
-        style1: { name: 'Style 1', model: 'path/to/model' },
-        style2: { name: 'Style 2', model: 'path/to/model2' },
+        style1: { Name: 'Style 1', Model: 'path/to/model', GreyscaleTexture: 'path/to/tex' },
+        style2: { Name: 'Style 2', Model: 'path/to/model2', GreyscaleTexture: 'path/to/tex2' },
       },
       pants: {
-        jeans: { name: 'Jeans' },
+        jeans: { Name: 'Jeans', Model: 'path/to/pants', Textures: { Default: 'tex.png' } },
       },
     });
     assets.loadGradientSets.mockReturnValue([
-      { id: 'gradient1', colors: ['#fff', '#000'] },
+      { Id: 'gradient1', Gradients: { 'Default': {} } },
     ]);
     assets.extractAsset.mockReturnValue(null);
     fs.existsSync.mockReturnValue(false);
   });
 
   describe('handleCosmeticsList', () => {
-    it('should return cosmetics categories and gradients', () => {
+    it('should return cosmetics items and gradients', () => {
       const req = {};
 
       assetRoutes.handleCosmeticsList(req, mockRes);
 
       expect(mockRes.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
       const response = JSON.parse(mockRes.end.mock.calls[0][0]);
-      expect(response.categories).toBeDefined();
-      expect(response.categories.haircut).toBeDefined();
+      // Response structure: { items, colorHexMap, gradientSets }
+      expect(response.items).toBeDefined();
+      expect(response.items.haircut).toBeDefined();
       expect(response.gradientSets).toBeDefined();
     });
 
@@ -53,7 +55,8 @@ describe('Assets Routes', () => {
       assetRoutes.handleCosmeticsList(req, mockRes);
 
       const response = JSON.parse(mockRes.end.mock.calls[0][0]);
-      expect(response.categories).toEqual({});
+      // When configs is null, returns empty object
+      expect(response).toEqual({});
     });
   });
 
@@ -66,7 +69,7 @@ describe('Assets Routes', () => {
       expect(mockRes.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
       const response = JSON.parse(mockRes.end.mock.calls[0][0]);
       expect(response.category).toBe('haircut');
-      expect(response.item.name).toBe('Style 1');
+      expect(response.item.Name).toBe('Style 1');
     });
 
     it('should return 400 for invalid path', () => {

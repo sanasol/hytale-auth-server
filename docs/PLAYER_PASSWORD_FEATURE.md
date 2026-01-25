@@ -105,7 +105,7 @@ async function verifyPlayerPassword(uuid, challenge, responseHash) {
 
 ### 2. Game Server JAR (Bytecode Patch)
 
-**Patcher File:** `/Users/sanasol/code/pterodactyl-hytale/hytale-server-docker/issuer-patcher/DualAuthPatcher.java`
+**Patcher File:** `hytale-auth-server/patcher/DualAuthPatcher.java` (authoritative source)
 
 **Target Classes to Patch:**
 
@@ -207,9 +207,9 @@ Add UI for:
 
 | Component | File Path |
 |-----------|-----------|
-| Auth Server (main) | `/Users/sanasol/code/pterodactyl-hytale/hytale-auth-server/server.js` |
-| Auth Server (traefik) | `/Users/sanasol/code/pterodactyl-hytale/traefik/hytale-auth/server.js` |
-| JAR Patcher | `/Users/sanasol/code/pterodactyl-hytale/hytale-server-docker/issuer-patcher/DualAuthPatcher.java` |
+| Auth Server (main) | `hytale-auth-server/src/app.js` |
+| Auth Server (traefik) | `traefik/hytale-auth/` (uses same source) |
+| JAR Patcher | `hytale-auth-server/patcher/DualAuthPatcher.java` (authoritative source) |
 | Decompiled PasswordPacketHandler | `/Users/sanasol/Downloads/Hytale_Decompiled/Server_Code/com/hypixel/hytale/server/core/io/handlers/login/PasswordPacketHandler.java` |
 | Decompiled HandshakeHandler | `/Users/sanasol/Downloads/Hytale_Decompiled/Server_Code/com/hypixel/hytale/server/core/io/handlers/login/HandshakeHandler.java` |
 | Decompiled InitialPacketHandler | `/Users/sanasol/Downloads/Hytale_Decompiled/Server_Code/com/hypixel/hytale/server/core/io/handlers/InitialPacketHandler.java` |

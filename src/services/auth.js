@@ -6,6 +6,32 @@ const config = require('../config');
 let privateKey, publicKey, publicKeyJwk;
 
 /**
+ * Build the issuer URL dynamically from request host
+ *
+ * Supports multiple endpoints with correct issuer for each:
+ * - sessions.sanasol.ws → issuer https://sessions.sanasol.ws
+ * - auth.sanasol.ws → issuer https://auth.sanasol.ws
+ * - sanasol.ws → issuer https://sanasol.ws
+ *
+ * This enables backward compatibility with different client patch versions.
+ *
+ * @param {string} [requestHost] - The Host header from the request
+ * @returns {string} The issuer URL
+ */
+function getIssuerUrl(requestHost) {
+  if (requestHost) {
+    // Remove port if present (e.g., "localhost:3000" -> "localhost")
+    const host = requestHost.split(':')[0];
+    // Check if host contains our domain (sanasol.ws)
+    if (host.includes(config.domain)) {
+      return `https://${host}`;
+    }
+  }
+  // Fallback to base domain
+  return `https://${config.domain}`;
+}
+
+/**
  * Load existing keys from disk or generate new ones
  */
 function loadOrGenerateKeys() {
@@ -99,8 +125,9 @@ function normalizeScopes(scopes, defaultScope = DEFAULT_SCOPES) {
  * @param {string} name - Username
  * @param {string[]|string} [scopes] - Requested scopes (defaults to 'hytale:server hytale:client')
  * @param {string[]} [entitlements] - User entitlements
+ * @param {string} [requestHost] - Request host for dynamic issuer
  */
-function generateIdentityToken(uuid, name, scopes = null, entitlements = ['game.base']) {
+function generateIdentityToken(uuid, name, scopes = null, entitlements = ['game.base'], requestHost = null) {
   const now = Math.floor(Date.now() / 1000);
   const exp = now + config.sessionTtl;
   const scope = normalizeScopes(scopes);
@@ -116,15 +143,17 @@ function generateIdentityToken(uuid, name, scopes = null, entitlements = ['game.
     scope: scope,
     iat: now,
     exp: exp,
-    iss: `https://sessions.${config.domain}`,
+    iss: getIssuerUrl(requestHost),
     jti: crypto.randomUUID()
   });
 }
 
 /**
  * Generate session token for the game server
+ * @param {string} uuid - User UUID
+ * @param {string} [requestHost] - Request host for dynamic issuer
  */
-function generateSessionToken(uuid) {
+function generateSessionToken(uuid, requestHost = null) {
   const now = Math.floor(Date.now() / 1000);
   const exp = now + config.sessionTtl;
 
@@ -133,7 +162,7 @@ function generateSessionToken(uuid) {
     scope: 'hytale:server',
     iat: now,
     exp: exp,
-    iss: `https://sessions.${config.domain}`,
+    iss: getIssuerUrl(requestHost),
     jti: crypto.randomUUID()
   });
 }
@@ -144,8 +173,9 @@ function generateSessionToken(uuid) {
  * @param {string} name - Username
  * @param {string} audience - Server audience
  * @param {string[]|string} [scopes] - Requested scopes (defaults to 'hytale:server hytale:client')
+ * @param {string} [requestHost] - Request host for dynamic issuer
  */
-function generateAuthorizationGrant(uuid, name, audience, scopes = null) {
+function generateAuthorizationGrant(uuid, name, audience, scopes = null, requestHost = null) {
   const now = Math.floor(Date.now() / 1000);
   const exp = now + config.sessionTtl;
   const scope = normalizeScopes(scopes);
@@ -158,7 +188,7 @@ function generateAuthorizationGrant(uuid, name, audience, scopes = null) {
     scope: scope,
     iat: now,
     exp: exp,
-    iss: `https://sessions.${config.domain}`,
+    iss: getIssuerUrl(requestHost),
     jti: crypto.randomUUID()
   });
 }
@@ -170,8 +200,9 @@ function generateAuthorizationGrant(uuid, name, audience, scopes = null) {
  * @param {string} audience - Server audience
  * @param {string} [certFingerprint] - Certificate fingerprint for mTLS binding
  * @param {string[]|string} [scopes] - Requested scopes (defaults to 'hytale:server hytale:client')
+ * @param {string} [requestHost] - Request host for dynamic issuer
  */
-function generateAccessToken(uuid, name, audience, certFingerprint = null, scopes = null) {
+function generateAccessToken(uuid, name, audience, certFingerprint = null, scopes = null, requestHost = null) {
   const now = Math.floor(Date.now() / 1000);
   const exp = now + config.sessionTtl;
   const scope = normalizeScopes(scopes);
@@ -185,7 +216,7 @@ function generateAccessToken(uuid, name, audience, certFingerprint = null, scope
     scope: scope,
     iat: now,
     exp: exp,
-    iss: `https://sessions.${config.domain}`,
+    iss: getIssuerUrl(requestHost),
     jti: crypto.randomUUID()
   };
 

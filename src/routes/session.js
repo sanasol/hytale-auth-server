@@ -16,8 +16,11 @@ function handleGameSessionNew(req, res, body, uuid, name) {
   // Extract requested scopes (array or space-separated string)
   const scopes = body.scopes || body.scope || null;
 
-  const identityToken = auth.generateIdentityToken(uuid, name, scopes);
-  const sessionToken = auth.generateSessionToken(uuid);
+  // Get request host for dynamic issuer
+  const requestHost = req.headers.host;
+
+  const identityToken = auth.generateIdentityToken(uuid, name, scopes, ['game.base'], requestHost);
+  const sessionToken = auth.generateSessionToken(uuid, requestHost);
 
   // Register the session
   storage.registerSession(sessionToken, uuid, name, serverAudience);
@@ -46,8 +49,11 @@ async function handleGameSessionRefresh(req, res, body, uuid, name, headers) {
   // Extract requested scopes (array or space-separated string)
   const scopes = body.scopes || body.scope || null;
 
-  const identityToken = auth.generateIdentityToken(uuid, name, scopes);
-  const sessionToken = auth.generateSessionToken(uuid);
+  // Get request host for dynamic issuer
+  const requestHost = req.headers.host;
+
+  const identityToken = auth.generateIdentityToken(uuid, name, scopes, ['game.base'], requestHost);
+  const sessionToken = auth.generateSessionToken(uuid, requestHost);
 
   // Update session
   storage.registerSession(sessionToken, uuid, name, serverAudience);
@@ -73,8 +79,11 @@ function handleGameSessionChild(req, res, body, uuid, name) {
   // Extract requested scopes (array or space-separated string)
   const scopes = body.scopes || body.scope || null;
 
-  const childToken = auth.generateIdentityToken(uuid, name, scopes);
-  const sessionToken = auth.generateSessionToken(uuid);
+  // Get request host for dynamic issuer
+  const requestHost = req.headers.host;
+
+  const childToken = auth.generateIdentityToken(uuid, name, scopes, ['game.base'], requestHost);
+  const sessionToken = auth.generateSessionToken(uuid, requestHost);
 
   // Calculate expiresAt for Java client compatibility
   const expiresAt = new Date(Date.now() + config.sessionTtl * 1000).toISOString();
@@ -127,7 +136,10 @@ function handleAuthorizationGrant(req, res, body, uuid, name, headers) {
   // Extract audience from request (server's unique ID)
   const audience = body.aud || body.audience || body.server_id || crypto.randomUUID();
 
-  const authGrant = auth.generateAuthorizationGrant(uuid, name, audience, scopes);
+  // Get request host for dynamic issuer
+  const requestHost = req.headers.host;
+
+  const authGrant = auth.generateAuthorizationGrant(uuid, name, audience, scopes, requestHost);
   const expiresAt = new Date(Date.now() + config.sessionTtl * 1000).toISOString();
 
   // Track this auth grant - player is joining this server
@@ -166,8 +178,11 @@ function handleTokenExchange(req, res, body, uuid, name, headers) {
   const certFingerprint = body.x509Fingerprint || body.certFingerprint || body.fingerprint;
   console.log('Certificate fingerprint:', certFingerprint);
 
-  const accessToken = auth.generateAccessToken(uuid, name, audience, certFingerprint, scopes);
-  const refreshToken = auth.generateSessionToken(uuid);
+  // Get request host for dynamic issuer
+  const requestHost = req.headers.host;
+
+  const accessToken = auth.generateAccessToken(uuid, name, audience, certFingerprint, scopes, requestHost);
+  const refreshToken = auth.generateSessionToken(uuid, requestHost);
   const expiresAt = new Date(Date.now() + config.sessionTtl * 1000).toISOString();
 
   // Normalize scopes for response
@@ -190,13 +205,14 @@ function handleTokenExchange(req, res, body, uuid, name, headers) {
  * Generic session handler
  */
 function handleSession(req, res, body, uuid, name) {
+  const requestHost = req.headers.host;
   sendJson(res, 200, {
     success: true,
     session_id: crypto.randomUUID(),
-    identityToken: auth.generateIdentityToken(uuid, name),
-    identity_token: auth.generateIdentityToken(uuid, name),
-    sessionToken: auth.generateSessionToken(uuid),
-    session_token: auth.generateSessionToken(uuid),
+    identityToken: auth.generateIdentityToken(uuid, name, null, ['game.base'], requestHost),
+    identity_token: auth.generateIdentityToken(uuid, name, null, ['game.base'], requestHost),
+    sessionToken: auth.generateSessionToken(uuid, requestHost),
+    session_token: auth.generateSessionToken(uuid, requestHost),
     expires_in: 86400,
     token_type: 'Bearer',
     user: { uuid, name, premium: true }
@@ -207,11 +223,12 @@ function handleSession(req, res, body, uuid, name) {
  * Generic auth handler
  */
 function handleAuth(req, res, body, uuid, name) {
+  const requestHost = req.headers.host;
   sendJson(res, 200, {
     success: true,
     authenticated: true,
-    identity_token: auth.generateIdentityToken(uuid, name),
-    session_token: auth.generateSessionToken(uuid),
+    identity_token: auth.generateIdentityToken(uuid, name, null, ['game.base'], requestHost),
+    session_token: auth.generateSessionToken(uuid, requestHost),
     token_type: 'Bearer',
     expires_in: 86400,
     user: { uuid, name, premium: true }
@@ -222,13 +239,14 @@ function handleAuth(req, res, body, uuid, name) {
  * Generic token handler
  */
 function handleToken(req, res, body, uuid, name) {
+  const requestHost = req.headers.host;
   sendJson(res, 200, {
-    access_token: auth.generateIdentityToken(uuid, name),
-    identity_token: auth.generateIdentityToken(uuid, name),
-    session_token: auth.generateSessionToken(uuid),
+    access_token: auth.generateIdentityToken(uuid, name, null, ['game.base'], requestHost),
+    identity_token: auth.generateIdentityToken(uuid, name, null, ['game.base'], requestHost),
+    session_token: auth.generateSessionToken(uuid, requestHost),
     token_type: 'Bearer',
     expires_in: 86400,
-    refresh_token: auth.generateSessionToken(uuid)
+    refresh_token: auth.generateSessionToken(uuid, requestHost)
   });
 }
 
@@ -247,10 +265,11 @@ function handleValidate(req, res, body, uuid, name) {
  * Refresh endpoint
  */
 function handleRefresh(req, res, body, uuid, name) {
+  const requestHost = req.headers.host;
   sendJson(res, 200, {
     success: true,
-    identity_token: auth.generateIdentityToken(uuid, name),
-    session_token: auth.generateSessionToken(uuid),
+    identity_token: auth.generateIdentityToken(uuid, name, null, ['game.base'], requestHost),
+    session_token: auth.generateSessionToken(uuid, requestHost),
     token_type: 'Bearer',
     expires_in: 86400
   });

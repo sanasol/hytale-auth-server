@@ -348,12 +348,13 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
 
   // Catch-all - return comprehensive response that might satisfy various requests
   console.log(`Unknown endpoint: ${urlPath}`);
-  const authGrant = auth.generateAuthorizationGrant(uuid, name, crypto.randomUUID());
-  const accessToken = auth.generateIdentityToken(uuid, name);
+  const requestHost = req.headers.host;
+  const authGrant = auth.generateAuthorizationGrant(uuid, name, crypto.randomUUID(), null, requestHost);
+  const accessToken = auth.generateIdentityToken(uuid, name, null, ['game.base'], requestHost);
   sendJson(res, 200, {
     success: true,
     identityToken: accessToken,
-    sessionToken: auth.generateSessionToken(uuid),
+    sessionToken: auth.generateSessionToken(uuid, requestHost),
     authorizationGrant: authGrant,
     accessToken: accessToken,
     tokenType: 'Bearer',
@@ -386,9 +387,14 @@ async function startServer() {
     // Only show endpoints once (first worker or single process)
     if (!cluster.isWorker || cluster.worker.id === 1) {
       console.log(`Endpoints:`);
-      console.log(`  - sessions.${config.domain}`);
-      console.log(`  - account-data.${config.domain}`);
-      console.log(`  - telemetry.${config.domain}`);
+      // For domains > 10 chars, use unified endpoint; otherwise show subdomains
+      if (config.domain.length > 10) {
+        console.log(`  - ${config.domain} (unified endpoint)`);
+      } else {
+        console.log(`  - sessions.${config.domain}`);
+        console.log(`  - account-data.${config.domain}`);
+        console.log(`  - telemetry.${config.domain}`);
+      }
       console.log(`  - Avatar viewer: /avatar/{uuid}`);
       console.log(`  - Avatar customizer: /customizer/{uuid}`);
       console.log(`  - Cosmetics list: /cosmetics/list`);

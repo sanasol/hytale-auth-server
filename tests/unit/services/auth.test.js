@@ -55,7 +55,8 @@ describe('Auth Service', () => {
       expect(decoded.scope).toContain('hytale:server');
       expect(decoded.scope).toContain('hytale:client');
       expect(decoded.scope).toContain('hytale:editor');
-      expect(decoded.iss).toContain('sessions.');
+      // Issuer is dynamic based on request host, defaults to base domain
+      expect(decoded.iss).toContain('sanasol.ws');
     });
 
     it('should include custom entitlements when provided', () => {

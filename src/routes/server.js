@@ -27,15 +27,19 @@ function handleServerAutoAuth(req, res, body) {
   // Generate a server-specific UUID (deterministic based on server_id for consistency)
   const serverUuid = generateServerUuid(serverId);
 
-  // Generate tokens with server scope
+  // Get request host for dynamic issuer (backward compatibility)
+  const requestHost = req.headers.host;
+
+  // Generate tokens with server scope (issuer based on request host)
   const identityToken = auth.generateIdentityToken(
     serverUuid,
     serverName,
     'hytale:server',  // Server scope only
-    ['game.base', 'server.host']  // Server entitlements
+    ['game.base', 'server.host'],  // Server entitlements
+    requestHost
   );
 
-  const sessionToken = auth.generateSessionToken(serverUuid);
+  const sessionToken = auth.generateSessionToken(serverUuid, requestHost);
 
   // Register the server session
   storage.registerSession(sessionToken, serverUuid, serverName, serverId);
@@ -255,16 +259,18 @@ function handleDeviceCodeExchange(req, res, body) {
   // Generate tokens for the server
   const serverUuid = crypto.randomUUID();
   const serverName = `Server-${serverUuid.substring(0, 8)}`;
+  const requestHost = req.headers.host;
 
   const accessToken = auth.generateIdentityToken(
     serverUuid,
     serverName,
     'hytale:server',
-    ['game.base', 'server.host']
+    ['game.base', 'server.host'],
+    requestHost
   );
 
-  const refreshToken = auth.generateSessionToken(serverUuid);
-  const idToken = auth.generateIdentityToken(serverUuid, serverName, 'openid hytale:server');
+  const refreshToken = auth.generateSessionToken(serverUuid, requestHost);
+  const idToken = auth.generateIdentityToken(serverUuid, serverName, 'openid hytale:server', ['game.base'], requestHost);
 
   // Clean up device code
   storage.consumeDeviceCode(deviceCode);
@@ -296,15 +302,17 @@ function handleTokenRefresh(req, res, body) {
   const tokenData = auth.parseToken(refreshToken);
   const serverUuid = tokenData?.uuid || crypto.randomUUID();
   const serverName = tokenData?.name || `Server-${serverUuid.substring(0, 8)}`;
+  const requestHost = req.headers.host;
 
   const accessToken = auth.generateIdentityToken(
     serverUuid,
     serverName,
     'hytale:server',
-    ['game.base', 'server.host']
+    ['game.base', 'server.host'],
+    requestHost
   );
 
-  const newRefreshToken = auth.generateSessionToken(serverUuid);
+  const newRefreshToken = auth.generateSessionToken(serverUuid, requestHost);
 
   sendJson(res, 200, {
     access_token: accessToken,
@@ -332,16 +340,18 @@ function handleAuthCodeExchange(req, res, body) {
   // For F2P, just generate tokens (no code validation needed)
   const serverUuid = crypto.randomUUID();
   const serverName = `Server-${serverUuid.substring(0, 8)}`;
+  const requestHost = req.headers.host;
 
   const accessToken = auth.generateIdentityToken(
     serverUuid,
     serverName,
     'hytale:server',
-    ['game.base', 'server.host']
+    ['game.base', 'server.host'],
+    requestHost
   );
 
-  const refreshToken = auth.generateSessionToken(serverUuid);
-  const idToken = auth.generateIdentityToken(serverUuid, serverName, 'openid hytale:server');
+  const refreshToken = auth.generateSessionToken(serverUuid, requestHost);
+  const idToken = auth.generateIdentityToken(serverUuid, serverName, 'openid hytale:server', ['game.base'], requestHost);
 
   sendJson(res, 200, {
     access_token: accessToken,
