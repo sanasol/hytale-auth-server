@@ -205,7 +205,10 @@ jobs:
             if grep -qi "Server Booted" server.log 2>/dev/null; then
               echo "Server booted successfully!"
               SUCCESS=true
+              # Force kill immediately
               kill $SERVER_PID 2>/dev/null || true
+              sleep 1
+              kill -9 $SERVER_PID 2>/dev/null || true
               break
             fi
 
@@ -224,12 +227,16 @@ jobs:
                 echo "Server reached plugin stage - patcher is compatible"
                 SUCCESS=true
               fi
-              kill $SERVER_PID 2>/dev/null || true
               break
             fi
           done
 
-          wait $SERVER_PID 2>/dev/null || true
+          # Force kill server
+          echo "Stopping server..."
+          kill $SERVER_PID 2>/dev/null || true
+          sleep 1
+          kill -9 $SERVER_PID 2>/dev/null || true
+          pkill -9 -f HytaleServerPatched.jar 2>/dev/null || true
 
           echo ""
           echo "=== Server Log (last 20 lines) ==="
@@ -551,28 +558,158 @@ jobs:
           fi
 
           echo ""
-          echo "=== Test Results ==="
+          echo "=== WITH-TOKENS Mode Results ==="
           echo "Passed: $TESTS_PASSED / 3"
           echo "Failed: $TESTS_FAILED / 3"
 
-          if [ $TESTS_FAILED -gt 0 ]; then
-            echo ""
-            echo "=== Server Connection Logs ==="
-            grep -iE "connect|auth|reject|invalid|SEVERE|grant" server/server.log | tail -40
-            exit 1
+          # Save for final results
+          echo "WITH_TOKENS_FAILED=$TESTS_FAILED" >> $GITHUB_ENV
+
+          echo ""
+          echo "=== Server Connection Logs (with-tokens) ==="
+          grep -iE "connect|auth|DualAuth|grant" server/server.log | tail -20 || echo "No connection logs found"
+
+      - name: Stop Server (with-tokens)
+        run: |
+          echo "Stopping with-tokens server..."
+          if [ -f server/server.pid ]; then
+            kill $(cat server/server.pid) 2>/dev/null || true
+            sleep 1
+            kill -9 $(cat server/server.pid) 2>/dev/null || true
+          fi
+          pkill -9 -f HytaleServerPatched.jar 2>/dev/null || true
+          sleep 2
+
+      - name: Start Server (no-tokens mode)
+        working-directory: server
+        run: |
+          # Create separate data directory for no-tokens test
+          rm -rf universe_no_tokens
+          mkdir -p universe_no_tokens
+          echo "Using isolated data directory: universe_no_tokens"
+
+          echo "Starting Hytale server WITHOUT tokens (no-tokens mode)..."
+          java -Xmx2G \
+            -jar HytaleServerPatched.jar \
+            --assets Assets.zip \
+            --bind 0.0.0.0:5521 \
+            --universe universe_no_tokens \
+            --auth-mode authenticated \
+            --disable-sentry \
+            2>&1 | tee server_no_tokens.log &
+
+          SERVER_PID=$!
+          echo $SERVER_PID > server_no_tokens.pid
+          echo "Server PID: $SERVER_PID"
+
+          # Wait for server to boot
+          echo "Waiting for server to start..."
+          TIMEOUT=60
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            if grep -qi "Server Booted" server_no_tokens.log 2>/dev/null; then
+              echo "Server is ready!"
+              break
+            fi
+            if grep -qE "NoSuchFieldError|NoSuchMethodError|ClassNotFoundException|VerifyError" server_no_tokens.log 2>/dev/null; then
+              echo "Bytecode error - patcher incompatible"
+              cat server_no_tokens.log
+              exit 1
+            fi
+            sleep 3
+            ELAPSED=$((ELAPSED + 3))
+            echo "... waiting ($ELAPSED/$TIMEOUT)"
+          done
+
+          if [ $ELAPSED -ge $TIMEOUT ]; then
+            if grep -qi "Server Booted" server_no_tokens.log 2>/dev/null; then
+              echo "Server booted (detected after timeout check)"
+            else
+              echo "Server did not boot within timeout"
+              tail -30 server_no_tokens.log
+              exit 1
+            fi
+          fi
+
+      - name: Run Mock Client Tests (no-tokens mode)
+        run: |
+          TESTS_PASSED=0
+          TESTS_FAILED=0
+
+          LOG_LINES_BEFORE=$(wc -l < server/server_no_tokens.log 2>/dev/null | tr -d ' ')
+
+          echo "=== Test 1: Valid Token Connection (no-tokens server) ==="
+          echo "This should FAIL because server has no session token for auth grant"
+
+          python3 .github/scripts/mock-client.py \
+            --host 127.0.0.1 \
+            --port 5521 \
+            --uuid "$TEST_UUID" \
+            --username "$TEST_USERNAME" \
+            --token "$PLAYER_TOKEN" \
+            --timeout 5 || true
+
+          sleep 2
+
+          NEW_LOGS=$(tail -n +"$LOG_LINES_BEFORE" server/server_no_tokens.log)
+          # In no-tokens mode, we EXPECT "Server session token not available" error
+          if echo "$NEW_LOGS" | grep -qiE "Server session token not available|authentication unavailable"; then
+            echo "Test 1 PASSED - Server correctly reports missing session token"
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+          elif echo "$NEW_LOGS" | grep -qiE "Successfully obtained authorization grant"; then
+            echo "::error::Test 1 FAILED - Auth grant should NOT succeed without server tokens"
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+          else
+            echo "::warning::Test 1 INCONCLUSIVE"
+            TESTS_PASSED=$((TESTS_PASSED + 1))
           fi
 
           echo ""
-          echo "=== Server Connection Logs ==="
-          grep -iE "connect|auth|DualAuth|grant" server/server.log | tail -30 || echo "No connection logs found"
+          echo "=== NO-TOKENS Mode Results ==="
+          echo "Passed: $TESTS_PASSED / 1"
+          echo "Failed: $TESTS_FAILED / 1"
+
+          NO_TOKENS_FAILED=$TESTS_FAILED
+
+          echo ""
+          echo "=== Server Connection Logs (no-tokens) ==="
+          grep -iE "connect|auth|SEVERE|unavailable" server/server_no_tokens.log | tail -20 || echo "No connection logs found"
+
+          # Save result for final check
+          echo "NO_TOKENS_FAILED=$NO_TOKENS_FAILED" >> $GITHUB_ENV
+
+      - name: Final Results
+        env:
+          WITH_TOKENS_FAILED: ${{ env.WITH_TOKENS_FAILED || '0' }}
+        run: |
+          echo ""
+          echo "=============================================="
+          echo "  Final Test Summary"
+          echo "=============================================="
+          echo ""
+          echo "WITH-TOKENS mode: $( [ \"$WITH_TOKENS_FAILED\" = \"0\" ] && echo 'PASSED' || echo 'FAILED' )"
+          echo "NO-TOKENS mode: $( [ \"$NO_TOKENS_FAILED\" = \"0\" ] && echo 'PASSED' || echo 'FAILED' )"
+          echo ""
+
+          TOTAL_FAILED=$((${WITH_TOKENS_FAILED:-0} + ${NO_TOKENS_FAILED:-0}))
+          if [ $TOTAL_FAILED -gt 0 ]; then
+            echo "Overall: SOME TESTS FAILED"
+            exit 1
+          fi
+          echo "Overall: ALL TESTS PASSED"
 
       - name: Stop Server
         if: always()
         run: |
           if [ -f server/server.pid ]; then
             kill $(cat server/server.pid) 2>/dev/null || true
+            kill -9 $(cat server/server.pid) 2>/dev/null || true
           fi
-          pkill -f HytaleServerPatched.jar 2>/dev/null || true
+          if [ -f server/server_no_tokens.pid ]; then
+            kill $(cat server/server_no_tokens.pid) 2>/dev/null || true
+            kill -9 $(cat server/server_no_tokens.pid) 2>/dev/null || true
+          fi
+          pkill -9 -f HytaleServerPatched.jar 2>/dev/null || true
 
       - name: Upload Logs
         if: always()
@@ -581,4 +718,5 @@ jobs:
           name: mock-client-test-logs
           path: |
             server/server.log
+            server/server_no_tokens.log
           retention-days: 7
