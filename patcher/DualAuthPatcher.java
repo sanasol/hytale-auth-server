@@ -9,7 +9,7 @@ import java.util.jar.*;
 import java.util.zip.*;
 
 /**
- * Hytale Server Dual Authentication Patcher v9.0
+ * Hytale Server Dual Authentication Patcher v9.1 (Fixed)
  *
  * TRUE DUAL AUTH: Supports BOTH official hytale.com AND F2P tokens
  *
@@ -18,14 +18,16 @@ import java.util.zip.*;
  * 2. Patches JWTValidator.fetchJwksFromService() to use DualJwksFetcher
  * 3. Patches issuer validation to accept BOTH hytale.com AND F2P issuers
  * 4. Injects DualAuthContext for per-request routing of authorization requests
- * 5. Patches SessionServiceClient.refreshSessionAsync() for issuer-based routing (v8.0)
- * 6. Updated for Jan 2026 server: uses lastJwksRefresh (Instant) instead of jwksCacheExpiry (v9.0)
+ * 5. Patches SessionServiceClient to route auth requests based on token issuer
+ * 6. Patches ServerAuthManager getters to fallback to F2P tokens if official ones are missing
+ * 7. Updates DualServerTokenManager to check ThreadLocal context for correct token selection
+ * 8. Enhanced HandshakeHandler to intercept INVOKEVIRTUAL calls in addition to GETFIELD
  *
  * Flow:
  *   Token arrives -> Signature verified against merged JWKS (both backends' keys)
  *   Issuer check -> Accepts both hytale.com and F2P issuer
- *   Authorization request -> Routes to correct backend based on token's issuer
- *   Token refresh -> Routes to correct backend based on session token's issuer (v8.0)
+ *   Handshake -> ServerAuthManager returns appropriate Server Session Token (Official or F2P)
+ *   Auth Grant -> Signed with the Session Token corresponding to the client's issuer
  */
 public class DualAuthPatcher {
 
@@ -115,7 +117,7 @@ public class DualAuthPatcher {
         String outputJar = args.length > 1 ? args[1] : inputJar;
 
         System.out.println("+---------------------------------------------------------------+");
-        System.out.println("|     Hytale Server TRUE Dual Authentication Patcher v9.0       |");
+        System.out.println("|     Hytale Server TRUE Dual Authentication Patcher v9.1       |");
         System.out.println("+---------------------------------------------------------------+");
         System.out.println();
         System.out.println("Input:  " + inputJar);
@@ -165,6 +167,15 @@ public class DualAuthPatcher {
                     System.out.println("Found SessionServiceClient - will patch authorization routing");
                     foundClasses.add(name);
                     byte[] patched = patchSessionServiceClient(classBytes);
+                    if (patched != null) {
+                        patchedClasses.put(name, patched);
+                    }
+                }
+                // Look for HandshakeHandler
+                else if (className.contains("HandshakeHandler")) {
+                    System.out.println("Found HandshakeHandler - will patch to use dual token manager");
+                    foundClasses.add(name);
+                    byte[] patched = patchHandshakeHandler(classBytes);
                     if (patched != null) {
                         patchedClasses.put(name, patched);
                     }
@@ -1927,8 +1938,8 @@ public class DualAuthPatcher {
      * - Official tokens: obtained via /auth login (from hytale.com)
      * - F2P tokens: auto-fetched from sanasol.ws on startup
      *
-     * When routing requests, the appropriate token is selected based on the player's
-     * token issuer (extracted from their identity token).
+     * MODIFIED: Changed from background thread to synchronous fetch during static init
+     * to ensure tokens are available immediately at server startup.
      */
     private static byte[] generateDualServerTokenManager() {
         ClassWriter cw = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
@@ -2003,49 +2014,237 @@ public class DualAuthPatcher {
 
         // public static String getSessionTokenForIssuer(String issuer)
         // Returns the appropriate session token based on issuer
+        // MODIFIED: Enhanced fallback logic to ensure tokens are always available
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
             "getSessionTokenForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
         mv.visitCode();
-        // if (issuer != null && issuer.contains("hytale.com")) return officialSessionToken;
+
+        // if (issuer == null) issuer = DualAuthContext.getIssuer();
         mv.visitVarInsn(Opcodes.ALOAD, 0);
-        Label checkF2P = new Label();
-        mv.visitJumpInsn(Opcodes.IFNULL, checkF2P);
+        Label issuerNotNull = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, issuerNotNull);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getIssuer", "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 0);
+        mv.visitLabel(issuerNotNull);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+
+        // Log the call for debugging
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitLdcInsn("[DualAuth] getSessionTokenForIssuer called with issuer: ");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+
+        // if (issuer == null) {
+        //   // No issuer info, try official first, fallback to F2P
+        //   if (officialSessionToken != null) return officialSessionToken;
+        //   return f2pSessionToken;
+        // }
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        Label issuerNotNull2 = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, issuerNotNull2);
+
+        // issuer is null - try official first, then F2P
+        mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "officialSessionToken", "Ljava/lang/String;");
+        Label returnOfficialIfAvailable = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, returnOfficialIfAvailable);
+
+        // No official token, use F2P
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] No issuer provided and no official token, using F2P token");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "f2pSessionToken", "Ljava/lang/String;");
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(returnOfficialIfAvailable);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] No issuer provided, using official token");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "officialSessionToken", "Ljava/lang/String;");
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(issuerNotNull2);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+
+        // Check if issuer is from F2P (contains sanasol.ws)
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitLdcInsn("sanasol.ws");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
+            "(Ljava/lang/CharSequence;)Z", false);
+        Label issuerIsF2P = new Label();
+        mv.visitJumpInsn(Opcodes.IFEQ, issuerIsF2P);
+
+        // Issuer is F2P - return F2P token
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] Issuer is F2P, using F2P token");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "f2pSessionToken", "Ljava/lang/String;");
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(issuerIsF2P);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+
+        // Issuer is not F2P (or doesn't contain sanasol.ws) - check if it's hytale.com
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitLdcInsn("hytale.com");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
             "(Ljava/lang/CharSequence;)Z", false);
-        mv.visitJumpInsn(Opcodes.IFEQ, checkF2P);
+        Label issuerIsOfficial = new Label();
+        mv.visitJumpInsn(Opcodes.IFEQ, issuerIsOfficial);
+
+        // Issuer is official hytale.com - check if we have official token
         mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "officialSessionToken", "Ljava/lang/String;");
-        mv.visitInsn(Opcodes.ARETURN);
-        mv.visitLabel(checkF2P);
-        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
-        // return f2pSessionToken;
+        Label hasOfficialToken = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, hasOfficialToken);
+
+        // No official token for hytale.com issuer - log warning and fallback to F2P
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitLdcInsn("[DualAuth] WARNING: Official token requested for hytale.com issuer but not available, falling back to F2P token. Use /auth login to get official tokens.");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "f2pSessionToken", "Ljava/lang/String;");
         mv.visitInsn(Opcodes.ARETURN);
-        mv.visitMaxs(2, 1);
+
+        mv.visitLabel(hasOfficialToken);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] Issuer is official hytale.com, using official token");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "officialSessionToken", "Ljava/lang/String;");
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(issuerIsOfficial);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+
+        // Unknown issuer - fallback to F2P (most compatible)
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitLdcInsn("[DualAuth] Unknown issuer '");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitLdcInsn("', falling back to F2P token");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "f2pSessionToken", "Ljava/lang/String;");
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitMaxs(4, 1);
         mv.visitEnd();
 
         // public static String getIdentityTokenForIssuer(String issuer)
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
             "getIdentityTokenForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
         mv.visitCode();
-        // if (issuer != null && issuer.contains("hytale.com")) return officialIdentityToken;
+        
+        // if (issuer == null) issuer = DualAuthContext.getIssuer();
         mv.visitVarInsn(Opcodes.ALOAD, 0);
-        Label checkF2P2 = new Label();
-        mv.visitJumpInsn(Opcodes.IFNULL, checkF2P2);
+        Label idIssuerNotNull = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, idIssuerNotNull);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getIssuer", "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 0);
+        mv.visitLabel(idIssuerNotNull);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+        
+        // Log the call for debugging
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitLdcInsn("[DualAuth] getIdentityTokenForIssuer called with issuer: ");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+
+        // if (issuer == null) return f2pIdentityToken; // Default to F2P for safety
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        Label checkOfficial2 = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, checkOfficial2);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] No issuer provided for identity token, defaulting to F2P");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "f2pIdentityToken", "Ljava/lang/String;");
+        mv.visitInsn(Opcodes.ARETURN);
+        
+        mv.visitLabel(checkOfficial2);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+        
+        // Check if issuer is from F2P (contains sanasol.ws)
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitLdcInsn("sanasol.ws");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
+            "(Ljava/lang/CharSequence;)Z", false);
+        Label identityIssuerIsF2P = new Label();
+        mv.visitJumpInsn(Opcodes.IFEQ, identityIssuerIsF2P);
+
+        // Issuer is F2P - return F2P identity token
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] Issuer is F2P, using F2P identity token");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "f2pIdentityToken", "Ljava/lang/String;");
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(identityIssuerIsF2P);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+
+        // Check if issuer is hytale.com and we have official token
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitLdcInsn("hytale.com");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
             "(Ljava/lang/CharSequence;)Z", false);
-        mv.visitJumpInsn(Opcodes.IFEQ, checkF2P2);
+        Label identityIssuerIsOfficial = new Label();
+        mv.visitJumpInsn(Opcodes.IFEQ, identityIssuerIsOfficial);
+
+        // Issuer is official - check if we have official identity token
         mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "officialIdentityToken", "Ljava/lang/String;");
-        mv.visitInsn(Opcodes.ARETURN);
-        mv.visitLabel(checkF2P2);
-        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
-        // return f2pIdentityToken;
+        Label hasOfficialIdentityToken = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, hasOfficialIdentityToken);
+
+        // No official identity token - fallback to F2P with warning
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] WARNING: Official identity token requested but not available, using F2P identity token");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "f2pIdentityToken", "Ljava/lang/String;");
         mv.visitInsn(Opcodes.ARETURN);
-        mv.visitMaxs(2, 1);
+
+        mv.visitLabel(hasOfficialIdentityToken);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] Issuer is official hytale.com, using official identity token");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "officialIdentityToken", "Ljava/lang/String;");
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(identityIssuerIsOfficial);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+
+        // Unknown issuer - fallback to F2P (most compatible)
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitLdcInsn("[DualAuth] Unknown issuer '");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitLdcInsn("', falling back to F2P identity token");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "f2pIdentityToken", "Ljava/lang/String;");
+        mv.visitInsn(Opcodes.ARETURN);
+        
+        mv.visitMaxs(4, 1);
         mv.visitEnd();
 
         // public static boolean hasOfficialTokens()
@@ -2098,9 +2297,9 @@ public class DualAuthPatcher {
         mv.visitMaxs(1, 0);
         mv.visitEnd();
 
-        // private static void fetchF2PTokens()
+        // public static void fetchF2PTokens()
         // Makes HTTP request to F2P auth server to get server tokens
-        mv = cw.visitMethod(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC,
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
             "fetchF2PTokens", "()V", null, null);
         mv.visitCode();
 
@@ -2383,6 +2582,51 @@ public class DualAuthPatcher {
 
         mv.visitInsn(Opcodes.RETURN);
         mv.visitMaxs(4, 0);
+        mv.visitEnd();
+
+        // public static void logCurrentTokens()
+        // Debug method to log current token acquisition status
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            "logCurrentTokens", "()V", null, null);
+        mv.visitCode();
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitLdcInsn("[DualAuth] Current tokens - Official: ");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "hasOfficialTokens", "()Z", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Z)Ljava/lang/StringBuilder;", false);
+        mv.visitLdcInsn(", F2P: ");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "hasF2PTokens", "()Z", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Z)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitInsn(Opcodes.RETURN);
+        mv.visitMaxs(4, 0);
+        mv.visitEnd();
+
+        // Static initializer to auto-fetch F2P tokens on server startup
+        // MODIFIED: Synchronous fetch instead of background thread
+        mv = cw.visitMethod(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
+        mv.visitCode();
+        
+        // System.out.println("[DualAuth] DualServerTokenManager static init - starting synchronous F2P token fetch");
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] DualServerTokenManager static init - starting synchronous F2P token fetch");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+
+        // Call ensureF2PTokens() synchronously
+        // This will fetch tokens immediately during class loading
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "ensureF2PTokens", "()V", false);
+        
+        // Log completion
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] F2P token fetch completed during static initialization");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+
+        mv.visitInsn(Opcodes.RETURN);
+        mv.visitMaxs(1, 0);
         mv.visitEnd();
 
         cw.visitEnd();
@@ -2743,6 +2987,192 @@ public class DualAuthPatcher {
     }
 
     /**
+     * Patch HandshakeHandler to use DualServerTokenManager for server session tokens
+     */
+    private static byte[] patchHandshakeHandler(byte[] classBytes) {
+        try {
+            ClassReader reader = new ClassReader(classBytes);
+            ClassNode classNode = new ClassNode();
+            reader.accept(classNode, 0);
+
+            boolean modified = false;
+
+            for (MethodNode method : classNode.methods) {
+                if (method.instructions == null) continue;
+
+                // Look for methods that might be getting server session token
+                // Common method names that might handle authentication
+                if (method.name.contains("Auth") || 
+                    method.name.contains("Token") || 
+                    method.name.contains("Session") ||
+                    method.name.contains("validate") ||
+                    method.name.contains("request")) {
+                    
+                    if (patchHandshakeHandlerMethod(method)) {
+                        modified = true;
+                        patchedMethods.add("HandshakeHandler." + method.name);
+                        System.out.println("  [HandshakeHandler] Patched " + method.name + "() to use dual token manager");
+                    }
+                }
+
+                // Also patch any URL references
+                if (patchUrlReferences(method, "HandshakeHandler")) {
+                    modified = true;
+                }
+            }
+
+            if (modified) {
+                ClassWriter writer = new SafeClassWriter(reader, ClassWriter.COMPUTE_FRAMES);
+                classNode.accept(writer);
+                return writer.toByteArray();
+            }
+
+        } catch (Exception e) {
+            System.out.println("  Error patching HandshakeHandler: " + e.getMessage());
+            if (verbose) e.printStackTrace();
+        }
+
+        return null;
+    }
+
+    /**
+     * Patch individual HandshakeHandler method to use DualServerTokenManager
+     */
+    private static boolean patchHandshakeHandlerMethod(MethodNode method) {
+        InsnList insns = method.instructions;
+        boolean patched = false;
+
+        // Look for patterns where server session token is accessed
+        for (AbstractInsnNode insn : insns.toArray()) {
+            // Look for field access to session tokens
+            if (insn.getOpcode() == Opcodes.GETFIELD) {
+                FieldInsnNode fi = (FieldInsnNode) insn;
+                if (fi.name.contains("Session") && fi.name.contains("Token")) {
+                    // Replace with call to DualServerTokenManager
+                    InsnList replacement = new InsnList();
+                    
+                    // Log
+                    replacement.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+                    replacement.add(new LdcInsnNode("[DualAuth] HandshakeHandler - replacing session token access with DualServerTokenManager"));
+                    replacement.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+                    
+                    // Call DualServerTokenManager.getSessionTokenForIssuer(null) for fallback
+                    replacement.add(new InsnNode(Opcodes.ACONST_NULL));
+                    replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                        TOKEN_MANAGER_CLASS, "getSessionTokenForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", false));
+                    
+                    insns.insert(insn, replacement);
+                    insns.remove(insn);
+                    patched = true;
+                    patchCount++;
+                }
+            }
+            
+            // Intercept INVOKEVIRTUAL to ServerAuthManager getters
+            else if (insn.getOpcode() == Opcodes.INVOKEVIRTUAL) {
+                MethodInsnNode mi = (MethodInsnNode) insn;
+                if (mi.owner.equals(SERVER_AUTH_MANAGER_CLASS) && mi.desc.endsWith("Ljava/lang/String;")) {
+                    // We don't know the exact name, but if it returns string from AuthManager in handshake, it's likely the token
+                    // Wrap the result: check if null, if so use ours
+                    InsnList wrap = new InsnList();
+                    wrap.add(new InsnNode(Opcodes.DUP));
+                    LabelNode valid = new LabelNode();
+                    wrap.add(new JumpInsnNode(Opcodes.IFNONNULL, valid));
+                    wrap.add(new InsnNode(Opcodes.POP));
+                    wrap.add(new InsnNode(Opcodes.ACONST_NULL));
+                    wrap.add(new MethodInsnNode(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "getSessionTokenForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", false));
+                    wrap.add(valid);
+                    method.instructions.insert(insn, wrap);
+                    patched = true;
+                    patchCount++;
+                }
+            }
+            
+            // Look for hardcoded session URLs
+            if (insn.getOpcode() == Opcodes.LDC) {
+                LdcInsnNode ldc = (LdcInsnNode) insn;
+                if (ldc.cst instanceof String) {
+                    String str = (String) ldc.cst;
+                    if (str.contains("sessions.hytale.com") || str.contains("hytale.com")) {
+                        // Replace with dynamic URL
+                        InsnList replacement = new InsnList();
+                        
+                        replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                            HELPER_CLASS, "getSessionUrl", "()Ljava/lang/String;", false));
+                        
+                        insns.insert(insn, replacement);
+                        insns.remove(insn);
+                        patched = true;
+                        patchCount++;
+                    }
+                }
+            }
+        }
+
+        return patched;
+    }
+
+    /**
+     * Patch SessionServiceClient constructor to use dynamic URL instead of hardcoded URL
+     */
+    private static boolean patchSessionServiceClientConstructor(MethodNode method) {
+        InsnList insns = method.instructions;
+        boolean patched = false;
+
+        // Look for pattern: this.sessionServiceUrl = "https://sessions.hytale.com"
+        for (AbstractInsnNode insn : insns.toArray()) {
+            if (insn.getOpcode() == Opcodes.LDC) {
+                LdcInsnNode ldc = (LdcInsnNode) insn;
+                if (ldc.cst instanceof String) {
+                    String str = (String) ldc.cst;
+                    if (str.equals(OFFICIAL_SESSION_URL) || str.equals("https://sessions.hytale.com")) {
+                        // Replace with dynamic URL
+                        InsnList replacement = new InsnList();
+                        
+                        // Log that we're using dynamic URL
+                        replacement.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+                        replacement.add(new LdcInsnNode("[DualAuth] SessionServiceClient constructor - replacing hardcoded URL with dynamic URL"));
+                        replacement.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+                        
+                        // Call DualAuthHelper.getSessionUrl() which will return the appropriate URL
+                        replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                            HELPER_CLASS, "getSessionUrl", "()Ljava/lang/String;", false));
+                        
+                        // Insert the replacement before the PUTFIELD that sets sessionServiceUrl
+                        // Find the PUTFIELD instruction that follows
+                        AbstractInsnNode putFieldInsn = findNextInstruction(insn, Opcodes.PUTFIELD);
+                        if (putFieldInsn != null) {
+                            FieldInsnNode fi = (FieldInsnNode) putFieldInsn;
+                            if (fi.name.equals("sessionServiceUrl")) {
+                                insns.insert(insn, replacement);
+                                insns.remove(insn);
+                                patched = true;
+                                patchCount++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return patched;
+    }
+
+    /**
+     * Find the next instruction with the specified opcode
+     */
+    private static AbstractInsnNode findNextInstruction(AbstractInsnNode start, int opcode) {
+        AbstractInsnNode insn = start.getNext();
+        while (insn != null) {
+            if (insn.getOpcode() == opcode) {
+                return insn;
+            }
+            insn = insn.getNext();
+        }
+        return null;
+    }
+
+    /**
      * Patch SessionServiceClient to route authorization requests based on token issuer
      */
     private static byte[] patchSessionServiceClient(byte[] classBytes) {
@@ -2755,6 +3185,15 @@ public class DualAuthPatcher {
 
             for (MethodNode method : classNode.methods) {
                 if (method.instructions == null) continue;
+
+                // Patch constructor to use dynamic URL
+                if (method.name.equals("<init>")) {
+                    if (patchSessionServiceClientConstructor(method)) {
+                        modified = true;
+                        patchedMethods.add("SessionServiceClient.<init>");
+                        System.out.println("  [SessionServiceClient] Patched constructor to use dynamic URL");
+                    }
+                }
 
                 // Patch lambda methods for requestAuthorizationGrantAsync
                 // Lambda methods are named like lambda$requestAuthorizationGrantAsync$0
@@ -2892,12 +3331,12 @@ public class DualAuthPatcher {
             for (MethodNode method : classNode.methods) {
                 if (method.instructions == null) continue;
 
-                // Patch initialize() to auto-fetch F2P tokens
+                // Patch initialize() to log token status
                 if (method.name.equals("initialize") && method.desc.equals("()V")) {
                     if (injectF2PTokenFetch(method)) {
                         modified = true;
                         patchedMethods.add("ServerAuthManager.initialize");
-                        System.out.println("  [ServerAuthManager] Patched initialize() to auto-fetch F2P tokens");
+                        System.out.println("  [ServerAuthManager] Patched initialize() to log token status");
                     }
                 }
 
@@ -2908,6 +3347,14 @@ public class DualAuthPatcher {
                         modified = true;
                         patchedMethods.add("ServerAuthManager.createGameSessionFromOAuth");
                         System.out.println("  [ServerAuthManager] Patched createGameSessionFromOAuth() to store official tokens");
+                    }
+                }
+
+                // Patch getter methods to fallback to F2P tokens if null
+                if (method.desc.endsWith("Ljava/lang/String;")) {
+                    if (patchGetterMethod(method)) {
+                        modified = true;
+                        System.out.println("  [ServerAuthManager] Patched getter: " + method.name);
                     }
                 }
             }
@@ -2927,31 +3374,31 @@ public class DualAuthPatcher {
     }
 
     /**
-     * Inject call to DualServerTokenManager.ensureF2PTokens() at end of initialize()
+     * Inject token status logging at beginning of initialize()
+     * MODIFIED: Removed F2P token fetch since it's now done in static initializer
      */
     private static boolean injectF2PTokenFetch(MethodNode method) {
         InsnList injection = new InsnList();
 
-        // Log
+        // Log token status at server startup
         injection.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
-        injection.add(new LdcInsnNode("[DualAuth] Auto-fetching F2P server tokens..."));
+        injection.add(new LdcInsnNode("[DualAuth] ServerAuthManager.initialize() - checking token status..."));
         injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
 
-        // DualServerTokenManager.ensureF2PTokens();
+        // Log current token status
         injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-            TOKEN_MANAGER_CLASS, "ensureF2PTokens", "()V", false));
+            TOKEN_MANAGER_CLASS, "logCurrentTokens", "()V", false));
 
-        // DualServerTokenManager.logStatus();
-        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-            TOKEN_MANAGER_CLASS, "logStatus", "()V", false));
+        // Find the first real instruction (skip labels and frames)
+        AbstractInsnNode firstInsn = method.instructions.getFirst();
+        while (firstInsn != null && firstInsn.getOpcode() == -1) {
+            firstInsn = firstInsn.getNext();
+        }
 
-        // Find the RETURN instruction and inject before it
-        for (AbstractInsnNode insn : method.instructions.toArray()) {
-            if (insn.getOpcode() == Opcodes.RETURN) {
-                method.instructions.insertBefore(insn, injection);
-                patchCount++;
-                return true;
-            }
+        if (firstInsn != null) {
+            method.instructions.insertBefore(firstInsn, injection);
+            patchCount++;
+            return true;
         }
 
         return false;
@@ -3011,6 +3458,59 @@ public class DualAuthPatcher {
             }
         }
 
+        return false;
+    }
+
+    /**
+     * Inspects a method to see if it's a getter for session/identity token.
+     * If so, injects fallback logic before return.
+     */
+    private static boolean patchGetterMethod(MethodNode method) {
+        boolean isSessionGetter = false;
+        boolean isIdentityGetter = false;
+
+        for (AbstractInsnNode insn : method.instructions) {
+            if (insn.getOpcode() == Opcodes.GETFIELD) {
+                FieldInsnNode fn = (FieldInsnNode) insn;
+                if (fn.owner.equals("com/hypixel/hytale/server/core/auth/SessionServiceClient$GameSessionResponse")) {
+                    if (fn.name.equals("sessionToken")) isSessionGetter = true;
+                    if (fn.name.equals("identityToken")) isIdentityGetter = true;
+                }
+            }
+        }
+
+        if (!isSessionGetter && !isIdentityGetter) return false;
+
+        // Found a getter. Inject fallback logic before ARETURN.
+        // Logic: if (result == null) result = DualServerTokenManager.getToken(null);
+        InsnList inject = new InsnList();
+        inject.add(new InsnNode(Opcodes.DUP)); // Duplicate result on stack
+        LabelNode notNull = new LabelNode();
+        inject.add(new JumpInsnNode(Opcodes.IFNONNULL, notNull));
+        
+        inject.add(new InsnNode(Opcodes.POP)); // Pop null
+        inject.add(new InsnNode(Opcodes.ACONST_NULL)); // Pass null issuer (will use Context)
+        if (isSessionGetter) {
+            inject.add(new MethodInsnNode(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "getSessionTokenForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", false));
+        } else {
+            inject.add(new MethodInsnNode(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "getIdentityTokenForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", false));
+        }
+        
+        inject.add(notNull);
+        
+        // Find ARETURN
+        AbstractInsnNode target = null;
+        for (AbstractInsnNode insn : method.instructions) {
+            if (insn.getOpcode() == Opcodes.ARETURN) {
+                target = insn;
+                break;
+            }
+        }
+        
+        if (target != null) {
+            method.instructions.insertBefore(target, inject);
+            return true;
+        }
         return false;
     }
 

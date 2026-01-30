@@ -24,3 +24,6 @@ coverage/
 
 # Legacy code (old monolithic server.js)
 legacy/
+
+# Patching dependencies
+patcher/lib/
