@@ -523,7 +523,8 @@ jobs:
           sleep 2
 
           NEW_LOGS=$(tail -n +"$LOG_LINES_BEFORE" server/server.log)
-          if echo "$NEW_LOGS" | grep -qiE "invalid signature|token.*invalid|validation failed"; then
+          # Check for token rejection - supports both old messages (signature validation) and new (JWT parsing errors from Omni-Auth)
+          if echo "$NEW_LOGS" | grep -qiE "invalid signature|token.*invalid|validation failed|ParseException|Invalid JSON"; then
             echo "Test 2 PASSED - Invalid token correctly rejected"
             TESTS_PASSED=$((TESTS_PASSED + 1))
           else
