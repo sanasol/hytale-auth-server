@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const config = require('../config');
 const { redis, isConnected } = require('./redis');
 
@@ -1704,8 +1705,8 @@ async function recordDownload(filename, url) {
     const now = Date.now();
     const hour = Math.floor(now / 3600000) * 3600000; // Round to hour
 
-    // Create a unique key for this URL (hash to avoid special chars)
-    const urlHash = Buffer.from(url).toString('base64').replace(/[^a-zA-Z0-9]/g, '').substring(0, 32);
+    // Create a unique key for this URL (proper hash to ensure uniqueness)
+    const urlHash = crypto.createHash('sha256').update(url).digest('hex').substring(0, 16);
 
     // Increment total counter for this filename
     await redis.hincrby(DOWNLOAD_METRICS_KEY, filename, 1);
