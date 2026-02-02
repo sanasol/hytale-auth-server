@@ -7,46 +7,55 @@ Bytecode patcher that enables Hytale servers to accept authentication from **bot
 ## Features
 
 - **True Dual Auth**: Official Hytale clients AND F2P clients can connect to the same server
-- **JWKS Merging**: Fetches and merges public keys from both authentication backends
-- **Issuer Routing**: Routes auth requests to the correct backend based on player's token issuer
-- **Variable Domain Length**: Supports F2P domains from 4-16 characters
+- **Omni-Auth (Decentralized)**: Automatically trusts and validates players using ANY auth authority by extracting embedded JWKs from their tokens.
+- **Two-Level JWKS Cache**: 
+    - **Transient Cache**: Instant trust for decentralized/per-request keys.
+    - **Network Cache**: Multi-backend (Hytale + F2P) keys cached for 1 hour to prevent redundant fetch latency.
+- **Mutual Authentication Emulation**: Satisfies strict client-side checks by echoing decentralized auth grants as server identity tokens.
+- **Variable Domain Length**: Supports F2P domains from 4-16 characters.
 - **Backward Compatible**: Accepts tokens from multiple F2P subdomains (sessions.*, auth.*, etc.)
 
 ## How It Works
 
 ```
-Player connects with JWT token
+Player connects with JWT token (may contain embedded "jwk")
          │
          ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    PATCHED SERVER                            │
 │                                                              │
-│  1. JWKS loaded from BOTH backends (merged)                 │
-│     - https://sessions.hytale.com/.well-known/jwks.json     │
-│     - https://{F2P_DOMAIN}/.well-known/jwks.json            │
+│  1. EMBEDDED JWK CHECK (Omni-Auth)                           │
+│     - Found "jwk" in header? Store in Transient Cache.       │
 │                                                              │
-│  2. Token signature verified against merged key set          │
+│  2. JWKS FETCHING (Two-Level Cache)                          │
+│     - Use Transient Key IF active.                           │
+│     - MERGE with Network Cache (Hytale + F2P, 1h Refresh).   │
 │                                                              │
-│  3. Issuer validation accepts BOTH:                          │
-│     - *.hytale.com (official)                               │
-│     - *.{F2P_BASE_DOMAIN} (F2P, e.g., *.sanasol.ws)        │
+│  3. TOKEN VALIDATION                                         │
+│     - Signature verified against merged/transient key set.    │
+│     - Issuer check: Accepts official, F2P, OR ANY issuer     │
+│       if a Transient Key is present.                         │
 │                                                              │
-│  4. Auth requests routed based on token's issuer:            │
-│     - hytale.com token → sessions.hytale.com                │
-│     - F2P token → https://{F2P_DOMAIN}                      │
+│  4. AUTH GRANT RESPONSE                                      │
+│     - Decentralized Flow: SHORT-CIRCUIT network request.     │
+│       Return echoed user token as Server Identity.           │
+│       (Bypasses session service, satisfies mutual-auth).     │
+│     - F2P Flow: Fetch F2P Server Identity.                   │
+│     - Official Flow: Return official Server Identity.        │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ## Injected Classes
 
-The patcher injects 5 helper classes into the server JAR:
+The patcher injects 6 helper classes into the server JAR:
 
 | Class | Purpose |
 |-------|---------|
-| `DualJwksFetcher` | Fetches JWKS from both backends, merges keys |
-| `DualAuthContext` | Thread-local storage for current request's issuer |
-| `DualAuthHelper` | Issuer validation, URL routing utilities |
+| `DualJwksFetcher` | Fetches JWKS from backends, manages two-level cache (Network + Transient) |
+| `DualAuthContext` | Volatile static storage for current request's issuer and transient keys |
+| `DualAuthHelper` | Issuer validation, URL routing, and Mutual-Auth spoofing utilities |
+| `DualTokenUtils` | Extracts balanced JSON structures (embedded JWKs) from token headers |
 | `DualServerIdentity` | Server identity token management |
 | `DualServerTokenManager` | Dual token set management (official + F2P) |
 
@@ -54,11 +63,11 @@ The patcher injects 5 helper classes into the server JAR:
 
 | Class | Method | Change |
 |-------|--------|--------|
-| `JWTValidator` | `fetchJwksFromService()` | Returns merged JWKS from both backends |
-| `JWTValidator` | `validateToken()` | Accepts both official and F2P issuers |
-| `SessionServiceClient` | `requestAuthorizationGrantAsync()` | Routes to correct backend |
-| `SessionServiceClient` | `refreshSessionAsync()` | Routes refresh to correct backend |
-| `AuthGrant` | Constructor | Nullifies server identity for F2P clients |
+| `JWTValidator` | `fetchJwksFromService()` | Returns merged/transient JWKS from two-level cache |
+| `JWTValidator` | `validateToken()` | Extracts embedded keys & selectively invalidates cache |
+| `DualAuthHelper`| `isValidIssuer()` | Accepts ANY issuer when a transient key is active |
+| `SessionServiceClient` | `requestAuthorizationGrantAsync()` | Routes to correct backend based on token |
+| `AuthGrant` | `serialize()` | Echoes auth grant for decentralized clients; nullifies/replaces for others |
 
 ## Usage
 
@@ -184,6 +193,8 @@ JAR structure doesn't match expected classes. Check:
 
 ## Version History
 
+- **v10.0**: Omni-Auth / Decentralized support with Two-Level Cache and Mutual-Auth emulation.
+- **v9.1**: Multi-threading fix (volatile context) for Netty compatibility.
 - **v8.0**: Issuer-based routing for token refresh, profile lookup support
 - **v7.0**: DualJwksFetcher for merged JWKS
 - **v6.0**: True dual auth with context-based routing

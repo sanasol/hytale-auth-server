@@ -64,8 +64,11 @@ This is part of a complete Hytale F2P setup:
 
 ## DualAuthPatcher
 
-This repository contains the **authoritative source** for `DualAuthPatcher.java` - the bytecode patcher that enables dual authentication on Hytale servers.
+This repository contains the **authoritative source** for `DualAuthPatcher.java` - the bytecode patcher that enables true hybrid authentication on Hytale servers.
 
+- **Dual-Auth**: Supports both official `hytale.com` and custom F2P servers.
+- **Omni-Auth**: Supports **Decentralized Authentication** by trusting user-provided authorities with embedded JWKs.
+- **Two-Level Cache**: Efficiently manages network and transient keys with an optimized cache system.
 - Location: [`patcher/`](patcher/)
 - Documentation: [`patcher/README.md`](patcher/README.md)
 - Other projects (hytale-server-docker, Hytale-F2P) download from here

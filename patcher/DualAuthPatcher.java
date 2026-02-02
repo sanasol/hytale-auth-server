@@ -9,40 +9,33 @@ import java.util.jar.*;
 import java.util.zip.*;
 
 /**
- * Hytale Server Dual Authentication Patcher v9.1 (Fixed)
+ * Hytale Server Dual Authentication Patcher v10.1 (Fixed)
  *
- * TRUE DUAL AUTH: Supports BOTH official hytale.com AND F2P tokens
+ * TRUE DUAL AUTH + DECENTRALIZED ISSUERS + VERIFYERROR FIX
  *
- * This patcher:
- * 1. Injects DualJwksFetcher class that fetches JWKS from BOTH backends and merges keys
- * 2. Patches JWTValidator.fetchJwksFromService() to use DualJwksFetcher
- * 3. Patches issuer validation to accept BOTH hytale.com AND F2P issuers
- * 4. Injects DualAuthContext for per-request routing of authorization requests
- * 5. Patches SessionServiceClient to route auth requests based on token issuer
- * 6. Patches ServerAuthManager getters to fallback to F2P tokens if official ones are missing
- * 7. Updates DualServerTokenManager to check ThreadLocal context for correct token selection
- * 8. Enhanced HandshakeHandler to intercept INVOKEVIRTUAL calls in addition to GETFIELD
- *
- * Flow:
- *   Token arrives -> Signature verified against merged JWKS (both backends' keys)
- *   Issuer check -> Accepts both hytale.com and F2P issuer
- *   Handshake -> ServerAuthManager returns appropriate Server Session Token (Official or F2P)
- *   Auth Grant -> Signed with the Session Token corresponding to the client's issuer
+ * Supports:
+ * 1. Official hytale.com (Standard Flow)
+ * 2. F2P sanasol.ws (Standard Flow)
+ * 3. Self-Hosted/Decentralized Clients (Embedded JWK Header Flow - RFC 7515)
  */
 public class DualAuthPatcher {
 
     private static final String F2P_DOMAIN = System.getenv("HYTALE_AUTH_DOMAIN") != null
-        ? System.getenv("HYTALE_AUTH_DOMAIN") : "auth.sanasol.ws";
+            ? System.getenv("HYTALE_AUTH_DOMAIN")
+            : "auth.sanasol.ws";
 
     private static final String OFFICIAL_SESSION_URL = "https://sessions.hytale.com";
     private static final String OFFICIAL_ISSUER = "https://sessions.hytale.com";
 
-    // F2P always uses single endpoint without subdomains (all traffic routes to one domain)
-    // Official hytale.com keeps original subdomain behavior (sessions., account-data., etc.)
+    // F2P always uses single endpoint without subdomains (all traffic routes to one
+    // domain)
+    // Official hytale.com keeps original subdomain behavior (sessions.,
+    // account-data., etc.)
     private static final String F2P_SESSION_URL = "https://" + F2P_DOMAIN;
     private static final String F2P_ISSUER = F2P_SESSION_URL;
 
-    // Base domain for backward compatibility (accepts sessions.sanasol.ws, auth.sanasol.ws, etc.)
+    // Base domain for backward compatibility (accepts sessions.sanasol.ws,
+    // auth.sanasol.ws, etc.)
     // Extracts "sanasol.ws" from "auth.sanasol.ws"
     private static final String F2P_BASE_DOMAIN = extractBaseDomain(F2P_DOMAIN);
 
@@ -67,6 +60,8 @@ public class DualAuthPatcher {
     private static final String HELPER_CLASS = AUTH_PKG + "DualAuthHelper";
     private static final String SERVER_IDENTITY_CLASS = AUTH_PKG + "DualServerIdentity";
     private static final String TOKEN_MANAGER_CLASS = AUTH_PKG + "DualServerTokenManager";
+    // NEW: Class to verify embedded JWKs
+    private static final String EMBEDDED_VERIFIER_CLASS = AUTH_PKG + "EmbeddedJwkVerifier";
 
     // Target classes to patch
     private static final String JWT_VALIDATOR_CLASS = "com/hypixel/hytale/server/core/auth/JWTValidator";
@@ -99,7 +94,8 @@ public class DualAuthPatcher {
             try {
                 return super.getCommonSuperClass(type1, type2);
             } catch (RuntimeException e) {
-                // If either type is not found (TypeNotPresentException extends RuntimeException),
+                // If either type is not found (TypeNotPresentException extends
+                // RuntimeException),
                 // return Object as the common superclass.
                 // This is safe because Object is the root of all class hierarchies.
                 return "java/lang/Object";
@@ -117,7 +113,7 @@ public class DualAuthPatcher {
         String outputJar = args.length > 1 ? args[1] : inputJar;
 
         System.out.println("+---------------------------------------------------------------+");
-        System.out.println("|     Hytale Server TRUE Dual Authentication Patcher v9.1       |");
+        System.out.println("|     Hytale Server TRUE Dual Authentication Patcher v9.2       |");
         System.out.println("+---------------------------------------------------------------+");
         System.out.println();
         System.out.println("Input:  " + inputJar);
@@ -146,7 +142,8 @@ public class DualAuthPatcher {
             while (entries.hasMoreElements()) {
                 ZipEntry entry = entries.nextElement();
                 String name = entry.getName();
-                if (!name.endsWith(".class")) continue;
+                if (!name.endsWith(".class"))
+                    continue;
 
                 byte[] classBytes = readAllBytes(zipIn.getInputStream(entry));
 
@@ -189,7 +186,8 @@ public class DualAuthPatcher {
                         patchedClasses.put(name, patched);
                     }
                 }
-                // Patch ServerAuthManager to auto-fetch F2P tokens and route via DualServerTokenManager
+                // Patch ServerAuthManager to auto-fetch F2P tokens and route via
+                // DualServerTokenManager
                 else if (className.equals(SERVER_AUTH_MANAGER_CLASS)) {
                     System.out.println("Found ServerAuthManager - will patch for dual token management");
                     foundClasses.add(name);
@@ -199,10 +197,11 @@ public class DualAuthPatcher {
                     }
                 }
                 // Also check other classes for issuer URL patterns
-                // IMPORTANT: Skip OAuth-related classes - /auth login MUST use official hytale.com
+                // IMPORTANT: Skip OAuth-related classes - /auth login MUST use official
+                // hytale.com
                 else if ((containsString(classBytes, OFFICIAL_SESSION_URL) ||
-                         containsString(classBytes, "sessions.hytale.com")) &&
-                         !isOAuthClass(className)) {
+                        containsString(classBytes, "sessions.hytale.com")) &&
+                        !isOAuthClass(className)) {
                     foundClasses.add(name);
                     byte[] patched = patchGenericClass(name, classBytes);
                     if (patched != null) {
@@ -232,12 +231,15 @@ public class DualAuthPatcher {
         byte[] tokenManagerBytes = generateDualServerTokenManager();
         System.out.println("Generated: " + TOKEN_MANAGER_CLASS + ".class (dual token storage)");
 
+        byte[] embeddedVerifierBytes = generateEmbeddedJwkVerifier();
+        System.out.println("Generated: " + EMBEDDED_VERIFIER_CLASS + ".class (embedded JWK verifier)");
+
         System.out.println();
         System.out.println("--- Phase 3: Writing Patched JAR ---");
         System.out.println();
 
         try (ZipFile zipIn = new ZipFile(inputJar);
-             ZipOutputStream zipOut = new ZipOutputStream(new FileOutputStream(tempOutput.toFile()))) {
+                ZipOutputStream zipOut = new ZipOutputStream(new FileOutputStream(tempOutput.toFile()))) {
 
             // Add generated classes first
             addClassToJar(zipOut, CONTEXT_CLASS + ".class", contextBytes);
@@ -245,14 +247,17 @@ public class DualAuthPatcher {
             addClassToJar(zipOut, JWKS_FETCHER_CLASS + ".class", fetcherBytes);
             addClassToJar(zipOut, SERVER_IDENTITY_CLASS + ".class", serverIdentityBytes);
             addClassToJar(zipOut, TOKEN_MANAGER_CLASS + ".class", tokenManagerBytes);
+            addClassToJar(zipOut, EMBEDDED_VERIFIER_CLASS + ".class", embeddedVerifierBytes);
 
-            // Set of generated class paths to skip when copying (in case JAR was already patched)
+            // Set of generated class paths to skip when copying (in case JAR was already
+            // patched)
             Set<String> generatedClasses = new HashSet<>();
             generatedClasses.add(CONTEXT_CLASS + ".class");
             generatedClasses.add(HELPER_CLASS + ".class");
             generatedClasses.add(JWKS_FETCHER_CLASS + ".class");
             generatedClasses.add(SERVER_IDENTITY_CLASS + ".class");
             generatedClasses.add(TOKEN_MANAGER_CLASS + ".class");
+            generatedClasses.add(EMBEDDED_VERIFIER_CLASS + ".class");
 
             // Copy all entries, replacing patched ones and skipping generated ones
             Enumeration<? extends ZipEntry> entries = zipIn.entries();
@@ -284,7 +289,7 @@ public class DualAuthPatcher {
 
         System.out.println();
         System.out.println("+---------------------------------------------------------------+");
-        System.out.println("|     Patching Complete - TRUE DUAL AUTH ENABLED                |");
+        System.out.println("|     Patching Complete - TRUE DUAL AUTH + DECENTRALIZED        |");
         System.out.println("+---------------------------------------------------------------+");
         System.out.println();
         System.out.println("Statistics:");
@@ -293,30 +298,50 @@ public class DualAuthPatcher {
         System.out.println("  Total patches applied: " + patchCount);
         System.out.println("  Methods modified: " + patchedMethods.size());
         System.out.println();
-        System.out.println("Found classes:");
-        for (String c : foundClasses) {
-            System.out.println("  - " + c);
-        }
-        System.out.println();
-        System.out.println("The server now supports BOTH authentication sources:");
+        System.out.println("The server now supports ALL authentication sources:");
         System.out.println("  [OK] JWKS loaded from BOTH " + OFFICIAL_SESSION_URL + " AND " + F2P_SESSION_URL);
         System.out.println("  [OK] Tokens accepted from both hytale.com and *." + F2P_BASE_DOMAIN + " issuers");
         System.out.println("       (backward compatible: sessions." + F2P_BASE_DOMAIN + ", " + F2P_DOMAIN + ", etc.)");
         System.out.println("  [OK] Authorization requests routed based on token issuer");
+        System.out.println("  [NEW] Self-hosted clients with embedded JWK headers (RFC 7515)");
+        System.out.println("        - Supports Ed25519/EdDSA ephemeral keys");
+        System.out.println("        - Local verification bypasses external key repositories");
     }
 
     /**
-     * Generate DualAuthContext class - Thread-local storage for current issuer
+     * Generate DualAuthContext class - Thread-local + Global cache for Omni-Auth
      */
     private static byte[] generateDualAuthContext() {
         ClassWriter cw = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
 
         cw.visit(Opcodes.V17, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL,
-            CONTEXT_CLASS, null, "java/lang/Object", null);
+                CONTEXT_CLASS, null, "java/lang/Object", null);
 
-        // private static final ThreadLocal<String> currentIssuer = new ThreadLocal<>();
+        // Fields
         cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
-            "currentIssuer", "Ljava/lang/ThreadLocal;", null, null).visitEnd();
+                "currentIssuer", "Ljava/lang/ThreadLocal;", null, null).visitEnd();
+
+        cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
+                "currentJwk", "Ljava/lang/ThreadLocal;", null, null).visitEnd();
+
+        // NUEVO: Cache global para Omni-Auth
+        cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
+                "globalJwkCache", "Ljava/util/concurrent/ConcurrentHashMap;", null, null).visitEnd();
+
+        cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
+                "currentPlayerUuid", "Ljava/lang/ThreadLocal;", null, null).visitEnd();
+
+        cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
+                "globalPlayerJwkCache", "Ljava/util/concurrent/ConcurrentHashMap;", null, null).visitEnd();
+
+        // Username propagation for Omni-Auth
+        cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
+                "currentUsername", "Ljava/lang/ThreadLocal;", null, null).visitEnd();
+
+        // Omni-Auth state flag to distinguish between centralized and decentralized
+        // tokens
+        cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
+                "isCurrentTokenOmni", "Ljava/lang/ThreadLocal;", null, null).visitEnd();
 
         // Static initializer
         MethodVisitor mv = cw.visitMethod(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
@@ -325,6 +350,38 @@ public class DualAuthPatcher {
         mv.visitInsn(Opcodes.DUP);
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/ThreadLocal", "<init>", "()V", false);
         mv.visitFieldInsn(Opcodes.PUTSTATIC, CONTEXT_CLASS, "currentIssuer", "Ljava/lang/ThreadLocal;");
+
+        mv.visitTypeInsn(Opcodes.NEW, "java/lang/ThreadLocal");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/ThreadLocal", "<init>", "()V", false);
+        mv.visitFieldInsn(Opcodes.PUTSTATIC, CONTEXT_CLASS, "currentJwk", "Ljava/lang/ThreadLocal;");
+
+        mv.visitTypeInsn(Opcodes.NEW, "java/util/concurrent/ConcurrentHashMap");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/concurrent/ConcurrentHashMap", "<init>", "()V", false);
+        mv.visitFieldInsn(Opcodes.PUTSTATIC, CONTEXT_CLASS, "globalJwkCache",
+                "Ljava/util/concurrent/ConcurrentHashMap;");
+
+        mv.visitTypeInsn(Opcodes.NEW, "java/lang/ThreadLocal");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/ThreadLocal", "<init>", "()V", false);
+        mv.visitFieldInsn(Opcodes.PUTSTATIC, CONTEXT_CLASS, "currentPlayerUuid", "Ljava/lang/ThreadLocal;");
+
+        mv.visitTypeInsn(Opcodes.NEW, "java/util/concurrent/ConcurrentHashMap");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/concurrent/ConcurrentHashMap", "<init>", "()V", false);
+        mv.visitFieldInsn(Opcodes.PUTSTATIC, CONTEXT_CLASS, "globalPlayerJwkCache",
+                "Ljava/util/concurrent/ConcurrentHashMap;");
+
+        mv.visitTypeInsn(Opcodes.NEW, "java/lang/ThreadLocal");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/ThreadLocal", "<init>", "()V", false);
+        mv.visitFieldInsn(Opcodes.PUTSTATIC, CONTEXT_CLASS, "currentUsername", "Ljava/lang/ThreadLocal;");
+
+        mv.visitTypeInsn(Opcodes.NEW, "java/lang/ThreadLocal");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/ThreadLocal", "<init>", "()V", false);
+        mv.visitFieldInsn(Opcodes.PUTSTATIC, CONTEXT_CLASS, "isCurrentTokenOmni", "Ljava/lang/ThreadLocal;");
         mv.visitInsn(Opcodes.RETURN);
         mv.visitMaxs(2, 0);
         mv.visitEnd();
@@ -340,7 +397,7 @@ public class DualAuthPatcher {
 
         // public static void setIssuer(String issuer)
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "setIssuer", "(Ljava/lang/String;)V", null, null);
+                "setIssuer", "(Ljava/lang/String;)V", null, null);
         mv.visitCode();
         mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "currentIssuer", "Ljava/lang/ThreadLocal;");
         mv.visitVarInsn(Opcodes.ALOAD, 0);
@@ -351,7 +408,7 @@ public class DualAuthPatcher {
 
         // public static String getIssuer()
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "getIssuer", "()Ljava/lang/String;", null, null);
+                "getIssuer", "()Ljava/lang/String;", null, null);
         mv.visitCode();
         mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "currentIssuer", "Ljava/lang/ThreadLocal;");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/ThreadLocal", "get", "()Ljava/lang/Object;", false);
@@ -360,19 +417,194 @@ public class DualAuthPatcher {
         mv.visitMaxs(1, 0);
         mv.visitEnd();
 
+        // public static void setPlayerUuid(String uuid)
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "setPlayerUuid", "(Ljava/lang/String;)V", null, null);
+        mv.visitCode();
+        mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "currentPlayerUuid", "Ljava/lang/ThreadLocal;");
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/ThreadLocal", "set", "(Ljava/lang/Object;)V", false);
+        mv.visitInsn(Opcodes.RETURN);
+        mv.visitMaxs(2, 1);
+        mv.visitEnd();
+
+        // public static String getPlayerUuid()
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "getPlayerUuid", "()Ljava/lang/String;", null, null);
+        mv.visitCode();
+        mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "currentPlayerUuid", "Ljava/lang/ThreadLocal;");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/ThreadLocal", "get", "()Ljava/lang/Object;", false);
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/String");
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(1, 0);
+        mv.visitEnd();
+
+        // setJwk(String jwk) -> Also saves in the global cache using the current issuer
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "setJwk", "(Ljava/lang/String;)V", null, null);
+        mv.visitCode();
+        mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "currentJwk", "Ljava/lang/ThreadLocal;");
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/ThreadLocal", "set", "(Ljava/lang/Object;)V", false);
+
+        // If jwk == null, don't touch global caches (ConcurrentHashMap doesn't accept
+        // null)
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        Label jwkNotNull = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, jwkNotNull);
+        mv.visitInsn(Opcodes.RETURN);
+        mv.visitLabel(jwkNotNull);
+
+        // Save in global cache if there is an issuer
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getIssuer", "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 1);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        Label skipGlobal = new Label();
+        mv.visitJumpInsn(Opcodes.IFNULL, skipGlobal);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "globalJwkCache",
+                "Ljava/util/concurrent/ConcurrentHashMap;");
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/concurrent/ConcurrentHashMap", "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", false);
+        mv.visitInsn(Opcodes.POP);
+        mv.visitLabel(skipGlobal);
+
+        // Save in global cache by UUID if exists
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getPlayerUuid", "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 2);
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        Label skipGlobalPlayer = new Label();
+        mv.visitJumpInsn(Opcodes.IFNULL, skipGlobalPlayer);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "globalPlayerJwkCache",
+                "Ljava/util/concurrent/ConcurrentHashMap;");
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/concurrent/ConcurrentHashMap", "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", false);
+        mv.visitInsn(Opcodes.POP);
+        mv.visitLabel(skipGlobalPlayer);
+        mv.visitInsn(Opcodes.RETURN);
+        mv.visitMaxs(3, 3);
+        mv.visitEnd();
+
+        // getJwk() -> Tries ThreadLocal, if not, looks in Global Cache using the
+        // current issuer
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "getJwk", "()Ljava/lang/String;", null, null);
+        mv.visitCode();
+        mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "currentJwk", "Ljava/lang/ThreadLocal;");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/ThreadLocal", "get", "()Ljava/lang/Object;", false);
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/String");
+        mv.visitVarInsn(Opcodes.ASTORE, 0);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        Label returnLabel = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, returnLabel);
+
+        // Fallback to global cache by UUID
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getPlayerUuid", "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 1);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        Label checkIssuerCache = new Label();
+        mv.visitJumpInsn(Opcodes.IFNULL, checkIssuerCache);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "globalPlayerJwkCache",
+                "Ljava/util/concurrent/ConcurrentHashMap;");
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/concurrent/ConcurrentHashMap", "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;", false);
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/String");
+        mv.visitInsn(Opcodes.ARETURN);
+
+        // Fallback to global cache by issuer
+        mv.visitLabel(checkIssuerCache);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getIssuer", "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 1);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitJumpInsn(Opcodes.IFNULL, returnLabel);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "globalJwkCache",
+                "Ljava/util/concurrent/ConcurrentHashMap;");
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/concurrent/ConcurrentHashMap", "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;", false);
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/String");
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitLabel(returnLabel);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(2, 2);
+        mv.visitEnd();
+
         // public static void clear()
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "clear", "()V", null, null);
+                "clear", "()V", null, null);
         mv.visitCode();
         mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "currentIssuer", "Ljava/lang/ThreadLocal;");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/ThreadLocal", "remove", "()V", false);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "currentJwk", "Ljava/lang/ThreadLocal;");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/ThreadLocal", "remove", "()V", false);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "currentPlayerUuid", "Ljava/lang/ThreadLocal;");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/ThreadLocal", "remove", "()V", false);
         mv.visitInsn(Opcodes.RETURN);
         mv.visitMaxs(1, 0);
         mv.visitEnd();
 
+        // public static void setUsername(String username)
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "setUsername", "(Ljava/lang/String;)V", null, null);
+        mv.visitCode();
+        mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "currentUsername", "Ljava/lang/ThreadLocal;");
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/ThreadLocal", "set", "(Ljava/lang/Object;)V", false);
+        mv.visitInsn(Opcodes.RETURN);
+        mv.visitMaxs(2, 1);
+        mv.visitEnd();
+
+        // public static String getUsername()
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "getUsername", "()Ljava/lang/String;", null, null);
+        mv.visitCode();
+        mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "currentUsername", "Ljava/lang/ThreadLocal;");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/ThreadLocal", "get", "()Ljava/lang/Object;", false);
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/String");
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(1, 0);
+        mv.visitEnd();
+
+        // public static void setOmni(boolean val)
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "setOmni", "(Z)V", null, null);
+        mv.visitCode();
+        mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "isCurrentTokenOmni", "Ljava/lang/ThreadLocal;");
+        mv.visitVarInsn(Opcodes.ILOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/Boolean", "valueOf", "(Z)Ljava/lang/Boolean;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/ThreadLocal", "set", "(Ljava/lang/Object;)V", false);
+        mv.visitInsn(Opcodes.RETURN);
+        mv.visitMaxs(2, 1);
+        mv.visitEnd();
+
+        // public static boolean isOmni()
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "isOmni", "()Z", null, null);
+        mv.visitCode();
+        mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "isCurrentTokenOmni", "Ljava/lang/ThreadLocal;");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/ThreadLocal", "get", "()Ljava/lang/Object;", false);
+        mv.visitInsn(Opcodes.DUP); // Crucial: duplicate to preserve the value after the jump
+        Label omniNotNull = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, omniNotNull);
+        mv.visitInsn(Opcodes.POP); // Clean up the null if not jumped
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitInsn(Opcodes.IRETURN);
+        mv.visitLabel(omniNotNull);
+        // Here the stack has the Boolean object thanks to DUP
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Boolean");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Boolean", "booleanValue", "()Z", false);
+        mv.visitInsn(Opcodes.IRETURN);
+        mv.visitMaxs(2, 0);
+        mv.visitEnd();
+
         // public static boolean isF2P()
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "isF2P", "()Z", null, null);
+                "isF2P", "()Z", null, null);
         mv.visitCode();
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getIssuer", "()Ljava/lang/String;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 0);
@@ -382,13 +614,14 @@ public class DualAuthPatcher {
         mv.visitInsn(Opcodes.ICONST_0);
         mv.visitInsn(Opcodes.IRETURN);
         mv.visitLabel(notNull);
-        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[]{"java/lang/String"}, 0, null);
+        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[] { "java/lang/String" }, 0, null);
+        // True only for Sanasol issuers
         mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitLdcInsn("hytale.com");
+        mv.visitLdcInsn(F2P_BASE_DOMAIN);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
-            "(Ljava/lang/CharSequence;)Z", false);
+                "(Ljava/lang/CharSequence;)Z", false);
         Label returnFalse = new Label();
-        mv.visitJumpInsn(Opcodes.IFNE, returnFalse);
+        mv.visitJumpInsn(Opcodes.IFEQ, returnFalse);
         mv.visitInsn(Opcodes.ICONST_1);
         mv.visitInsn(Opcodes.IRETURN);
         mv.visitLabel(returnFalse);
@@ -409,17 +642,17 @@ public class DualAuthPatcher {
         ClassWriter cw = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
 
         cw.visit(Opcodes.V17, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL,
-            HELPER_CLASS, null, "java/lang/Object", null);
+                HELPER_CLASS, null, "java/lang/Object", null);
 
         // Constants
         cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
-            "OFFICIAL_URL", "Ljava/lang/String;", null, OFFICIAL_SESSION_URL).visitEnd();
+                "OFFICIAL_URL", "Ljava/lang/String;", null, OFFICIAL_SESSION_URL).visitEnd();
         cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
-            "F2P_URL", "Ljava/lang/String;", null, F2P_SESSION_URL).visitEnd();
+                "F2P_URL", "Ljava/lang/String;", null, F2P_SESSION_URL).visitEnd();
         cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
-            "OFFICIAL_ISSUER", "Ljava/lang/String;", null, OFFICIAL_ISSUER).visitEnd();
+                "OFFICIAL_ISSUER", "Ljava/lang/String;", null, OFFICIAL_ISSUER).visitEnd();
         cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
-            "F2P_ISSUER", "Ljava/lang/String;", null, F2P_ISSUER).visitEnd();
+                "F2P_ISSUER", "Ljava/lang/String;", null, F2P_ISSUER).visitEnd();
 
         // Private constructor
         MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PRIVATE, "<init>", "()V", null, null);
@@ -432,7 +665,7 @@ public class DualAuthPatcher {
 
         // public static boolean isOfficialIssuer(String issuer)
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "isOfficialIssuer", "(Ljava/lang/String;)Z", null, null);
+                "isOfficialIssuer", "(Ljava/lang/String;)Z", null, null);
         mv.visitCode();
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         Label notNull = new Label();
@@ -444,7 +677,7 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitLdcInsn("hytale.com");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
-            "(Ljava/lang/CharSequence;)Z", false);
+                "(Ljava/lang/CharSequence;)Z", false);
         mv.visitInsn(Opcodes.IRETURN);
         mv.visitMaxs(2, 1);
         mv.visitEnd();
@@ -452,20 +685,23 @@ public class DualAuthPatcher {
         // public static boolean isValidIssuer(String issuer)
         // Returns true for BOTH official and F2P issuers
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "isValidIssuer", "(Ljava/lang/String;)Z", null, null);
+                "isValidIssuer", "(Ljava/lang/String;)Z", null, null);
         mv.visitCode();
 
         // Debug: Print the issuer being validated and expected domains
-        // System.out.println("[DualAuth] Validating issuer: " + issuer + " (accepts: hytale.com or *." + F2P_BASE_DOMAIN + ")");
+        // System.out.println("[DualAuth] Validating issuer: " + issuer + " (accepts:
+        // hytale.com or *." + F2P_BASE_DOMAIN + ")");
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
         mv.visitInsn(Opcodes.DUP);
         mv.visitLdcInsn("[DualAuth] Validating issuer: ");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 0); // issuer parameter
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitLdcInsn(" (accepts: hytale.com or *." + F2P_BASE_DOMAIN + ")");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
@@ -480,7 +716,7 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitLdcInsn("hytale.com");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
-            "(Ljava/lang/CharSequence;)Z", false);
+                "(Ljava/lang/CharSequence;)Z", false);
         Label notOfficial = new Label();
         mv.visitJumpInsn(Opcodes.IFEQ, notOfficial);
         mv.visitInsn(Opcodes.ICONST_1);
@@ -492,16 +728,17 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitLdcInsn(F2P_BASE_DOMAIN);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
-            "(Ljava/lang/CharSequence;)Z", false);
+                "(Ljava/lang/CharSequence;)Z", false);
         mv.visitInsn(Opcodes.IRETURN);
         mv.visitMaxs(2, 1);
         mv.visitEnd();
 
         // public static String getSessionUrl()
         // Returns the session URL based on current context's issuer
-        // For backward compatibility: returns the actual issuer (e.g., sessions.sanasol.ws)
+        // For backward compatibility: returns the actual issuer (e.g.,
+        // sessions.sanasol.ws)
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "getSessionUrl", "()Ljava/lang/String;", null, null);
+                "getSessionUrl", "()Ljava/lang/String;", null, null);
         mv.visitCode();
         // String issuer = DualAuthContext.getIssuer();
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getIssuer", "()Ljava/lang/String;", false);
@@ -513,10 +750,10 @@ public class DualAuthPatcher {
         mv.visitLdcInsn(OFFICIAL_SESSION_URL);
         mv.visitInsn(Opcodes.ARETURN);
         mv.visitLabel(getSessionUrlNotNull);
-        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[]{"java/lang/String"}, 0, null);
+        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[] { "java/lang/String" }, 0, null);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "isOfficialIssuer",
-            "(Ljava/lang/String;)Z", false);
+                "(Ljava/lang/String;)Z", false);
         Label getSessionUrlF2p = new Label();
         mv.visitJumpInsn(Opcodes.IFEQ, getSessionUrlF2p);
         mv.visitLdcInsn(OFFICIAL_SESSION_URL);
@@ -530,10 +767,11 @@ public class DualAuthPatcher {
         mv.visitEnd();
 
         // public static String getSessionUrlForIssuer(String issuer)
-        // For backward compatibility: return the actual issuer URL (e.g., sessions.sanasol.ws)
+        // For backward compatibility: return the actual issuer URL (e.g.,
+        // sessions.sanasol.ws)
         // instead of hardcoded F2P URL, so requests go back to the original auth server
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "getSessionUrlForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+                "getSessionUrlForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
         mv.visitCode();
         // if (issuer == null) return OFFICIAL_SESSION_URL
         mv.visitVarInsn(Opcodes.ALOAD, 0);
@@ -546,7 +784,7 @@ public class DualAuthPatcher {
         // if (isOfficialIssuer(issuer)) return OFFICIAL_SESSION_URL
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "isOfficialIssuer",
-            "(Ljava/lang/String;)Z", false);
+                "(Ljava/lang/String;)Z", false);
         Label returnIssuer = new Label();
         mv.visitJumpInsn(Opcodes.IFEQ, returnIssuer);
         mv.visitLdcInsn(OFFICIAL_SESSION_URL);
@@ -554,7 +792,8 @@ public class DualAuthPatcher {
         mv.visitLabel(returnIssuer);
         mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
         // For F2P: return the issuer itself (it's the session URL)
-        // This preserves backward compatibility: sessions.sanasol.ws -> sessions.sanasol.ws
+        // This preserves backward compatibility: sessions.sanasol.ws ->
+        // sessions.sanasol.ws
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitInsn(Opcodes.ARETURN);
         mv.visitMaxs(1, 1);
@@ -562,17 +801,18 @@ public class DualAuthPatcher {
 
         // public static String resolveUrl(String originalUrl)
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "resolveUrl", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+                "resolveUrl", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
         mv.visitCode();
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "isF2P", "()Z", false);
         Label keepOriginal = new Label();
         mv.visitJumpInsn(Opcodes.IFEQ, keepOriginal);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
-        // F2P uses unified endpoint - replace sessions.hytale.com with just the F2P domain
+        // F2P uses unified endpoint - replace sessions.hytale.com with just the F2P
+        // domain
         mv.visitLdcInsn("sessions.hytale.com");
         mv.visitLdcInsn(F2P_DOMAIN);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "replace",
-            "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Ljava/lang/String;", false);
+                "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Ljava/lang/String;", false);
         mv.visitInsn(Opcodes.ARETURN);
         mv.visitLabel(keepOriginal);
         mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
@@ -584,7 +824,7 @@ public class DualAuthPatcher {
         // public static String extractIssuerFromToken(String token)
         // Wrapped with try-catch to handle non-JWT tokens gracefully
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "extractIssuerFromToken", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+                "extractIssuerFromToken", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
         mv.visitCode();
 
         // if (token == null) return null;
@@ -619,7 +859,7 @@ public class DualAuthPatcher {
         mv.visitInsn(Opcodes.ARETURN);
 
         mv.visitLabel(hasDot);
-        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[]{Opcodes.INTEGER}, 0, null);
+        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[] { Opcodes.INTEGER }, 0, null);
 
         // int secondDot = token.indexOf('.', firstDot + 1);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
@@ -639,7 +879,7 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ISTORE, 2);
 
         mv.visitLabel(hasSecondDot);
-        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[]{Opcodes.INTEGER}, 0, null);
+        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[] { Opcodes.INTEGER }, 0, null);
 
         // String payloadB64 = token.substring(firstDot + 1, secondDot);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
@@ -652,10 +892,10 @@ public class DualAuthPatcher {
 
         // byte[] decoded = Base64.getUrlDecoder().decode(payloadB64);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/Base64", "getUrlDecoder",
-            "()Ljava/util/Base64$Decoder;", false);
+                "()Ljava/util/Base64$Decoder;", false);
         mv.visitVarInsn(Opcodes.ALOAD, 3);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/Base64$Decoder", "decode",
-            "(Ljava/lang/String;)[B", false);
+                "(Ljava/lang/String;)[B", false);
         mv.visitVarInsn(Opcodes.ASTORE, 4);
 
         // String payload = new String(decoded, StandardCharsets.UTF_8);
@@ -663,16 +903,16 @@ public class DualAuthPatcher {
         mv.visitInsn(Opcodes.DUP);
         mv.visitVarInsn(Opcodes.ALOAD, 4);
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/nio/charset/StandardCharsets", "UTF_8",
-            "Ljava/nio/charset/Charset;");
+                "Ljava/nio/charset/Charset;");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/String", "<init>",
-            "([BLjava/nio/charset/Charset;)V", false);
+                "([BLjava/nio/charset/Charset;)V", false);
         mv.visitVarInsn(Opcodes.ASTORE, 5);
 
         // int idx = payload.indexOf("\"iss\":");
         mv.visitVarInsn(Opcodes.ALOAD, 5);
         mv.visitLdcInsn("\"iss\":");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf",
-            "(Ljava/lang/String;)I", false);
+                "(Ljava/lang/String;)I", false);
         mv.visitVarInsn(Opcodes.ISTORE, 6);
 
         // if (idx < 0) return null;
@@ -684,8 +924,9 @@ public class DualAuthPatcher {
 
         mv.visitLabel(foundIss);
         mv.visitFrame(Opcodes.F_FULL, 7,
-            new Object[]{"java/lang/String", Opcodes.INTEGER, Opcodes.INTEGER, "java/lang/String", "[B", "java/lang/String", Opcodes.INTEGER},
-            0, new Object[]{});
+                new Object[] { "java/lang/String", Opcodes.INTEGER, Opcodes.INTEGER, "java/lang/String", "[B",
+                        "java/lang/String", Opcodes.INTEGER },
+                0, new Object[] {});
 
         // int start = payload.indexOf('"', idx + 6) + 1;
         mv.visitVarInsn(Opcodes.ALOAD, 5);
@@ -713,7 +954,7 @@ public class DualAuthPatcher {
         mv.visitInsn(Opcodes.ARETURN);
 
         mv.visitLabel(foundEnd);
-        mv.visitFrame(Opcodes.F_APPEND, 2, new Object[]{Opcodes.INTEGER, Opcodes.INTEGER}, 0, null);
+        mv.visitFrame(Opcodes.F_APPEND, 2, new Object[] { Opcodes.INTEGER, Opcodes.INTEGER }, 0, null);
 
         // return payload.substring(start, end);
         mv.visitVarInsn(Opcodes.ALOAD, 5);
@@ -725,7 +966,162 @@ public class DualAuthPatcher {
 
         // } catch (Exception e) { return null; }
         mv.visitLabel(catchHandler);
-        mv.visitFrame(Opcodes.F_FULL, 1, new Object[]{"java/lang/String"}, 1, new Object[]{"java/lang/Exception"});
+        mv.visitFrame(Opcodes.F_FULL, 1, new Object[] { "java/lang/String" }, 1,
+                new Object[] { "java/lang/Exception" });
+        mv.visitInsn(Opcodes.POP); // pop the exception
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitMaxs(4, 9);
+        mv.visitEnd();
+
+        // public static String extractSubjectFromToken(String token)
+        // Wrapped with try-catch to handle non-JWT tokens gracefully
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "extractSubjectFromToken", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+        mv.visitCode();
+
+        // if (token == null) return null;
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        Label subTokenNotNull = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, subTokenNotNull);
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(subTokenNotNull);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+
+        // try {
+        Label subTryStart = new Label();
+        Label subTryEnd = new Label();
+        Label subCatchHandler = new Label();
+        mv.visitTryCatchBlock(subTryStart, subTryEnd, subCatchHandler, "java/lang/Exception");
+
+        mv.visitLabel(subTryStart);
+
+        // int firstDot = token.indexOf('.');
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitIntInsn(Opcodes.BIPUSH, '.');
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(I)I", false);
+        mv.visitVarInsn(Opcodes.ISTORE, 1);
+
+        // if (firstDot < 0) return null;
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        Label subHasDot = new Label();
+        mv.visitJumpInsn(Opcodes.IFGE, subHasDot);
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(subHasDot);
+        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[] { Opcodes.INTEGER }, 0, null);
+
+        // int secondDot = token.indexOf('.', firstDot + 1);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitIntInsn(Opcodes.BIPUSH, '.');
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitInsn(Opcodes.ICONST_1);
+        mv.visitInsn(Opcodes.IADD);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(II)I", false);
+        mv.visitVarInsn(Opcodes.ISTORE, 2);
+
+        // if (secondDot < 0) secondDot = token.length();
+        mv.visitVarInsn(Opcodes.ILOAD, 2);
+        Label subHasSecondDot = new Label();
+        mv.visitJumpInsn(Opcodes.IFGE, subHasSecondDot);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "length", "()I", false);
+        mv.visitVarInsn(Opcodes.ISTORE, 2);
+
+        mv.visitLabel(subHasSecondDot);
+        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[] { Opcodes.INTEGER }, 0, null);
+
+        // String payloadB64 = token.substring(firstDot + 1, secondDot);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitInsn(Opcodes.ICONST_1);
+        mv.visitInsn(Opcodes.IADD);
+        mv.visitVarInsn(Opcodes.ILOAD, 2);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 3);
+
+        // byte[] decoded = Base64.getUrlDecoder().decode(payloadB64);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/Base64", "getUrlDecoder",
+                "()Ljava/util/Base64$Decoder;", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 3);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/Base64$Decoder", "decode",
+                "(Ljava/lang/String;)[B", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 4);
+
+        // String payload = new String(decoded, StandardCharsets.UTF_8);
+        mv.visitTypeInsn(Opcodes.NEW, "java/lang/String");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 4);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/nio/charset/StandardCharsets", "UTF_8",
+                "Ljava/nio/charset/Charset;");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/String", "<init>",
+                "([BLjava/nio/charset/Charset;)V", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 5);
+
+        // int idx = payload.indexOf("\"sub\":");
+        mv.visitVarInsn(Opcodes.ALOAD, 5);
+        mv.visitLdcInsn("\"sub\":");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf",
+                "(Ljava/lang/String;)I", false);
+        mv.visitVarInsn(Opcodes.ISTORE, 6);
+
+        // if (idx < 0) return null;
+        mv.visitVarInsn(Opcodes.ILOAD, 6);
+        Label subFoundSub = new Label();
+        mv.visitJumpInsn(Opcodes.IFGE, subFoundSub);
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(subFoundSub);
+        mv.visitFrame(Opcodes.F_FULL, 7,
+                new Object[] { "java/lang/String", Opcodes.INTEGER, Opcodes.INTEGER, "java/lang/String", "[B",
+                        "java/lang/String", Opcodes.INTEGER },
+                0, new Object[] {});
+
+        // int start = payload.indexOf('"', idx + 6) + 1;
+        mv.visitVarInsn(Opcodes.ALOAD, 5);
+        mv.visitIntInsn(Opcodes.BIPUSH, '"');
+        mv.visitVarInsn(Opcodes.ILOAD, 6);
+        mv.visitIntInsn(Opcodes.BIPUSH, 6);
+        mv.visitInsn(Opcodes.IADD);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(II)I", false);
+        mv.visitInsn(Opcodes.ICONST_1);
+        mv.visitInsn(Opcodes.IADD);
+        mv.visitVarInsn(Opcodes.ISTORE, 7);
+
+        // int end = payload.indexOf('"', start);
+        mv.visitVarInsn(Opcodes.ALOAD, 5);
+        mv.visitIntInsn(Opcodes.BIPUSH, '"');
+        mv.visitVarInsn(Opcodes.ILOAD, 7);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(II)I", false);
+        mv.visitVarInsn(Opcodes.ISTORE, 8);
+
+        // if (end < 0) return null;
+        mv.visitVarInsn(Opcodes.ILOAD, 8);
+        Label subFoundEnd = new Label();
+        mv.visitJumpInsn(Opcodes.IFGE, subFoundEnd);
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(subFoundEnd);
+        mv.visitFrame(Opcodes.F_APPEND, 2, new Object[] { Opcodes.INTEGER, Opcodes.INTEGER }, 0, null);
+
+        // return payload.substring(start, end);
+        mv.visitVarInsn(Opcodes.ALOAD, 5);
+        mv.visitVarInsn(Opcodes.ILOAD, 7);
+        mv.visitVarInsn(Opcodes.ILOAD, 8);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;", false);
+        mv.visitLabel(subTryEnd);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        // } catch (Exception e) { return null; }
+        mv.visitLabel(subCatchHandler);
+        mv.visitFrame(Opcodes.F_FULL, 1, new Object[] { "java/lang/String" }, 1,
+                new Object[] { "java/lang/Exception" });
         mv.visitInsn(Opcodes.POP); // pop the exception
         mv.visitInsn(Opcodes.ACONST_NULL);
         mv.visitInsn(Opcodes.ARETURN);
@@ -735,21 +1131,21 @@ public class DualAuthPatcher {
 
         // public static void log(String msg)
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "log", "(Ljava/lang/String;)V", null, null);
+                "log", "(Ljava/lang/String;)V", null, null);
         mv.visitCode();
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
         mv.visitInsn(Opcodes.DUP);
         mv.visitLdcInsn("[DualAuth] ");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>",
-            "(Ljava/lang/String;)V", false);
+                "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
-            "()Ljava/lang/String;", false);
+                "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println",
-            "(Ljava/lang/String;)V", false);
+                "(Ljava/lang/String;)V", false);
         mv.visitInsn(Opcodes.RETURN);
         mv.visitMaxs(4, 1);
         mv.visitEnd();
@@ -757,32 +1153,39 @@ public class DualAuthPatcher {
         // public static void logAuthGrant(String serverIdentityToken)
         // Logs AuthGrant.serialize() debug info - isF2P, issuer, and original token
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "logAuthGrant", "(Ljava/lang/String;)V", null, null);
+                "logAuthGrant", "(Ljava/lang/String;)V", null, null);
         mv.visitCode();
-        // System.out.println("[DualAuth] AuthGrant.serialize() - isF2P=" + isF2P() + ", issuer=" + getIssuer());
+        // System.out.println("[DualAuth] AuthGrant.serialize() - isF2P=" + isF2P() + ",
+        // issuer=" + getIssuer());
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
         mv.visitInsn(Opcodes.DUP);
         mv.visitLdcInsn("[DualAuth] AuthGrant.serialize() - isF2P=");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "isF2P", "()Z", false);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Z)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Z)Ljava/lang/StringBuilder;",
+                false);
         mv.visitLdcInsn(", issuer=");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getIssuer", "()Ljava/lang/String;", false);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
-        // System.out.println("[DualAuth] Original serverIdentityToken: " + truncate(token));
+        // System.out.println("[DualAuth] Original serverIdentityToken: " +
+        // truncate(token));
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
         mv.visitInsn(Opcodes.DUP);
         mv.visitLdcInsn("[DualAuth] Original serverIdentityToken: ");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "truncateToken", "(Ljava/lang/String;)Ljava/lang/String;", false);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "truncateToken",
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
@@ -793,7 +1196,7 @@ public class DualAuthPatcher {
         // public static void logF2PIdentity(String f2pIdentity)
         // Logs the F2P identity token received from DualServerIdentity
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "logF2PIdentity", "(Ljava/lang/String;)V", null, null);
+                "logF2PIdentity", "(Ljava/lang/String;)V", null, null);
         mv.visitCode();
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
@@ -801,8 +1204,10 @@ public class DualAuthPatcher {
         mv.visitLdcInsn("[DualAuth] F2P identity from DualServerIdentity: ");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "truncateToken", "(Ljava/lang/String;)Ljava/lang/String;", false);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "truncateToken",
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         mv.visitInsn(Opcodes.RETURN);
@@ -812,7 +1217,7 @@ public class DualAuthPatcher {
         // public static String truncateToken(String token)
         // Helper to truncate tokens for logging (first 50 chars + "...")
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "truncateToken", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+                "truncateToken", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
         mv.visitCode();
         // if (token == null) return "null";
         mv.visitVarInsn(Opcodes.ALOAD, 0);
@@ -833,7 +1238,8 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitLdcInsn("...");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitInsn(Opcodes.ARETURN);
         mv.visitLabel(tooLong);
@@ -847,17 +1253,19 @@ public class DualAuthPatcher {
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitLdcInsn("...");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitInsn(Opcodes.ARETURN);
         mv.visitMaxs(4, 1);
         mv.visitEnd();
 
         // public static void maybeReplaceServerIdentity(AuthGrant packet)
-        // Checks if authorizationGrant is from F2P and replaces serverIdentityToken if needed
+        // Checks if authorizationGrant is from F2P and replaces serverIdentityToken if
+        // needed
         // This works regardless of thread since we check the actual token content
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "maybeReplaceServerIdentity", "(L" + AUTH_GRANT_CLASS + ";)V", null, null);
+                "maybeReplaceServerIdentity", "(L" + AUTH_GRANT_CLASS + ";)V", null, null);
         mv.visitCode();
 
         // String authGrant = packet.authorizationGrant;
@@ -865,11 +1273,35 @@ public class DualAuthPatcher {
         mv.visitFieldInsn(Opcodes.GETFIELD, AUTH_GRANT_CLASS, "authorizationGrant", "Ljava/lang/String;");
         mv.visitVarInsn(Opcodes.ASTORE, 1); // authGrant
 
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] Analyzing client token for embedded private authority...");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, SERVER_IDENTITY_CLASS,
+                "createTokenFromClientKey", "(Ljava/lang/String;)Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 2);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        Label fallback = new Label();
+        mv.visitJumpInsn(Opcodes.IFNULL, fallback);
+
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] SUCCESS! Used client's embedded Private Key (Omni-Auth) to sign server identity.");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+
+        // Omni-Auth: keep existing serverIdentityToken (mutual authentication requires
+        // it)
+        mv.visitInsn(Opcodes.RETURN);
+
+        mv.visitLabel(fallback);
+        mv.visitFrame(Opcodes.F_APPEND, 2, new Object[] { "java/lang/String", "java/lang/String" }, 0, null);
+
         // String issuer = extractIssuerFromToken(authGrant);
         mv.visitVarInsn(Opcodes.ALOAD, 1);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "extractIssuerFromToken",
-            "(Ljava/lang/String;)Ljava/lang/String;", false);
-        mv.visitVarInsn(Opcodes.ASTORE, 2); // issuer
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 3); // issuer
 
         // Log: "[DualAuth] AuthGrant.serialize() - authGrant issuer=" + issuer
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
@@ -877,109 +1309,103 @@ public class DualAuthPatcher {
         mv.visitInsn(Opcodes.DUP);
         mv.visitLdcInsn("[DualAuth] AuthGrant.serialize() - authGrant issuer=");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
-        mv.visitVarInsn(Opcodes.ALOAD, 2);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 3);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitLdcInsn(", serverIdentityToken=");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitFieldInsn(Opcodes.GETFIELD, AUTH_GRANT_CLASS, "serverIdentityToken", "Ljava/lang/String;");
-        mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "truncateToken", "(Ljava/lang/String;)Ljava/lang/String;", false);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "truncateToken",
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
         // if (issuer == null) return; // Can't determine, keep as-is
-        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitVarInsn(Opcodes.ALOAD, 3);
         Label replaceIssuerNotNull = new Label();
         mv.visitJumpInsn(Opcodes.IFNONNULL, replaceIssuerNotNull);
         mv.visitInsn(Opcodes.RETURN);
         mv.visitLabel(replaceIssuerNotNull);
-        mv.visitFrame(Opcodes.F_APPEND, 2, new Object[]{"java/lang/String", "java/lang/String"}, 0, null);
+        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[] { "java/lang/String" }, 0, null);
 
-        // if (!issuer.contains(F2P_BASE_DOMAIN)) return; // Not F2P, keep hytale.com identity
-        // Use F2P_BASE_DOMAIN (sanasol.ws) for backward compatibility with sessions.sanasol.ws
-        mv.visitVarInsn(Opcodes.ALOAD, 2);
-        mv.visitLdcInsn(F2P_BASE_DOMAIN);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
-            "(Ljava/lang/CharSequence;)Z", false);
-        Label isF2P = new Label();
-        mv.visitJumpInsn(Opcodes.IFNE, isF2P);
-        // Log: Not F2P, keeping original
-        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-        mv.visitLdcInsn("[DualAuth] Not F2P issuer (no " + F2P_BASE_DOMAIN + "), keeping original serverIdentityToken");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 3);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "isOfficialIssuer", "(Ljava/lang/String;)Z", false);
+        Label doReplace = new Label();
+        mv.visitJumpInsn(Opcodes.IFEQ, doReplace);
         mv.visitInsn(Opcodes.RETURN);
 
-        mv.visitLabel(isF2P);
+        mv.visitLabel(doReplace);
         mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
 
-        // Log: F2P detected, fetching F2P identity from the authGrant's issuer
+        mv.visitVarInsn(Opcodes.ALOAD, 3);
+        mv.visitLdcInsn(F2P_BASE_DOMAIN);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains", "(Ljava/lang/CharSequence;)Z", false);
+        Label localGen = new Label();
+        mv.visitJumpInsn(Opcodes.IFEQ, localGen);
+
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
         mv.visitInsn(Opcodes.DUP);
-        mv.visitLdcInsn("[DualAuth] F2P issuer detected, fetching server identity from: ");
+        mv.visitLdcInsn("[DualAuth] Non-official issuer detected, fetching server identity from: ");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
-        mv.visitVarInsn(Opcodes.ALOAD, 2); // issuer
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 3);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
-        // String f2pIdentity = DualServerIdentity.getIdentityTokenForUrl(issuer);
-        // Pass the issuer URL so we fetch from the correct backend (backward compat)
-        mv.visitVarInsn(Opcodes.ALOAD, 2); // issuer
+        mv.visitVarInsn(Opcodes.ALOAD, 3);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, SERVER_IDENTITY_CLASS, "getIdentityTokenForUrl",
-            "(Ljava/lang/String;)Ljava/lang/String;", false);
-        mv.visitVarInsn(Opcodes.ASTORE, 3); // f2pIdentity
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 4);
 
-        // Log what we got
-        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-        mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
-        mv.visitInsn(Opcodes.DUP);
-        mv.visitLdcInsn("[DualAuth] F2P identity from server: ");
-        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
-        mv.visitVarInsn(Opcodes.ALOAD, 3);
-        mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "truncateToken", "(Ljava/lang/String;)Ljava/lang/String;", false);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 4);
+        Label haveToken = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, haveToken);
 
-        // if (f2pIdentity == null) return;
-        mv.visitVarInsn(Opcodes.ALOAD, 3);
-        Label f2pNotNull = new Label();
-        mv.visitJumpInsn(Opcodes.IFNONNULL, f2pNotNull);
-        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-        mv.visitLdcInsn("[DualAuth] WARNING: Failed to get F2P identity, keeping original");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitLabel(localGen);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+        // Unknown/local issuer: keep existing serverIdentityToken (mutual
+        // authentication requires it)
         mv.visitInsn(Opcodes.RETURN);
 
-        mv.visitLabel(f2pNotNull);
-        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[]{"java/lang/String"}, 0, null);
+        mv.visitLabel(haveToken);
+        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[] { "java/lang/String" }, 0, null);
 
-        // Log: Replacing serverIdentityToken
+        mv.visitVarInsn(Opcodes.ALOAD, 4);
+        Label tokenOk = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, tokenOk);
+        mv.visitInsn(Opcodes.RETURN);
+
+        mv.visitLabel(tokenOk);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-        mv.visitLdcInsn("[DualAuth] Replacing serverIdentityToken with F2P identity");
+        mv.visitLdcInsn("[DualAuth] Replacing serverIdentityToken with self-signed identity");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
-        // packet.serverIdentityToken = f2pIdentity;
-        mv.visitVarInsn(Opcodes.ALOAD, 0); // packet
-        mv.visitVarInsn(Opcodes.ALOAD, 3); // f2pIdentity
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ALOAD, 4);
         mv.visitFieldInsn(Opcodes.PUTFIELD, AUTH_GRANT_CLASS, "serverIdentityToken", "Ljava/lang/String;");
 
         mv.visitInsn(Opcodes.RETURN);
-        mv.visitMaxs(4, 4);
+        mv.visitMaxs(4, 5);
         mv.visitEnd();
 
         // public static String getSessionUrlForToken(String token)
         // Extracts issuer from token and returns the correct session URL
         // Used for token refresh to route to the correct backend
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "getSessionUrlForToken", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+                "getSessionUrlForToken", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
         mv.visitCode();
 
         // String issuer = extractIssuerFromToken(token);
         mv.visitVarInsn(Opcodes.ALOAD, 0); // token
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "extractIssuerFromToken",
-            "(Ljava/lang/String;)Ljava/lang/String;", false);
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 1); // issuer
 
         // Log the decision
@@ -989,16 +1415,63 @@ public class DualAuthPatcher {
         mv.visitLdcInsn("[DualAuth] getSessionUrlForToken - issuer=");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 1);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
         // return getSessionUrlForIssuer(issuer);
         mv.visitVarInsn(Opcodes.ALOAD, 1);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "getSessionUrlForIssuer",
-            "(Ljava/lang/String;)Ljava/lang/String;", false);
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
         mv.visitInsn(Opcodes.ARETURN);
         mv.visitMaxs(4, 2);
+        mv.visitEnd();
+
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "extractJwkFromToken", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+        mv.visitCode();
+        Label tStart = new Label();
+        Label tCatch = new Label();
+        mv.visitTryCatchBlock(tStart, tCatch, tCatch, "java/lang/Exception");
+        mv.visitLabel(tStart);
+
+        // Split manual "."
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitIntInsn(Opcodes.BIPUSH, '.');
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(I)I", false);
+        mv.visitVarInsn(Opcodes.ISTORE, 1);
+
+        // String headerB64 = token.substring(0, dot1);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 2);
+
+        // JWSHeader h = JWSHeader.parse(new Base64URL(headerB64));
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/util/Base64URL");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/util/Base64URL", "<init>", "(Ljava/lang/String;)V",
+                false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/nimbusds/jose/JWSHeader", "parse",
+                "(Lcom/nimbusds/jose/util/Base64URL;)Lcom/nimbusds/jose/JWSHeader;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 3);
+
+        // return h.getJWK().toJSONString();
+        mv.visitVarInsn(Opcodes.ALOAD, 3);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader", "getJWK",
+                "()Lcom/nimbusds/jose/jwk/JWK;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/JWK", "toJSONString", "()Ljava/lang/String;",
+                false);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(tCatch);
+        mv.visitInsn(Opcodes.POP);
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(4, 4);
         mv.visitEnd();
 
         cw.visitEnd();
@@ -1006,7 +1479,8 @@ public class DualAuthPatcher {
     }
 
     /**
-     * Generate DualJwksFetcher class - Fetches JWKS from BOTH backends and merges keys
+     * Generate DualJwksFetcher class - Fetches JWKS from BOTH backends and merges
+     * keys
      *
      * This is the KEY class that enables dual auth - it fetches keys from both
      * hytale.com and sanasol.ws, merges them, and returns the combined set.
@@ -1015,13 +1489,14 @@ public class DualAuthPatcher {
         ClassWriter cw = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
 
         cw.visit(Opcodes.V17, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL,
-            JWKS_FETCHER_CLASS, null, "java/lang/Object", null);
+                JWKS_FETCHER_CLASS, null, "java/lang/Object", null);
 
         // Static fields for URLs
         cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
-            "OFFICIAL_JWKS_URL", "Ljava/lang/String;", null, OFFICIAL_SESSION_URL + "/.well-known/jwks.json").visitEnd();
+                "OFFICIAL_JWKS_URL", "Ljava/lang/String;", null, OFFICIAL_SESSION_URL + "/.well-known/jwks.json")
+                .visitEnd();
         cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
-            "F2P_JWKS_URL", "Ljava/lang/String;", null, F2P_SESSION_URL + "/.well-known/jwks.json").visitEnd();
+                "F2P_JWKS_URL", "Ljava/lang/String;", null, F2P_SESSION_URL + "/.well-known/jwks.json").visitEnd();
 
         // Private constructor
         MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PRIVATE, "<init>", "()V", null, null);
@@ -1035,7 +1510,7 @@ public class DualAuthPatcher {
         // public static String fetchJwksJson(String url)
         // Fetches JWKS JSON from a single URL
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "fetchJwksJson", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+                "fetchJwksJson", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
         mv.visitCode();
 
         // Debug: Print the URL being fetched
@@ -1046,60 +1521,66 @@ public class DualAuthPatcher {
         mv.visitLdcInsn("[DualAuth] Fetching JWKS from: ");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 0); // url parameter
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
-        // HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
-        // Note: HttpClient.newBuilder() is a static method on an abstract class, so itf=false
+        // HttpClient client =
+        // HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+        // Note: HttpClient.newBuilder() is a static method on an abstract class, so
+        // itf=false
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpClient", "newBuilder",
-            "()Ljava/net/http/HttpClient$Builder;", false);
+                "()Ljava/net/http/HttpClient$Builder;", false);
         mv.visitLdcInsn(5L);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/time/Duration", "ofSeconds",
-            "(J)Ljava/time/Duration;", false);
+                "(J)Ljava/time/Duration;", false);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpClient$Builder", "connectTimeout",
-            "(Ljava/time/Duration;)Ljava/net/http/HttpClient$Builder;", true);
+                "(Ljava/time/Duration;)Ljava/net/http/HttpClient$Builder;", true);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpClient$Builder", "build",
-            "()Ljava/net/http/HttpClient;", true);
+                "()Ljava/net/http/HttpClient;", true);
         mv.visitVarInsn(Opcodes.ASTORE, 1);
 
         // HttpRequest request = HttpRequest.newBuilder()
-        //     .uri(URI.create(url))
-        //     .header("Accept", "application/json")
-        //     .timeout(Duration.ofSeconds(5))
-        //     .GET()
-        //     .build();
-        // Note: HttpRequest.newBuilder() is a static method on an abstract class, so itf=false
+        // .uri(URI.create(url))
+        // .header("Accept", "application/json")
+        // .timeout(Duration.ofSeconds(5))
+        // .GET()
+        // .build();
+        // Note: HttpRequest.newBuilder() is a static method on an abstract class, so
+        // itf=false
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpRequest", "newBuilder",
-            "()Ljava/net/http/HttpRequest$Builder;", false);
+                "()Ljava/net/http/HttpRequest$Builder;", false);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/URI", "create",
-            "(Ljava/lang/String;)Ljava/net/URI;", false);
+                "(Ljava/lang/String;)Ljava/net/URI;", false);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "uri",
-            "(Ljava/net/URI;)Ljava/net/http/HttpRequest$Builder;", true);
+                "(Ljava/net/URI;)Ljava/net/http/HttpRequest$Builder;", true);
         mv.visitLdcInsn("Accept");
         mv.visitLdcInsn("application/json");
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "header",
-            "(Ljava/lang/String;Ljava/lang/String;)Ljava/net/http/HttpRequest$Builder;", true);
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/net/http/HttpRequest$Builder;", true);
         mv.visitLdcInsn(5L);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/time/Duration", "ofSeconds",
-            "(J)Ljava/time/Duration;", false);
+                "(J)Ljava/time/Duration;", false);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "timeout",
-            "(Ljava/time/Duration;)Ljava/net/http/HttpRequest$Builder;", true);
+                "(Ljava/time/Duration;)Ljava/net/http/HttpRequest$Builder;", true);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "GET",
-            "()Ljava/net/http/HttpRequest$Builder;", true);
+                "()Ljava/net/http/HttpRequest$Builder;", true);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "build",
-            "()Ljava/net/http/HttpRequest;", true);
+                "()Ljava/net/http/HttpRequest;", true);
         mv.visitVarInsn(Opcodes.ASTORE, 2);
 
-        // HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        // HttpResponse<String> response = client.send(request,
+        // HttpResponse.BodyHandlers.ofString());
         mv.visitVarInsn(Opcodes.ALOAD, 1);
         mv.visitVarInsn(Opcodes.ALOAD, 2);
         // Note: BodyHandlers.ofString() is a static method on a class, so itf=false
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpResponse$BodyHandlers", "ofString",
-            "()Ljava/net/http/HttpResponse$BodyHandler;", false);
+                "()Ljava/net/http/HttpResponse$BodyHandler;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/net/http/HttpClient", "send",
-            "(Ljava/net/http/HttpRequest;Ljava/net/http/HttpResponse$BodyHandler;)Ljava/net/http/HttpResponse;", false);
+                "(Ljava/net/http/HttpRequest;Ljava/net/http/HttpResponse$BodyHandler;)Ljava/net/http/HttpResponse;",
+                false);
         mv.visitVarInsn(Opcodes.ASTORE, 3);
 
         // if (response.statusCode() != 200) return null;
@@ -1112,7 +1593,9 @@ public class DualAuthPatcher {
         mv.visitInsn(Opcodes.ARETURN);
 
         mv.visitLabel(statusOk);
-        mv.visitFrame(Opcodes.F_APPEND, 3, new Object[]{"java/net/http/HttpClient", "java/net/http/HttpRequest", "java/net/http/HttpResponse"}, 0, null);
+        mv.visitFrame(Opcodes.F_APPEND, 3,
+                new Object[] { "java/net/http/HttpClient", "java/net/http/HttpRequest", "java/net/http/HttpResponse" },
+                0, null);
 
         // return (String) response.body();
         mv.visitVarInsn(Opcodes.ALOAD, 3);
@@ -1126,7 +1609,7 @@ public class DualAuthPatcher {
         // public static String fetchMergedJwksJson()
         // Fetches JWKS from both backends and merges them
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "fetchMergedJwksJson", "()Ljava/lang/String;", null, null);
+                "fetchMergedJwksJson", "()Ljava/lang/String;", null, null);
         mv.visitCode();
 
         // Print detailed log message with configured URLs
@@ -1141,7 +1624,8 @@ public class DualAuthPatcher {
         mv.visitLdcInsn("[DualAuth] Official JWKS URL: ");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "OFFICIAL_JWKS_URL", "Ljava/lang/String;");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
@@ -1152,20 +1636,21 @@ public class DualAuthPatcher {
         mv.visitLdcInsn("[DualAuth] F2P JWKS URL: ");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "F2P_JWKS_URL", "Ljava/lang/String;");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
         // String officialJson = fetchJwksJson(OFFICIAL_JWKS_URL);
         mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "OFFICIAL_JWKS_URL", "Ljava/lang/String;");
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "fetchJwksJson",
-            "(Ljava/lang/String;)Ljava/lang/String;", false);
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 0);
 
         // String f2pJson = fetchJwksJson(F2P_JWKS_URL);
         mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "F2P_JWKS_URL", "Ljava/lang/String;");
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "fetchJwksJson",
-            "(Ljava/lang/String;)Ljava/lang/String;", false);
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 1);
 
         // Log results
@@ -1181,14 +1666,15 @@ public class DualAuthPatcher {
         Label afterOfficialCheck = new Label();
         mv.visitJumpInsn(Opcodes.GOTO, afterOfficialCheck);
         mv.visitLabel(officialNotNull);
-        mv.visitFrame(Opcodes.F_FULL, 2, new Object[]{"java/lang/String", "java/lang/String"}, 3,
-            new Object[]{"java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder"});
+        mv.visitFrame(Opcodes.F_FULL, 2, new Object[] { "java/lang/String", "java/lang/String" }, 3,
+                new Object[] { "java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder" });
         mv.visitLdcInsn("OK");
         mv.visitLabel(afterOfficialCheck);
-        mv.visitFrame(Opcodes.F_FULL, 2, new Object[]{"java/lang/String", "java/lang/String"}, 4,
-            new Object[]{"java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder", "java/lang/String"});
+        mv.visitFrame(Opcodes.F_FULL, 2, new Object[] { "java/lang/String", "java/lang/String" }, 4,
+                new Object[] { "java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder",
+                        "java/lang/String" });
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
@@ -1204,14 +1690,15 @@ public class DualAuthPatcher {
         Label afterF2pCheck = new Label();
         mv.visitJumpInsn(Opcodes.GOTO, afterF2pCheck);
         mv.visitLabel(f2pNotNull);
-        mv.visitFrame(Opcodes.F_FULL, 2, new Object[]{"java/lang/String", "java/lang/String"}, 3,
-            new Object[]{"java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder"});
+        mv.visitFrame(Opcodes.F_FULL, 2, new Object[] { "java/lang/String", "java/lang/String" }, 3,
+                new Object[] { "java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder" });
         mv.visitLdcInsn("OK");
         mv.visitLabel(afterF2pCheck);
-        mv.visitFrame(Opcodes.F_FULL, 2, new Object[]{"java/lang/String", "java/lang/String"}, 4,
-            new Object[]{"java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder", "java/lang/String"});
+        mv.visitFrame(Opcodes.F_FULL, 2, new Object[] { "java/lang/String", "java/lang/String" }, 4,
+                new Object[] { "java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder",
+                        "java/lang/String" });
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
@@ -1220,7 +1707,7 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitVarInsn(Opcodes.ALOAD, 1);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "mergeJwks",
-            "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", false);
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", false);
         mv.visitInsn(Opcodes.ARETURN);
 
         mv.visitMaxs(5, 2);
@@ -1229,7 +1716,7 @@ public class DualAuthPatcher {
         // public static String mergeJwks(String json1, String json2)
         // Merges two JWKS JSON strings into one
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "mergeJwks", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", null, null);
+                "mergeJwks", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", null, null);
         mv.visitCode();
 
         // Handle null cases
@@ -1286,7 +1773,7 @@ public class DualAuthPatcher {
         mv.visitInsn(Opcodes.ARETURN);
 
         mv.visitLabel(idx1Ok);
-        mv.visitFrame(Opcodes.F_APPEND, 2, new Object[]{Opcodes.INTEGER, Opcodes.INTEGER}, 0, null);
+        mv.visitFrame(Opcodes.F_APPEND, 2, new Object[] { Opcodes.INTEGER, Opcodes.INTEGER }, 0, null);
 
         // if (idx2 < 0) return json1;
         mv.visitVarInsn(Opcodes.ILOAD, 3);
@@ -1356,7 +1843,7 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ALOAD, 10);
         mv.visitLdcInsn("{\"keys\":[");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitInsn(Opcodes.POP);
 
         // if (!keys1.isEmpty()) sb.append(keys1);
@@ -1367,15 +1854,15 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ALOAD, 10);
         mv.visitVarInsn(Opcodes.ALOAD, 8);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitInsn(Opcodes.POP);
 
         mv.visitLabel(keys1Empty);
         mv.visitFrame(Opcodes.F_FULL, 11,
-            new Object[]{"java/lang/String", "java/lang/String", Opcodes.INTEGER, Opcodes.INTEGER,
-                Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER,
-                "java/lang/String", "java/lang/String", "java/lang/StringBuilder"},
-            0, new Object[]{});
+                new Object[] { "java/lang/String", "java/lang/String", Opcodes.INTEGER, Opcodes.INTEGER,
+                        Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER,
+                        "java/lang/String", "java/lang/String", "java/lang/StringBuilder" },
+                0, new Object[] {});
 
         // if (!keys1.isEmpty() && !keys2.isEmpty()) sb.append(",");
         mv.visitVarInsn(Opcodes.ALOAD, 8);
@@ -1388,7 +1875,7 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ALOAD, 10);
         mv.visitLdcInsn(",");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitInsn(Opcodes.POP);
 
         mv.visitLabel(skipComma);
@@ -1402,7 +1889,7 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ALOAD, 10);
         mv.visitVarInsn(Opcodes.ALOAD, 9);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitInsn(Opcodes.POP);
 
         mv.visitLabel(keys2Empty);
@@ -1412,7 +1899,7 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ALOAD, 10);
         mv.visitLdcInsn("]}");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitInsn(Opcodes.POP);
 
         // String result = sb.toString();
@@ -1437,30 +1924,32 @@ public class DualAuthPatcher {
     }
 
     /**
-     * Generate DualServerIdentity class - Fetches and caches F2P server identity token
+     * Generate DualServerIdentity class - Fetches and caches F2P server identity
+     * token
      *
-     * This class allows the game server to have a separate identity for F2P clients.
+     * This class allows the game server to have a separate identity for F2P
+     * clients.
      * It fetches the server identity from the F2P auth server (sanasol.ws).
      */
     private static byte[] generateDualServerIdentity() {
         ClassWriter cw = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
 
         cw.visit(Opcodes.V17, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL,
-            SERVER_IDENTITY_CLASS, null, "java/lang/Object", null);
+                SERVER_IDENTITY_CLASS, null, "java/lang/Object", null);
 
         // Static fields
         cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE,
-            "f2pIdentityToken", "Ljava/lang/String;", null, null).visitEnd();
+                "f2pIdentityToken", "Ljava/lang/String;", null, null).visitEnd();
         cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE,
-            "f2pSessionToken", "Ljava/lang/String;", null, null).visitEnd();
+                "f2pSessionToken", "Ljava/lang/String;", null, null).visitEnd();
         cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC,
-            "lastFetchTime", "J", null, null).visitEnd();
+                "lastFetchTime", "J", null, null).visitEnd();
         cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
-            "CACHE_TTL_MS", "J", null, 300000L).visitEnd(); // 5 minutes
+                "CACHE_TTL_MS", "J", null, 300000L).visitEnd(); // 5 minutes
 
         // Constants
         cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
-            "F2P_SESSION_URL", "Ljava/lang/String;", null, F2P_SESSION_URL).visitEnd();
+                "F2P_SESSION_URL", "Ljava/lang/String;", null, F2P_SESSION_URL).visitEnd();
 
         // Private constructor
         MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PRIVATE, "<init>", "()V", null, null);
@@ -1474,10 +1963,11 @@ public class DualAuthPatcher {
         // public static String getF2PIdentityToken()
         // Returns cached token or fetches a new one if expired/missing
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_SYNCHRONIZED,
-            "getF2PIdentityToken", "()Ljava/lang/String;", null, null);
+                "getF2PIdentityToken", "()Ljava/lang/String;", null, null);
         mv.visitCode();
 
-        // if (f2pIdentityToken != null && (System.currentTimeMillis() - lastFetchTime) < CACHE_TTL_MS) return f2pIdentityToken;
+        // if (f2pIdentityToken != null && (System.currentTimeMillis() - lastFetchTime)
+        // < CACHE_TTL_MS) return f2pIdentityToken;
         mv.visitFieldInsn(Opcodes.GETSTATIC, SERVER_IDENTITY_CLASS, "f2pIdentityToken", "Ljava/lang/String;");
         Label fetchNew = new Label();
         mv.visitJumpInsn(Opcodes.IFNULL, fetchNew);
@@ -1505,9 +1995,10 @@ public class DualAuthPatcher {
 
         // public static String getIdentityTokenForUrl(String baseUrl)
         // Fetches identity token from a specific URL (for backward compatibility)
-        // This does NOT use the global cache - it always fetches fresh from the given URL
+        // This does NOT use the global cache - it always fetches fresh from the given
+        // URL
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "getIdentityTokenForUrl", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+                "getIdentityTokenForUrl", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
         mv.visitCode();
 
         // if (baseUrl == null) baseUrl = F2P_SESSION_URL;
@@ -1522,7 +2013,7 @@ public class DualAuthPatcher {
         // return fetchIdentityFromUrl(baseUrl);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, SERVER_IDENTITY_CLASS, "fetchIdentityFromUrl",
-            "(Ljava/lang/String;)Ljava/lang/String;", false);
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
         mv.visitInsn(Opcodes.ARETURN);
 
         mv.visitMaxs(1, 1);
@@ -1531,37 +2022,46 @@ public class DualAuthPatcher {
         // private static String fetchIdentityFromUrl(String baseUrl)
         // Fetches server identity from specified URL
         mv = cw.visitMethod(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC,
-            "fetchIdentityFromUrl", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+                "fetchIdentityFromUrl", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
         mv.visitCode();
         generateFetchIdentityFromUrlBody(mv);
         mv.visitEnd();
 
         // private static void fetchF2PServerIdentity()
-        // Fetches server identity from F2P auth server (legacy, uses hardcoded URL)
+        // Fetches server identity from F2P auth server with fallback to local
+        // self-signed token
         mv = cw.visitMethod(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC,
-            "fetchF2PServerIdentity", "()V", null, null);
+                "fetchF2PServerIdentity", "()V", null, null);
         mv.visitCode();
+
+        // Try block for HTTP request
+        Label tryStart = new Label();
+        Label tryEnd = new Label();
+        Label catchBlock = new Label();
+        mv.visitTryCatchBlock(tryStart, tryEnd, catchBlock, "java/lang/Exception");
+        mv.visitLabel(tryStart);
 
         // Log start
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-        mv.visitLdcInsn("[DualAuth] Fetching F2P server identity from " + F2P_SESSION_URL + "...");
+        mv.visitLdcInsn("[DualAuth] Attempting fetch server identity from: " + F2P_SESSION_URL);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
-        // HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+        // HttpClient client =
+        // HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpClient", "newBuilder",
-            "()Ljava/net/http/HttpClient$Builder;", false);
+                "()Ljava/net/http/HttpClient$Builder;", false);
         mv.visitLdcInsn(5L);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/time/Duration", "ofSeconds",
-            "(J)Ljava/time/Duration;", false);
+                "(J)Ljava/time/Duration;", false);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpClient$Builder", "connectTimeout",
-            "(Ljava/time/Duration;)Ljava/net/http/HttpClient$Builder;", true);
+                "(Ljava/time/Duration;)Ljava/net/http/HttpClient$Builder;", true);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpClient$Builder", "build",
-            "()Ljava/net/http/HttpClient;", true);
+                "()Ljava/net/http/HttpClient;", true);
         mv.visitVarInsn(Opcodes.ASTORE, 0); // client
 
         // String serverUuid = getServerUuid(); // Get server's UUID for the request
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, SERVER_IDENTITY_CLASS, "getServerUuid",
-            "()Ljava/lang/String;", false);
+                "()Ljava/lang/String;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 1); // serverUuid
 
         // String jsonBody = "{\"uuid\":\"" + serverUuid + "\"}";
@@ -1571,45 +2071,47 @@ public class DualAuthPatcher {
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 1);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitLdcInsn("\"}");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 2); // jsonBody
 
         // HttpRequest request = HttpRequest.newBuilder()
-        //     .uri(URI.create(F2P_SESSION_URL + "/game-session/new"))
-        //     .header("Content-Type", "application/json")
-        //     .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-        //     .build();
+        // .uri(URI.create(F2P_SESSION_URL + "/game-session/new"))
+        // .header("Content-Type", "application/json")
+        // .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+        // .build();
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpRequest", "newBuilder",
-            "()Ljava/net/http/HttpRequest$Builder;", false);
+                "()Ljava/net/http/HttpRequest$Builder;", false);
         mv.visitLdcInsn(F2P_SESSION_URL + "/game-session/new");
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/URI", "create",
-            "(Ljava/lang/String;)Ljava/net/URI;", false);
+                "(Ljava/lang/String;)Ljava/net/URI;", false);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "uri",
-            "(Ljava/net/URI;)Ljava/net/http/HttpRequest$Builder;", true);
+                "(Ljava/net/URI;)Ljava/net/http/HttpRequest$Builder;", true);
         mv.visitLdcInsn("Content-Type");
         mv.visitLdcInsn("application/json");
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "header",
-            "(Ljava/lang/String;Ljava/lang/String;)Ljava/net/http/HttpRequest$Builder;", true);
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/net/http/HttpRequest$Builder;", true);
         mv.visitVarInsn(Opcodes.ALOAD, 2); // jsonBody
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpRequest$BodyPublishers", "ofString",
-            "(Ljava/lang/String;)Ljava/net/http/HttpRequest$BodyPublisher;", false);
+                "(Ljava/lang/String;)Ljava/net/http/HttpRequest$BodyPublisher;", false);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "POST",
-            "(Ljava/net/http/HttpRequest$BodyPublisher;)Ljava/net/http/HttpRequest$Builder;", true);
+                "(Ljava/net/http/HttpRequest$BodyPublisher;)Ljava/net/http/HttpRequest$Builder;", true);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "build",
-            "()Ljava/net/http/HttpRequest;", true);
+                "()Ljava/net/http/HttpRequest;", true);
         mv.visitVarInsn(Opcodes.ASTORE, 3); // request
 
-        // HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        // HttpResponse<String> response = client.send(request,
+        // HttpResponse.BodyHandlers.ofString());
         mv.visitVarInsn(Opcodes.ALOAD, 0); // client
         mv.visitVarInsn(Opcodes.ALOAD, 3); // request
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpResponse$BodyHandlers", "ofString",
-            "()Ljava/net/http/HttpResponse$BodyHandler;", false);
+                "()Ljava/net/http/HttpResponse$BodyHandler;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/net/http/HttpClient", "send",
-            "(Ljava/net/http/HttpRequest;Ljava/net/http/HttpResponse$BodyHandler;)Ljava/net/http/HttpResponse;", false);
+                "(Ljava/net/http/HttpRequest;Ljava/net/http/HttpResponse$BodyHandler;)Ljava/net/http/HttpResponse;",
+                false);
         mv.visitVarInsn(Opcodes.ASTORE, 4); // response
 
         // if (response.statusCode() == 200) {
@@ -1638,7 +2140,7 @@ public class DualAuthPatcher {
         Label noIdentityToken = new Label();
         mv.visitJumpInsn(Opcodes.IFLT, noIdentityToken);
 
-        // int start = idx + 17; // length of "identityToken":"
+        // int start = idx + 17; // length of "identityToken\":\"
         mv.visitVarInsn(Opcodes.ILOAD, 6);
         mv.visitIntInsn(Opcodes.BIPUSH, 17);
         mv.visitInsn(Opcodes.IADD);
@@ -1663,6 +2165,10 @@ public class DualAuthPatcher {
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;", false);
         mv.visitFieldInsn(Opcodes.PUTSTATIC, SERVER_IDENTITY_CLASS, "f2pIdentityToken", "Ljava/lang/String;");
 
+        // f2pSessionToken = f2pIdentityToken; // Use same token for both
+        mv.visitFieldInsn(Opcodes.GETSTATIC, SERVER_IDENTITY_CLASS, "f2pIdentityToken", "Ljava/lang/String;");
+        mv.visitFieldInsn(Opcodes.PUTSTATIC, SERVER_IDENTITY_CLASS, "f2pSessionToken", "Ljava/lang/String;");
+
         // lastFetchTime = System.currentTimeMillis();
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "currentTimeMillis", "()J", false);
         mv.visitFieldInsn(Opcodes.PUTSTATIC, SERVER_IDENTITY_CLASS, "lastFetchTime", "J");
@@ -1674,26 +2180,48 @@ public class DualAuthPatcher {
 
         // } // end if identityToken found
         mv.visitLabel(noIdentityToken);
-        mv.visitFrame(Opcodes.F_APPEND, 3, new Object[]{"java/net/http/HttpClient", "java/lang/String", "java/lang/String"}, 0, null);
+        mv.visitFrame(Opcodes.F_APPEND, 6, new Object[] { "java/net/http/HttpClient", "java/lang/String",
+                "java/lang/String", "java/net/http/HttpRequest", "java/net/http/HttpResponse", "java/lang/String" }, 0,
+                null);
 
         // } // end if status 200
         mv.visitLabel(notOk);
         mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
 
+        mv.visitLabel(tryEnd);
+        Label afterCatch = new Label();
+        mv.visitJumpInsn(Opcodes.GOTO, afterCatch);
+
+        // CATCH BLOCK: Fallback to local self-signed token generation
+        mv.visitLabel(catchBlock);
+        mv.visitFrame(Opcodes.F_SAME1, 0, null, 1, new Object[] { "java/lang/Exception" });
+        mv.visitVarInsn(Opcodes.ASTORE, 9); // exception
+
+        // Log fallback
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "err", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn(
+                "[DualAuth] Connection failed. FALLBACK: Generating Local Self-Signed Identity Token (Omni-Auth)");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+
+        // Call the local token generator
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, SERVER_IDENTITY_CLASS, "generateLocalToken", "()V", false);
+
+        mv.visitLabel(afterCatch);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
         mv.visitInsn(Opcodes.RETURN);
-        mv.visitMaxs(5, 9);
+        mv.visitMaxs(5, 10);
         mv.visitEnd();
 
         // private static String getServerUuid()
         // Returns the server's UUID (from AuthConfig or generates one)
         mv = cw.visitMethod(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC,
-            "getServerUuid", "()Ljava/lang/String;", null, null);
+                "getServerUuid", "()Ljava/lang/String;", null, null);
         mv.visitCode();
 
         // Try to get from environment variable first
         mv.visitLdcInsn("HYTALE_SERVER_AUDIENCE");
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "getenv",
-            "(Ljava/lang/String;)Ljava/lang/String;", false);
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 0);
 
         mv.visitVarInsn(Opcodes.ALOAD, 0);
@@ -1703,7 +2231,7 @@ public class DualAuthPatcher {
         mv.visitInsn(Opcodes.ARETURN);
 
         mv.visitLabel(noEnv);
-        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[]{"java/lang/String"}, 0, null);
+        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[] { "java/lang/String" }, 0, null);
 
         // Generate a random UUID if not set
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/UUID", "randomUUID", "()Ljava/util/UUID;", false);
@@ -1711,6 +2239,576 @@ public class DualAuthPatcher {
         mv.visitInsn(Opcodes.ARETURN);
 
         mv.visitMaxs(1, 1);
+        mv.visitEnd();
+
+        // private static void generateLocalToken()
+        // Generates self-signed Ed25519 token with embedded JWK for Omni-Auth
+        // compatibility
+        mv = cw.visitMethod(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC,
+                "generateLocalToken", "()V", null, null);
+        mv.visitCode();
+
+        // Try block
+        Label tStart = new Label();
+        Label tEnd = new Label();
+        Label tCatch = new Label();
+        mv.visitTryCatchBlock(tStart, tEnd, tCatch, "java/lang/Exception");
+        mv.visitLabel(tStart);
+
+        // 1. Generate Ed25519 Key Pair
+        // JWK jwk = new
+        // OctetKeyPairGenerator(Curve.Ed25519).keyID(UUID.randomUUID().toString()).generate();
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/jwk/gen/OctetKeyPairGenerator");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "com/nimbusds/jose/jwk/Curve", "Ed25519", "Lcom/nimbusds/jose/jwk/Curve;");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/jwk/gen/OctetKeyPairGenerator", "<init>",
+                "(Lcom/nimbusds/jose/jwk/Curve;)V", false);
+
+        // .keyID(randomUUID)
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/UUID", "randomUUID", "()Ljava/util/UUID;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/UUID", "toString", "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/gen/OctetKeyPairGenerator", "keyID",
+                "(Ljava/lang/String;)Lcom/nimbusds/jose/jwk/gen/JWKGenerator;", false);
+
+        // .generate() -> JWK
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/gen/JWKGenerator", "generate",
+                "()Lcom/nimbusds/jose/jwk/JWK;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 0); // jwk (Generic JWK)
+
+        // Cast to OctetKeyPair
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "com/nimbusds/jose/jwk/OctetKeyPair");
+        mv.visitVarInsn(Opcodes.ASTORE, 1); // kp
+
+        // 2. Prepare Signer
+        // JWSSigner signer = new Ed25519Signer(kp);
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/crypto/Ed25519Signer");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/crypto/Ed25519Signer", "<init>",
+                "(Lcom/nimbusds/jose/jwk/OctetKeyPair;)V", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 2); // signer
+
+        // 3. Prepare Header with EMBEDDED JWK (CRUCIAL for Omni-Auth)
+        // JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.EdDSA)
+        // .type(JOSEObjectType.JWT)
+        // .jwk(kp.toPublicJWK()) <--- CRUCIAL
+        // .build();
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/JWSHeader$Builder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "com/nimbusds/jose/JWSAlgorithm", "EdDSA",
+                "Lcom/nimbusds/jose/JWSAlgorithm;");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/JWSHeader$Builder", "<init>",
+                "(Lcom/nimbusds/jose/JWSAlgorithm;)V", false);
+
+        // .type(JWT)
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "com/nimbusds/jose/JOSEObjectType", "JWT",
+                "Lcom/nimbusds/jose/JOSEObjectType;");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "type",
+                "(Lcom/nimbusds/jose/JOSEObjectType;)Lcom/nimbusds/jose/JWSHeader$Builder;", false);
+
+        // .jwk(kp.toPublicJWK()) - THE KEY PART FOR OMNI-AUTH
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/OctetKeyPair", "toPublicJWK",
+                "()Lcom/nimbusds/jose/jwk/OctetKeyPair;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "jwk",
+                "(Lcom/nimbusds/jose/jwk/JWK;)Lcom/nimbusds/jose/JWSHeader$Builder;", false);
+
+        // .build()
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "build",
+                "()Lcom/nimbusds/jose/JWSHeader;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 3); // header
+
+        // 4. Get Server UUID
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, SERVER_IDENTITY_CLASS, "getServerUuid", "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 4); // serverUuid
+
+        // 5. Prepare Payload
+        // JWTClaimsSet claims = new JWTClaimsSet.Builder()
+        // .issuer(F2P_SESSION_URL)
+        // .subject(serverUuid)
+        // .audience("hytale:server")
+        // .claim("scope", "hytale:server")
+        // .issueTime(new Date())
+        // .expirationTime(new Date(System.currentTimeMillis() + 36000000))
+        // .build();
+
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jwt/JWTClaimsSet$Builder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "<init>", "()V", false);
+
+        mv.visitFieldInsn(Opcodes.GETSTATIC, SERVER_IDENTITY_CLASS, "F2P_SESSION_URL", "Ljava/lang/String;");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "issuer",
+                "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 4); // serverUuid
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "subject",
+                "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+
+        // Audience & Scope
+        mv.visitLdcInsn("hytale:server");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "audience",
+                "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+
+        mv.visitLdcInsn("scope");
+        mv.visitLdcInsn("hytale:server");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "claim",
+                "(Ljava/lang/String;Ljava/lang/Object;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+
+        // Dates
+        mv.visitTypeInsn(Opcodes.NEW, "java/util/Date");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/Date", "<init>", "()V", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "issueTime",
+                "(Ljava/util/Date;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+
+        mv.visitTypeInsn(Opcodes.NEW, "java/util/Date");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "currentTimeMillis", "()J", false);
+        mv.visitLdcInsn(36000000L); // 10 hours
+        mv.visitInsn(Opcodes.LADD);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/Date", "<init>", "(J)V", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "expirationTime",
+                "(Ljava/util/Date;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "build",
+                "()Lcom/nimbusds/jwt/JWTClaimsSet;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 5); // claims
+
+        // 6. Sign Object
+        // SignedJWT signedJWT = new SignedJWT(header, claims);
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jwt/SignedJWT");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 3); // header
+        mv.visitVarInsn(Opcodes.ALOAD, 5); // claims
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jwt/SignedJWT", "<init>",
+                "(Lcom/nimbusds/jose/JWSHeader;Lcom/nimbusds/jwt/JWTClaimsSet;)V", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 6); // signedJWT
+
+        // signedJWT.sign(signer);
+        mv.visitVarInsn(Opcodes.ALOAD, 6);
+        mv.visitVarInsn(Opcodes.ALOAD, 2); // signer
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/SignedJWT", "sign",
+                "(Lcom/nimbusds/jose/JWSSigner;)V", false);
+
+        // String token = signedJWT.serialize();
+        mv.visitVarInsn(Opcodes.ALOAD, 6);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/SignedJWT", "serialize", "()Ljava/lang/String;",
+                false);
+        mv.visitVarInsn(Opcodes.ASTORE, 7);
+
+        // Store globally
+        mv.visitVarInsn(Opcodes.ALOAD, 7);
+        mv.visitFieldInsn(Opcodes.PUTSTATIC, SERVER_IDENTITY_CLASS, "f2pIdentityToken", "Ljava/lang/String;");
+        mv.visitVarInsn(Opcodes.ALOAD, 7);
+        mv.visitFieldInsn(Opcodes.PUTSTATIC, SERVER_IDENTITY_CLASS, "f2pSessionToken", "Ljava/lang/String;");
+
+        // Update timestamp
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "currentTimeMillis", "()J", false);
+        mv.visitFieldInsn(Opcodes.PUTSTATIC, SERVER_IDENTITY_CLASS, "lastFetchTime", "J");
+
+        // Log success
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] Successfully generated self-signed identity token with embedded JWK");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+
+        mv.visitLabel(tEnd);
+        Label afterLocalCatch = new Label();
+        mv.visitJumpInsn(Opcodes.GOTO, afterLocalCatch);
+
+        mv.visitLabel(tCatch);
+        mv.visitFrame(Opcodes.F_SAME1, 0, null, 1, new Object[] { "java/lang/Exception" });
+        mv.visitVarInsn(Opcodes.ASTORE, 8);
+        // Log exception
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "err", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] Failed to generate local self-signed token: ");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "print", "(Ljava/lang/String;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 8); // ex
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Exception", "printStackTrace", "()V", false);
+
+        mv.visitLabel(afterLocalCatch);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+        mv.visitInsn(Opcodes.RETURN);
+        mv.visitMaxs(5, 9);
+        mv.visitEnd();
+
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "generateLocalToken", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+        mv.visitCode();
+
+        Label genStart = new Label();
+        Label genEnd = new Label();
+        Label genCatch = new Label();
+        mv.visitTryCatchBlock(genStart, genEnd, genCatch, "java/lang/Exception");
+        mv.visitLabel(genStart);
+
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/jwk/gen/OctetKeyPairGenerator");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "com/nimbusds/jose/jwk/Curve", "Ed25519", "Lcom/nimbusds/jose/jwk/Curve;");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/jwk/gen/OctetKeyPairGenerator", "<init>",
+                "(Lcom/nimbusds/jose/jwk/Curve;)V", false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/UUID", "randomUUID", "()Ljava/util/UUID;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/UUID", "toString", "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/gen/OctetKeyPairGenerator", "keyID",
+                "(Ljava/lang/String;)Lcom/nimbusds/jose/jwk/gen/JWKGenerator;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/gen/JWKGenerator", "generate",
+                "()Lcom/nimbusds/jose/jwk/JWK;", false);
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "com/nimbusds/jose/jwk/OctetKeyPair");
+        mv.visitVarInsn(Opcodes.ASTORE, 1);
+
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/crypto/Ed25519Signer");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/crypto/Ed25519Signer", "<init>",
+                "(Lcom/nimbusds/jose/jwk/OctetKeyPair;)V", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 2);
+
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/JWSHeader$Builder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "com/nimbusds/jose/JWSAlgorithm", "EdDSA",
+                "Lcom/nimbusds/jose/JWSAlgorithm;");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/JWSHeader$Builder", "<init>",
+                "(Lcom/nimbusds/jose/JWSAlgorithm;)V", false);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "com/nimbusds/jose/JOSEObjectType", "JWT",
+                "Lcom/nimbusds/jose/JOSEObjectType;");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "type",
+                "(Lcom/nimbusds/jose/JOSEObjectType;)Lcom/nimbusds/jose/JWSHeader$Builder;", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/OctetKeyPair", "toPublicJWK",
+                "()Lcom/nimbusds/jose/jwk/OctetKeyPair;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "jwk",
+                "(Lcom/nimbusds/jose/jwk/JWK;)Lcom/nimbusds/jose/JWSHeader$Builder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "build",
+                "()Lcom/nimbusds/jose/JWSHeader;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 3);
+
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/UUID", "randomUUID", "()Ljava/util/UUID;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/UUID", "toString", "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 4);
+
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jwt/JWTClaimsSet$Builder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "<init>", "()V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "issuer",
+                "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 4);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "subject",
+                "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+        mv.visitLdcInsn("hytale:server");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "audience",
+                "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+        mv.visitLdcInsn("scope");
+        mv.visitLdcInsn("hytale:server");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "claim",
+                "(Ljava/lang/String;Ljava/lang/Object;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+        mv.visitTypeInsn(Opcodes.NEW, "java/util/Date");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/Date", "<init>", "()V", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "issueTime",
+                "(Ljava/util/Date;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+        mv.visitTypeInsn(Opcodes.NEW, "java/util/Date");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "currentTimeMillis", "()J", false);
+        mv.visitLdcInsn(36000000L);
+        mv.visitInsn(Opcodes.LADD);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/Date", "<init>", "(J)V", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "expirationTime",
+                "(Ljava/util/Date;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "build",
+                "()Lcom/nimbusds/jwt/JWTClaimsSet;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 5);
+
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jwt/SignedJWT");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 3);
+        mv.visitVarInsn(Opcodes.ALOAD, 5);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jwt/SignedJWT", "<init>",
+                "(Lcom/nimbusds/jose/JWSHeader;Lcom/nimbusds/jwt/JWTClaimsSet;)V", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 6);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 6);
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/SignedJWT", "sign",
+                "(Lcom/nimbusds/jose/JWSSigner;)V", false);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 6);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/SignedJWT", "serialize", "()Ljava/lang/String;",
+                false);
+        mv.visitLabel(genEnd);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(genCatch);
+        mv.visitInsn(Opcodes.POP);
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitMaxs(5, 7);
+        mv.visitEnd();
+
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "createTokenFromClientKey", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+        mv.visitCode();
+
+        Label tryStartHijack = new Label();
+        Label tryEndHijack = new Label();
+        Label catchHijack = new Label();
+        Label returnNull = new Label();
+        mv.visitTryCatchBlock(tryStartHijack, tryEndHijack, catchHijack, "java/lang/Exception");
+        mv.visitLabel(tryStartHijack);
+
+        // if (token == null) return null;
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitJumpInsn(Opcodes.IFNULL, returnNull);
+
+        // int dot1 = token.indexOf('.');
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitIntInsn(Opcodes.BIPUSH, '.');
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(I)I", false);
+        mv.visitVarInsn(Opcodes.ISTORE, 1);
+
+        // int dot2 = token.lastIndexOf('.');
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitIntInsn(Opcodes.BIPUSH, '.');
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "lastIndexOf", "(I)I", false);
+        mv.visitVarInsn(Opcodes.ISTORE, 2);
+
+        // if (dot1 < 0 || dot2 <= dot1) return null;
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitJumpInsn(Opcodes.IFLT, returnNull);
+        mv.visitVarInsn(Opcodes.ILOAD, 2);
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitJumpInsn(Opcodes.IF_ICMPLE, returnNull);
+
+        // String headerStr = token.substring(0, dot1);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 3);
+
+        // String headerJson = new Base64URL(headerStr).decodeToString();
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/util/Base64URL");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 3);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/util/Base64URL", "<init>", "(Ljava/lang/String;)V",
+                false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/util/Base64URL", "decodeToString",
+                "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 4);
+
+        // Map headerMap = JSONObjectUtils.parse(headerJson);
+        mv.visitVarInsn(Opcodes.ALOAD, 4);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/nimbusds/jose/util/JSONObjectUtils", "parse",
+                "(Ljava/lang/String;)Ljava/util/Map;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 5);
+
+        // String kid = (String) headerMap.get("kid");
+        mv.visitVarInsn(Opcodes.ALOAD, 5);
+        mv.visitLdcInsn("kid");
+        mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/Map", "get", "(Ljava/lang/Object;)Ljava/lang/Object;",
+                true);
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/String");
+        mv.visitVarInsn(Opcodes.ASTORE, 6);
+
+        // JWK jwk = JWK.parse((Map)headerMap.get("jwk"));
+        mv.visitVarInsn(Opcodes.ALOAD, 5);
+        mv.visitLdcInsn("jwk");
+        mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/Map", "get", "(Ljava/lang/Object;)Ljava/lang/Object;",
+                true);
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/util/Map");
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/nimbusds/jose/jwk/JWK", "parse",
+                "(Ljava/util/Map;)Lcom/nimbusds/jose/jwk/JWK;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 7);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 7);
+        mv.visitTypeInsn(Opcodes.INSTANCEOF, "com/nimbusds/jose/jwk/OctetKeyPair");
+        mv.visitJumpInsn(Opcodes.IFEQ, returnNull);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 7);
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "com/nimbusds/jose/jwk/OctetKeyPair");
+        mv.visitVarInsn(Opcodes.ASTORE, 8);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 8);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/OctetKeyPair", "isPrivate", "()Z", false);
+        mv.visitJumpInsn(Opcodes.IFEQ, returnNull);
+
+        // Ed25519Signer signer = new Ed25519Signer(keyPair);
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/crypto/Ed25519Signer");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 8);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/crypto/Ed25519Signer", "<init>",
+                "(Lcom/nimbusds/jose/jwk/OctetKeyPair;)V", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 9);
+
+        // String payloadStr = token.substring(dot1 + 1, dot2);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitInsn(Opcodes.ICONST_1);
+        mv.visitInsn(Opcodes.IADD);
+        mv.visitVarInsn(Opcodes.ILOAD, 2);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 10);
+
+        // String payloadJson = new Base64URL(payloadStr).decodeToString();
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/util/Base64URL");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 10);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/util/Base64URL", "<init>", "(Ljava/lang/String;)V",
+                false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/util/Base64URL", "decodeToString",
+                "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 11);
+
+        // JWTClaimsSet clientClaims = JWTClaimsSet.parse(payloadJson);
+        mv.visitVarInsn(Opcodes.ALOAD, 11);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/nimbusds/jwt/JWTClaimsSet", "parse",
+                "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 12);
+
+        // String issuer = clientClaims.getIssuer();
+        mv.visitVarInsn(Opcodes.ALOAD, 12);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet", "getIssuer", "()Ljava/lang/String;",
+                false);
+        mv.visitVarInsn(Opcodes.ASTORE, 13);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 13);
+        mv.visitJumpInsn(Opcodes.IFNULL, returnNull);
+
+        // String serverUuid = getServerUuid();
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, SERVER_IDENTITY_CLASS, "getServerUuid", "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 14);
+
+        // Build claims
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jwt/JWTClaimsSet$Builder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "<init>", "()V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 13);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "issuer",
+                "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 14);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "subject",
+                "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 12); // clientClaims
+        mv.visitLdcInsn("name");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet", "getStringClaim",
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 16); // Reutilizar var para name temporal
+        mv.visitVarInsn(Opcodes.ALOAD, 16);
+        Label skipName = new Label();
+        mv.visitJumpInsn(Opcodes.IFNULL, skipName);
+        mv.visitLdcInsn("name");
+        mv.visitVarInsn(Opcodes.ALOAD, 16);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "claim",
+                "(Ljava/lang/String;Ljava/lang/Object;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+        mv.visitLabel(skipName);
+
+        // Copiar 'username' del cliente si existe
+        mv.visitVarInsn(Opcodes.ALOAD, 12); // clientClaims
+        mv.visitLdcInsn("username");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet", "getStringClaim",
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 16);
+        mv.visitVarInsn(Opcodes.ALOAD, 16);
+        Label skipUser = new Label();
+        mv.visitJumpInsn(Opcodes.IFNULL, skipUser);
+        mv.visitLdcInsn("username");
+        mv.visitVarInsn(Opcodes.ALOAD, 16);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "claim",
+                "(Ljava/lang/String;Ljava/lang/Object;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+        mv.visitLabel(skipUser);
+
+        mv.visitLdcInsn("hytale:server");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "audience",
+                "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+        mv.visitLdcInsn("scope");
+        mv.visitLdcInsn("hytale:server");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "claim",
+                "(Ljava/lang/String;Ljava/lang/Object;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+        mv.visitTypeInsn(Opcodes.NEW, "java/util/Date");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/Date", "<init>", "()V", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "issueTime",
+                "(Ljava/util/Date;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+        mv.visitTypeInsn(Opcodes.NEW, "java/util/Date");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "currentTimeMillis", "()J", false);
+        mv.visitLdcInsn(36000000L);
+        mv.visitInsn(Opcodes.LADD);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/Date", "<init>", "(J)V", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "expirationTime",
+                "(Ljava/util/Date;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "build",
+                "()Lcom/nimbusds/jwt/JWTClaimsSet;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 15);
+
+        // Build header (preserve kid)
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/JWSHeader$Builder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "com/nimbusds/jose/JWSAlgorithm", "EdDSA",
+                "Lcom/nimbusds/jose/JWSAlgorithm;");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/JWSHeader$Builder", "<init>",
+                "(Lcom/nimbusds/jose/JWSAlgorithm;)V", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 16);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 16);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "com/nimbusds/jose/JOSEObjectType", "JWT",
+                "Lcom/nimbusds/jose/JOSEObjectType;");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "type",
+                "(Lcom/nimbusds/jose/JOSEObjectType;)Lcom/nimbusds/jose/JWSHeader$Builder;", false);
+        mv.visitInsn(Opcodes.POP);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 6);
+        Label noKid = new Label();
+        mv.visitJumpInsn(Opcodes.IFNULL, noKid);
+        mv.visitVarInsn(Opcodes.ALOAD, 16);
+        mv.visitVarInsn(Opcodes.ALOAD, 6);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "keyID",
+                "(Ljava/lang/String;)Lcom/nimbusds/jose/JWSHeader$Builder;", false);
+        mv.visitInsn(Opcodes.POP);
+        mv.visitLabel(noKid);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 16);
+        mv.visitVarInsn(Opcodes.ALOAD, 8);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/OctetKeyPair", "toPublicJWK",
+                "()Lcom/nimbusds/jose/jwk/OctetKeyPair;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "jwk",
+                "(Lcom/nimbusds/jose/jwk/JWK;)Lcom/nimbusds/jose/JWSHeader$Builder;", false);
+        mv.visitInsn(Opcodes.POP);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 16);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "build",
+                "()Lcom/nimbusds/jose/JWSHeader;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 17);
+
+        // Sign JWT
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jwt/SignedJWT");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 17);
+        mv.visitVarInsn(Opcodes.ALOAD, 15);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jwt/SignedJWT", "<init>",
+                "(Lcom/nimbusds/jose/JWSHeader;Lcom/nimbusds/jwt/JWTClaimsSet;)V", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 18);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 18);
+        mv.visitVarInsn(Opcodes.ALOAD, 9);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/SignedJWT", "sign",
+                "(Lcom/nimbusds/jose/JWSSigner;)V", false);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 18);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/SignedJWT", "serialize", "()Ljava/lang/String;",
+                false);
+        mv.visitLabel(tryEndHijack);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(catchHijack);
+        mv.visitInsn(Opcodes.POP);
+        mv.visitLabel(returnNull);
+        mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitMaxs(6, 19);
         mv.visitEnd();
 
         cw.visitEnd();
@@ -1731,7 +2829,8 @@ public class DualAuthPatcher {
         mv.visitLdcInsn("[DualAuth] Fetching identity from: ");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 0); // baseUrl
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
@@ -1742,16 +2841,17 @@ public class DualAuthPatcher {
         mv.visitTryCatchBlock(tryStart, tryEnd, catchHandler, "java/lang/Exception");
         mv.visitLabel(tryStart);
 
-        // HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+        // HttpClient client =
+        // HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpClient", "newBuilder",
-            "()Ljava/net/http/HttpClient$Builder;", false);
+                "()Ljava/net/http/HttpClient$Builder;", false);
         mv.visitLdcInsn(5L);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/time/Duration", "ofSeconds",
-            "(J)Ljava/time/Duration;", false);
+                "(J)Ljava/time/Duration;", false);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpClient$Builder", "connectTimeout",
-            "(Ljava/time/Duration;)Ljava/net/http/HttpClient$Builder;", true);
+                "(Ljava/time/Duration;)Ljava/net/http/HttpClient$Builder;", true);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpClient$Builder", "build",
-            "()Ljava/net/http/HttpClient;", true);
+                "()Ljava/net/http/HttpClient;", true);
         mv.visitVarInsn(Opcodes.ASTORE, 1); // client
 
         // String serverUuid = UUID.randomUUID().toString();
@@ -1766,10 +2866,10 @@ public class DualAuthPatcher {
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 2);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitLdcInsn("\"}");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 3); // jsonBody
 
@@ -1779,45 +2879,47 @@ public class DualAuthPatcher {
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 0); // baseUrl
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitLdcInsn("/game-session/new");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 4); // url
 
         // HttpRequest request = HttpRequest.newBuilder()
-        //     .uri(URI.create(url))
-        //     .header("Content-Type", "application/json")
-        //     .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-        //     .build();
+        // .uri(URI.create(url))
+        // .header("Content-Type", "application/json")
+        // .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+        // .build();
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpRequest", "newBuilder",
-            "()Ljava/net/http/HttpRequest$Builder;", false);
+                "()Ljava/net/http/HttpRequest$Builder;", false);
         mv.visitVarInsn(Opcodes.ALOAD, 4); // url
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/URI", "create",
-            "(Ljava/lang/String;)Ljava/net/URI;", false);
+                "(Ljava/lang/String;)Ljava/net/URI;", false);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "uri",
-            "(Ljava/net/URI;)Ljava/net/http/HttpRequest$Builder;", true);
+                "(Ljava/net/URI;)Ljava/net/http/HttpRequest$Builder;", true);
         mv.visitLdcInsn("Content-Type");
         mv.visitLdcInsn("application/json");
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "header",
-            "(Ljava/lang/String;Ljava/lang/String;)Ljava/net/http/HttpRequest$Builder;", true);
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/net/http/HttpRequest$Builder;", true);
         mv.visitVarInsn(Opcodes.ALOAD, 3); // jsonBody
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpRequest$BodyPublishers", "ofString",
-            "(Ljava/lang/String;)Ljava/net/http/HttpRequest$BodyPublisher;", false);
+                "(Ljava/lang/String;)Ljava/net/http/HttpRequest$BodyPublisher;", false);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "POST",
-            "(Ljava/net/http/HttpRequest$BodyPublisher;)Ljava/net/http/HttpRequest$Builder;", true);
+                "(Ljava/net/http/HttpRequest$BodyPublisher;)Ljava/net/http/HttpRequest$Builder;", true);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "build",
-            "()Ljava/net/http/HttpRequest;", true);
+                "()Ljava/net/http/HttpRequest;", true);
         mv.visitVarInsn(Opcodes.ASTORE, 5); // request
 
-        // HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        // HttpResponse<String> response = client.send(request,
+        // HttpResponse.BodyHandlers.ofString());
         mv.visitVarInsn(Opcodes.ALOAD, 1); // client
         mv.visitVarInsn(Opcodes.ALOAD, 5); // request
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpResponse$BodyHandlers", "ofString",
-            "()Ljava/net/http/HttpResponse$BodyHandler;", false);
+                "()Ljava/net/http/HttpResponse$BodyHandler;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/net/http/HttpClient", "send",
-            "(Ljava/net/http/HttpRequest;Ljava/net/http/HttpResponse$BodyHandler;)Ljava/net/http/HttpResponse;", false);
+                "(Ljava/net/http/HttpRequest;Ljava/net/http/HttpResponse$BodyHandler;)Ljava/net/http/HttpResponse;",
+                false);
         mv.visitVarInsn(Opcodes.ASTORE, 6); // response
 
         // if (response.statusCode() != 200) return null;
@@ -1831,9 +2933,10 @@ public class DualAuthPatcher {
 
         mv.visitLabel(statusOk);
         mv.visitFrame(Opcodes.F_FULL, 7,
-            new Object[]{"java/lang/String", "java/net/http/HttpClient", "java/lang/String",
-                "java/lang/String", "java/lang/String", "java/net/http/HttpRequest", "java/net/http/HttpResponse"},
-            0, null);
+                new Object[] { "java/lang/String", "java/net/http/HttpClient", "java/lang/String",
+                        "java/lang/String", "java/lang/String", "java/net/http/HttpRequest",
+                        "java/net/http/HttpResponse" },
+                0, null);
 
         // String body = (String) response.body();
         mv.visitVarInsn(Opcodes.ALOAD, 6);
@@ -1857,10 +2960,10 @@ public class DualAuthPatcher {
 
         mv.visitLabel(idxOk);
         mv.visitFrame(Opcodes.F_FULL, 9,
-            new Object[]{"java/lang/String", "java/net/http/HttpClient", "java/lang/String",
-                "java/lang/String", "java/lang/String", "java/net/http/HttpRequest",
-                "java/net/http/HttpResponse", "java/lang/String", Opcodes.INTEGER},
-            0, null);
+                new Object[] { "java/lang/String", "java/net/http/HttpClient", "java/lang/String",
+                        "java/lang/String", "java/lang/String", "java/net/http/HttpRequest",
+                        "java/net/http/HttpResponse", "java/lang/String", Opcodes.INTEGER },
+                0, null);
 
         // int start = idx + 17; // length of "\"identityToken\":\""
         mv.visitVarInsn(Opcodes.ILOAD, 8);
@@ -1884,11 +2987,11 @@ public class DualAuthPatcher {
 
         mv.visitLabel(endOk);
         mv.visitFrame(Opcodes.F_FULL, 11,
-            new Object[]{"java/lang/String", "java/net/http/HttpClient", "java/lang/String",
-                "java/lang/String", "java/lang/String", "java/net/http/HttpRequest",
-                "java/net/http/HttpResponse", "java/lang/String", Opcodes.INTEGER,
-                Opcodes.INTEGER, Opcodes.INTEGER},
-            0, null);
+                new Object[] { "java/lang/String", "java/net/http/HttpClient", "java/lang/String",
+                        "java/lang/String", "java/lang/String", "java/net/http/HttpRequest",
+                        "java/net/http/HttpResponse", "java/lang/String", Opcodes.INTEGER,
+                        Opcodes.INTEGER, Opcodes.INTEGER },
+                0, null);
 
         // String identityToken = body.substring(start, end);
         mv.visitVarInsn(Opcodes.ALOAD, 7);
@@ -1909,7 +3012,8 @@ public class DualAuthPatcher {
 
         // } catch (Exception e) {
         mv.visitLabel(catchHandler);
-        mv.visitFrame(Opcodes.F_FULL, 1, new Object[]{"java/lang/String"}, 1, new Object[]{"java/lang/Exception"});
+        mv.visitFrame(Opcodes.F_FULL, 1, new Object[] { "java/lang/String" }, 1,
+                new Object[] { "java/lang/Exception" });
         mv.visitVarInsn(Opcodes.ASTORE, 1); // e
 
         // Log error
@@ -1920,7 +3024,8 @@ public class DualAuthPatcher {
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 1);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Exception", "getMessage", "()Ljava/lang/String;", false);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
@@ -1932,42 +3037,44 @@ public class DualAuthPatcher {
     }
 
     /**
-     * Generate DualServerTokenManager class - Stores both official and F2P server tokens
+     * Generate DualServerTokenManager class - Stores both official and F2P server
+     * tokens
      *
      * This class manages dual token sets:
      * - Official tokens: obtained via /auth login (from hytale.com)
      * - F2P tokens: auto-fetched from sanasol.ws on startup
      *
-     * MODIFIED: Changed from background thread to synchronous fetch during static init
+     * MODIFIED: Changed from background thread to synchronous fetch during static
+     * init
      * to ensure tokens are available immediately at server startup.
      */
     private static byte[] generateDualServerTokenManager() {
         ClassWriter cw = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
 
         cw.visit(Opcodes.V17, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL,
-            TOKEN_MANAGER_CLASS, null, "java/lang/Object", null);
+                TOKEN_MANAGER_CLASS, null, "java/lang/Object", null);
 
         // Static fields for official tokens (from /auth login device flow)
         cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE,
-            "officialSessionToken", "Ljava/lang/String;", null, null).visitEnd();
+                "officialSessionToken", "Ljava/lang/String;", null, null).visitEnd();
         cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE,
-            "officialIdentityToken", "Ljava/lang/String;", null, null).visitEnd();
+                "officialIdentityToken", "Ljava/lang/String;", null, null).visitEnd();
 
         // Static fields for F2P tokens (auto-fetched from sanasol.ws)
         cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE,
-            "f2pSessionToken", "Ljava/lang/String;", null, null).visitEnd();
+                "f2pSessionToken", "Ljava/lang/String;", null, null).visitEnd();
         cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE,
-            "f2pIdentityToken", "Ljava/lang/String;", null, null).visitEnd();
+                "f2pIdentityToken", "Ljava/lang/String;", null, null).visitEnd();
 
         // Flag to track if F2P tokens have been fetched
         cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE,
-            "f2pTokensFetched", "Z", null, null).visitEnd();
+                "f2pTokensFetched", "Z", null, null).visitEnd();
 
         // Constants for URLs
         cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
-            "F2P_AUTH_URL", "Ljava/lang/String;", null, F2P_SESSION_URL).visitEnd();
+                "F2P_AUTH_URL", "Ljava/lang/String;", null, F2P_SESSION_URL).visitEnd();
         cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
-            "OFFICIAL_AUTH_URL", "Ljava/lang/String;", null, OFFICIAL_SESSION_URL).visitEnd();
+                "OFFICIAL_AUTH_URL", "Ljava/lang/String;", null, OFFICIAL_SESSION_URL).visitEnd();
 
         // Private constructor
         MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PRIVATE, "<init>", "()V", null, null);
@@ -1978,9 +3085,10 @@ public class DualAuthPatcher {
         mv.visitMaxs(1, 1);
         mv.visitEnd();
 
-        // public static void setOfficialTokens(String sessionToken, String identityToken)
+        // public static void setOfficialTokens(String sessionToken, String
+        // identityToken)
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_SYNCHRONIZED,
-            "setOfficialTokens", "(Ljava/lang/String;Ljava/lang/String;)V", null, null);
+                "setOfficialTokens", "(Ljava/lang/String;Ljava/lang/String;)V", null, null);
         mv.visitCode();
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitFieldInsn(Opcodes.PUTSTATIC, TOKEN_MANAGER_CLASS, "officialSessionToken", "Ljava/lang/String;");
@@ -1996,7 +3104,7 @@ public class DualAuthPatcher {
 
         // public static void setF2PTokens(String sessionToken, String identityToken)
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_SYNCHRONIZED,
-            "setF2PTokens", "(Ljava/lang/String;Ljava/lang/String;)V", null, null);
+                "setF2PTokens", "(Ljava/lang/String;Ljava/lang/String;)V", null, null);
         mv.visitCode();
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitFieldInsn(Opcodes.PUTSTATIC, TOKEN_MANAGER_CLASS, "f2pSessionToken", "Ljava/lang/String;");
@@ -2016,7 +3124,7 @@ public class DualAuthPatcher {
         // Returns the appropriate session token based on issuer
         // MODIFIED: Enhanced fallback logic to ensure tokens are always available
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "getSessionTokenForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+                "getSessionTokenForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
         mv.visitCode();
 
         // if (issuer == null) issuer = DualAuthContext.getIssuer();
@@ -2035,14 +3143,15 @@ public class DualAuthPatcher {
         mv.visitLdcInsn("[DualAuth] getSessionTokenForIssuer called with issuer: ");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
         // if (issuer == null) {
-        //   // No issuer info, try official first, fallback to F2P
-        //   if (officialSessionToken != null) return officialSessionToken;
-        //   return f2pSessionToken;
+        // // No issuer info, try official first, fallback to F2P
+        // if (officialSessionToken != null) return officialSessionToken;
+        // return f2pSessionToken;
         // }
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         Label issuerNotNull2 = new Label();
@@ -2075,7 +3184,7 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitLdcInsn("sanasol.ws");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
-            "(Ljava/lang/CharSequence;)Z", false);
+                "(Ljava/lang/CharSequence;)Z", false);
         Label issuerIsF2P = new Label();
         mv.visitJumpInsn(Opcodes.IFEQ, issuerIsF2P);
 
@@ -2093,7 +3202,7 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitLdcInsn("hytale.com");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
-            "(Ljava/lang/CharSequence;)Z", false);
+                "(Ljava/lang/CharSequence;)Z", false);
         Label issuerIsOfficial = new Label();
         mv.visitJumpInsn(Opcodes.IFEQ, issuerIsOfficial);
 
@@ -2106,7 +3215,8 @@ public class DualAuthPatcher {
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
         mv.visitInsn(Opcodes.DUP);
-        mv.visitLdcInsn("[DualAuth] WARNING: Official token requested for hytale.com issuer but not available, falling back to F2P token. Use /auth login to get official tokens.");
+        mv.visitLdcInsn(
+                "[DualAuth] WARNING: Official token requested for hytale.com issuer but not available, falling back to F2P token. Use /auth login to get official tokens.");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
@@ -2124,19 +3234,25 @@ public class DualAuthPatcher {
         mv.visitLabel(issuerIsOfficial);
         mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
 
-        // Unknown issuer - fallback to F2P (most compatible)
+        // Unknown issuer - generate dynamic token with original issuer
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
         mv.visitInsn(Opcodes.DUP);
         mv.visitLdcInsn("[DualAuth] Unknown issuer '");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
-        mv.visitLdcInsn("', falling back to F2P token");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitLdcInsn("', generating dynamic token with original issuer");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
-        mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "f2pSessionToken", "Ljava/lang/String;");
+
+        // Generate dynamic token with original issuer
+        mv.visitVarInsn(Opcodes.ALOAD, 0); // issuer
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "generateDynamicSessionToken",
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
         mv.visitInsn(Opcodes.ARETURN);
 
         mv.visitMaxs(4, 1);
@@ -2144,9 +3260,9 @@ public class DualAuthPatcher {
 
         // public static String getIdentityTokenForIssuer(String issuer)
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "getIdentityTokenForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+                "getIdentityTokenForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
         mv.visitCode();
-        
+
         // if (issuer == null) issuer = DualAuthContext.getIssuer();
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         Label idIssuerNotNull = new Label();
@@ -2155,7 +3271,7 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ASTORE, 0);
         mv.visitLabel(idIssuerNotNull);
         mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
-        
+
         // Log the call for debugging
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
@@ -2163,7 +3279,8 @@ public class DualAuthPatcher {
         mv.visitLdcInsn("[DualAuth] getIdentityTokenForIssuer called with issuer: ");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
@@ -2176,15 +3293,15 @@ public class DualAuthPatcher {
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "f2pIdentityToken", "Ljava/lang/String;");
         mv.visitInsn(Opcodes.ARETURN);
-        
+
         mv.visitLabel(checkOfficial2);
         mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
-        
+
         // Check if issuer is from F2P (contains sanasol.ws)
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitLdcInsn("sanasol.ws");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
-            "(Ljava/lang/CharSequence;)Z", false);
+                "(Ljava/lang/CharSequence;)Z", false);
         Label identityIssuerIsF2P = new Label();
         mv.visitJumpInsn(Opcodes.IFEQ, identityIssuerIsF2P);
 
@@ -2202,7 +3319,7 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitLdcInsn("hytale.com");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
-            "(Ljava/lang/CharSequence;)Z", false);
+                "(Ljava/lang/CharSequence;)Z", false);
         Label identityIssuerIsOfficial = new Label();
         mv.visitJumpInsn(Opcodes.IFEQ, identityIssuerIsOfficial);
 
@@ -2213,7 +3330,8 @@ public class DualAuthPatcher {
 
         // No official identity token - fallback to F2P with warning
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-        mv.visitLdcInsn("[DualAuth] WARNING: Official identity token requested but not available, using F2P identity token");
+        mv.visitLdcInsn(
+                "[DualAuth] WARNING: Official identity token requested but not available, using F2P identity token");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "f2pIdentityToken", "Ljava/lang/String;");
         mv.visitInsn(Opcodes.ARETURN);
@@ -2229,27 +3347,33 @@ public class DualAuthPatcher {
         mv.visitLabel(identityIssuerIsOfficial);
         mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
 
-        // Unknown issuer - fallback to F2P (most compatible)
+        // Unknown issuer - generate dynamic token with original issuer
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
         mv.visitInsn(Opcodes.DUP);
         mv.visitLdcInsn("[DualAuth] Unknown issuer '");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
-        mv.visitLdcInsn("', falling back to F2P identity token");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitLdcInsn("', generating dynamic token with original issuer");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
-        mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "f2pIdentityToken", "Ljava/lang/String;");
+
+        // Generate dynamic token with original issuer
+        mv.visitVarInsn(Opcodes.ALOAD, 0); // issuer
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "generateDynamicIdentityToken",
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
         mv.visitInsn(Opcodes.ARETURN);
-        
+
         mv.visitMaxs(4, 1);
         mv.visitEnd();
 
         // public static boolean hasOfficialTokens()
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "hasOfficialTokens", "()Z", null, null);
+                "hasOfficialTokens", "()Z", null, null);
         mv.visitCode();
         mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "officialSessionToken", "Ljava/lang/String;");
         Label noOfficial = new Label();
@@ -2265,7 +3389,7 @@ public class DualAuthPatcher {
 
         // public static boolean hasF2PTokens()
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "hasF2PTokens", "()Z", null, null);
+                "hasF2PTokens", "()Z", null, null);
         mv.visitCode();
         mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "f2pSessionToken", "Ljava/lang/String;");
         Label noF2P = new Label();
@@ -2282,7 +3406,7 @@ public class DualAuthPatcher {
         // public static void ensureF2PTokens()
         // Auto-fetches F2P tokens if not already fetched
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_SYNCHRONIZED,
-            "ensureF2PTokens", "()V", null, null);
+                "ensureF2PTokens", "()V", null, null);
         mv.visitCode();
         // if (f2pTokensFetched) return;
         mv.visitFieldInsn(Opcodes.GETSTATIC, TOKEN_MANAGER_CLASS, "f2pTokensFetched", "Z");
@@ -2300,7 +3424,7 @@ public class DualAuthPatcher {
         // public static void fetchF2PTokens()
         // Makes HTTP request to F2P auth server to get server tokens
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "fetchF2PTokens", "()V", null, null);
+                "fetchF2PTokens", "()V", null, null);
         mv.visitCode();
 
         // Log start
@@ -2319,7 +3443,7 @@ public class DualAuthPatcher {
         // if (serverUuid == null) serverUuid = UUID.randomUUID().toString();
         mv.visitLdcInsn("HYTALE_SERVER_AUDIENCE");
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "getenv",
-            "(Ljava/lang/String;)Ljava/lang/String;", false);
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 0); // serverUuid
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         Label hasUuid = new Label();
@@ -2328,18 +3452,19 @@ public class DualAuthPatcher {
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/UUID", "toString", "()Ljava/lang/String;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 0);
         mv.visitLabel(hasUuid);
-        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[]{"java/lang/String"}, 0, null);
+        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[] { "java/lang/String" }, 0, null);
 
-        // HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+        // HttpClient client =
+        // HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpClient", "newBuilder",
-            "()Ljava/net/http/HttpClient$Builder;", false);
+                "()Ljava/net/http/HttpClient$Builder;", false);
         mv.visitLdcInsn(10L);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/time/Duration", "ofSeconds",
-            "(J)Ljava/time/Duration;", false);
+                "(J)Ljava/time/Duration;", false);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpClient$Builder", "connectTimeout",
-            "(Ljava/time/Duration;)Ljava/net/http/HttpClient$Builder;", true);
+                "(Ljava/time/Duration;)Ljava/net/http/HttpClient$Builder;", true);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpClient$Builder", "build",
-            "()Ljava/net/http/HttpClient;", true);
+                "()Ljava/net/http/HttpClient;", true);
         mv.visitVarInsn(Opcodes.ASTORE, 1); // client
 
         // String jsonBody = "{\"server_id\":\"" + serverUuid + "\"}";
@@ -2349,45 +3474,47 @@ public class DualAuthPatcher {
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitLdcInsn("\"}");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 2); // jsonBody
 
         // HttpRequest request = HttpRequest.newBuilder()
-        //     .uri(URI.create(F2P_SESSION_URL + "/server/auto-auth"))
-        //     .header("Content-Type", "application/json")
-        //     .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-        //     .build();
+        // .uri(URI.create(F2P_SESSION_URL + "/server/auto-auth"))
+        // .header("Content-Type", "application/json")
+        // .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+        // .build();
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpRequest", "newBuilder",
-            "()Ljava/net/http/HttpRequest$Builder;", false);
+                "()Ljava/net/http/HttpRequest$Builder;", false);
         mv.visitLdcInsn(F2P_SESSION_URL + "/server/auto-auth");
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/URI", "create",
-            "(Ljava/lang/String;)Ljava/net/URI;", false);
+                "(Ljava/lang/String;)Ljava/net/URI;", false);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "uri",
-            "(Ljava/net/URI;)Ljava/net/http/HttpRequest$Builder;", true);
+                "(Ljava/net/URI;)Ljava/net/http/HttpRequest$Builder;", true);
         mv.visitLdcInsn("Content-Type");
         mv.visitLdcInsn("application/json");
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "header",
-            "(Ljava/lang/String;Ljava/lang/String;)Ljava/net/http/HttpRequest$Builder;", true);
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/net/http/HttpRequest$Builder;", true);
         mv.visitVarInsn(Opcodes.ALOAD, 2);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpRequest$BodyPublishers", "ofString",
-            "(Ljava/lang/String;)Ljava/net/http/HttpRequest$BodyPublisher;", false);
+                "(Ljava/lang/String;)Ljava/net/http/HttpRequest$BodyPublisher;", false);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "POST",
-            "(Ljava/net/http/HttpRequest$BodyPublisher;)Ljava/net/http/HttpRequest$Builder;", true);
+                "(Ljava/net/http/HttpRequest$BodyPublisher;)Ljava/net/http/HttpRequest$Builder;", true);
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "build",
-            "()Ljava/net/http/HttpRequest;", true);
+                "()Ljava/net/http/HttpRequest;", true);
         mv.visitVarInsn(Opcodes.ASTORE, 3); // request
 
-        // HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        // HttpResponse<String> response = client.send(request,
+        // HttpResponse.BodyHandlers.ofString());
         mv.visitVarInsn(Opcodes.ALOAD, 1);
         mv.visitVarInsn(Opcodes.ALOAD, 3);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpResponse$BodyHandlers", "ofString",
-            "()Ljava/net/http/HttpResponse$BodyHandler;", false);
+                "()Ljava/net/http/HttpResponse$BodyHandler;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/net/http/HttpClient", "send",
-            "(Ljava/net/http/HttpRequest;Ljava/net/http/HttpResponse$BodyHandler;)Ljava/net/http/HttpResponse;", false);
+                "(Ljava/net/http/HttpRequest;Ljava/net/http/HttpResponse$BodyHandler;)Ljava/net/http/HttpResponse;",
+                false);
         mv.visitVarInsn(Opcodes.ASTORE, 4); // response
 
         // if (response.statusCode() == 200) {
@@ -2407,27 +3534,27 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ALOAD, 5);
         mv.visitLdcInsn("sessionToken");
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "extractJsonField",
-            "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", false);
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 6); // sessionToken
 
         // Parse identityToken
         mv.visitVarInsn(Opcodes.ALOAD, 5);
         mv.visitLdcInsn("identityToken");
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "extractJsonField",
-            "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", false);
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 7); // identityToken
 
         // setF2PTokens(sessionToken, identityToken);
         mv.visitVarInsn(Opcodes.ALOAD, 6);
         mv.visitVarInsn(Opcodes.ALOAD, 7);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "setF2PTokens",
-            "(Ljava/lang/String;Ljava/lang/String;)V", false);
+                "(Ljava/lang/String;Ljava/lang/String;)V", false);
 
         mv.visitLabel(notOk);
         mv.visitFrame(Opcodes.F_FULL, 5,
-            new Object[]{"java/lang/String", "java/net/http/HttpClient", "java/lang/String",
-                "java/net/http/HttpRequest", "java/net/http/HttpResponse"},
-            0, new Object[]{});
+                new Object[] { "java/lang/String", "java/net/http/HttpClient", "java/lang/String",
+                        "java/net/http/HttpRequest", "java/net/http/HttpResponse" },
+                0, new Object[] {});
 
         mv.visitLabel(tryEnd);
         Label afterCatch = new Label();
@@ -2435,7 +3562,7 @@ public class DualAuthPatcher {
 
         // } catch (Exception e) { log error }
         mv.visitLabel(catchHandler);
-        mv.visitFrame(Opcodes.F_FULL, 0, new Object[]{}, 1, new Object[]{"java/lang/Exception"});
+        mv.visitFrame(Opcodes.F_FULL, 0, new Object[] {}, 1, new Object[] { "java/lang/Exception" });
         mv.visitVarInsn(Opcodes.ASTORE, 0);
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "err", "Ljava/io/PrintStream;");
         mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
@@ -2445,7 +3572,7 @@ public class DualAuthPatcher {
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Exception", "getMessage", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
@@ -2458,7 +3585,7 @@ public class DualAuthPatcher {
         // private static String extractJsonField(String json, String field)
         // Simple JSON field extraction without external dependencies
         mv = cw.visitMethod(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC,
-            "extractJsonField", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", null, null);
+                "extractJsonField", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", null, null);
         mv.visitCode();
         // String pattern = "\"" + field + "\":\"";
         mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
@@ -2467,10 +3594,10 @@ public class DualAuthPatcher {
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitVarInsn(Opcodes.ALOAD, 1);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitLdcInsn("\":\"");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 2); // pattern
 
@@ -2488,7 +3615,7 @@ public class DualAuthPatcher {
         mv.visitInsn(Opcodes.ARETURN);
 
         mv.visitLabel(foundIdx);
-        mv.visitFrame(Opcodes.F_APPEND, 2, new Object[]{"java/lang/String", Opcodes.INTEGER}, 0, null);
+        mv.visitFrame(Opcodes.F_APPEND, 2, new Object[] { "java/lang/String", Opcodes.INTEGER }, 0, null);
 
         // int start = idx + pattern.length();
         mv.visitVarInsn(Opcodes.ILOAD, 3);
@@ -2512,7 +3639,7 @@ public class DualAuthPatcher {
         mv.visitInsn(Opcodes.ARETURN);
 
         mv.visitLabel(foundEnd);
-        mv.visitFrame(Opcodes.F_APPEND, 2, new Object[]{Opcodes.INTEGER, Opcodes.INTEGER}, 0, null);
+        mv.visitFrame(Opcodes.F_APPEND, 2, new Object[] { Opcodes.INTEGER, Opcodes.INTEGER }, 0, null);
 
         // return json.substring(start, end);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
@@ -2526,7 +3653,7 @@ public class DualAuthPatcher {
         // public static void logStatus()
         // Debug method to log current token status
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "logStatus", "()V", null, null);
+                "logStatus", "()V", null, null);
         mv.visitCode();
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         mv.visitLdcInsn("[DualAuth] Token Status:");
@@ -2545,14 +3672,15 @@ public class DualAuthPatcher {
         Label afterOfficialLabel = new Label();
         mv.visitJumpInsn(Opcodes.GOTO, afterOfficialLabel);
         mv.visitLabel(hasOfficialLabel);
-        mv.visitFrame(Opcodes.F_FULL, 0, new Object[]{}, 3,
-            new Object[]{"java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder"});
+        mv.visitFrame(Opcodes.F_FULL, 0, new Object[] {}, 3,
+                new Object[] { "java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder" });
         mv.visitLdcInsn("missing");
         mv.visitLabel(afterOfficialLabel);
-        mv.visitFrame(Opcodes.F_FULL, 0, new Object[]{}, 4,
-            new Object[]{"java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder", "java/lang/String"});
+        mv.visitFrame(Opcodes.F_FULL, 0, new Object[] {}, 4,
+                new Object[] { "java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder",
+                        "java/lang/String" });
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
@@ -2569,14 +3697,15 @@ public class DualAuthPatcher {
         Label afterF2PLabel = new Label();
         mv.visitJumpInsn(Opcodes.GOTO, afterF2PLabel);
         mv.visitLabel(hasF2PLabel);
-        mv.visitFrame(Opcodes.F_FULL, 0, new Object[]{}, 3,
-            new Object[]{"java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder"});
+        mv.visitFrame(Opcodes.F_FULL, 0, new Object[] {}, 3,
+                new Object[] { "java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder" });
         mv.visitLdcInsn("missing");
         mv.visitLabel(afterF2PLabel);
-        mv.visitFrame(Opcodes.F_FULL, 0, new Object[]{}, 4,
-            new Object[]{"java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder", "java/lang/String"});
+        mv.visitFrame(Opcodes.F_FULL, 0, new Object[] {}, 4,
+                new Object[] { "java/io/PrintStream", "java/lang/StringBuilder", "java/lang/StringBuilder",
+                        "java/lang/String" });
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-            "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
@@ -2587,7 +3716,7 @@ public class DualAuthPatcher {
         // public static void logCurrentTokens()
         // Debug method to log current token acquisition status
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            "logCurrentTokens", "()V", null, null);
+                "logCurrentTokens", "()V", null, null);
         mv.visitCode();
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
@@ -2595,11 +3724,14 @@ public class DualAuthPatcher {
         mv.visitLdcInsn("[DualAuth] Current tokens - Official: ");
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "hasOfficialTokens", "()Z", false);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Z)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Z)Ljava/lang/StringBuilder;",
+                false);
         mv.visitLdcInsn(", F2P: ");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "hasF2PTokens", "()Z", false);
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Z)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Z)Ljava/lang/StringBuilder;",
+                false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         mv.visitInsn(Opcodes.RETURN);
@@ -2610,8 +3742,9 @@ public class DualAuthPatcher {
         // MODIFIED: Synchronous fetch instead of background thread
         mv = cw.visitMethod(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
         mv.visitCode();
-        
-        // System.out.println("[DualAuth] DualServerTokenManager static init - starting synchronous F2P token fetch");
+
+        // System.out.println("[DualAuth] DualServerTokenManager static init - starting
+        // synchronous F2P token fetch");
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         mv.visitLdcInsn("[DualAuth] DualServerTokenManager static init - starting synchronous F2P token fetch");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
@@ -2619,7 +3752,7 @@ public class DualAuthPatcher {
         // Call ensureF2PTokens() synchronously
         // This will fetch tokens immediately during class loading
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "ensureF2PTokens", "()V", false);
-        
+
         // Log completion
         mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         mv.visitLdcInsn("[DualAuth] F2P token fetch completed during static initialization");
@@ -2629,61 +3762,1054 @@ public class DualAuthPatcher {
         mv.visitMaxs(1, 0);
         mv.visitEnd();
 
+        // public static String generateDynamicIdentityToken(String issuer)
+        // Generate a dynamic identity token signed with the client's embedded JWK
+        // This creates a valid server token that the client will accept
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "generateDynamicIdentityToken", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+        mv.visitCode();
+
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitLdcInsn("[DualAuth] Generating signed identity token for issuer: ");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getJwk", "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 1); // jwkString
+
+        // Check if we have a JWK
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        Label hasJwk = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, hasJwk);
+
+        // No JWK available - fallback to unsigned token (shouldn't happen in normal
+        // flow)
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] WARNING: No embedded JWK available, using unsigned token");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(hasJwk);
+        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[] { "java/lang/String" }, 0, null);
+
+        // Create signed JWT using the embedded JWK as the signing key
+        // Call EmbeddedJwkVerifier.createSignedToken(issuer, jwkString, "identity")
+        mv.visitVarInsn(Opcodes.ALOAD, 0); // issuer
+        mv.visitVarInsn(Opcodes.ALOAD, 1); // jwkString
+        mv.visitLdcInsn("identity");
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/hypixel/hytale/server/core/auth/EmbeddedJwkVerifier",
+                "createSignedToken", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                false);
+
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(3, 2);
+        mv.visitEnd();
+
+        // public static String generateDynamicSessionToken(String issuer)
+        // Generate a dynamic session token signed with the client's embedded JWK
+        // This creates a valid server token that the client will accept
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "generateDynamicSessionToken", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+        mv.visitCode();
+
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitLdcInsn("[DualAuth] Generating signed session token for issuer: ");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getJwk", "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 1); // jwkString
+
+        // Check if we have a JWK
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        Label hasJwkSession = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, hasJwkSession);
+
+        // No JWK available - fallback to unsigned token (shouldn't happen in normal
+        // flow)
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] WARNING: No embedded JWK available, using unsigned token");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(hasJwkSession);
+        mv.visitFrame(Opcodes.F_APPEND, 1, new Object[] { "java/lang/String" }, 0, null);
+
+        // Create signed JWT using the embedded JWK as the signing key
+        // Call EmbeddedJwkVerifier.createSignedToken(issuer, jwkString, "session")
+        mv.visitVarInsn(Opcodes.ALOAD, 0); // issuer
+        mv.visitVarInsn(Opcodes.ALOAD, 1); // jwkString
+        mv.visitLdcInsn("session");
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/hypixel/hytale/server/core/auth/EmbeddedJwkVerifier",
+                "createSignedToken", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                false);
+
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(3, 2);
+        mv.visitEnd();
+
         cw.visitEnd();
         return cw.toByteArray();
     }
 
     /**
-     * Patch JWTValidator class
-     * - Modify fetchJwksFromService to use DualJwksFetcher
-     * - Patch issuer validation to accept both issuers
+     * Generate EmbeddedJwkVerifier class - OMNI-AUTH BYPASS EDITION
+     * Handles tokens with embedded JWK private keys by manually validating
+     * signatures
+     * bypassing strict JWSHeader checks that reject 'd' (private) parameters.
+     */
+    private static byte[] generateEmbeddedJwkVerifier() {
+        ClassWriter cw = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+
+        cw.visit(Opcodes.V17, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL,
+                EMBEDDED_VERIFIER_CLASS, null, "java/lang/Object", null);
+
+        // Static initializer
+        MethodVisitor mv = cw.visitMethod(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
+        mv.visitCode();
+        mv.visitInsn(Opcodes.RETURN);
+        mv.visitMaxs(0, 0);
+        mv.visitEnd();
+
+        // -------------------------------------------------------------
+        // verifyAndGetClaims(String token) -> JWTClaimsSet (or null)
+        // -------------------------------------------------------------
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "verifyAndGetClaims", "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet;", null, null);
+        mv.visitCode();
+
+        // Reset Omni state at the beginning
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "setOmni", "(Z)V", false);
+
+        Label tryStart = new Label();
+        Label tryEnd = new Label();
+        Label catchLabel = new Label();
+
+        // 1. RAW STRING MANIPULATION (No parsing yet)
+        // int dot1 = token.indexOf('.');
+        mv.visitVarInsn(Opcodes.ALOAD, 0); // token
+        mv.visitIntInsn(Opcodes.BIPUSH, '.');
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(I)I", false);
+        mv.visitVarInsn(Opcodes.ISTORE, 1); // dot1
+
+        // int dot2 = token.lastIndexOf('.');
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitIntInsn(Opcodes.BIPUSH, '.');
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "lastIndexOf", "(I)I", false);
+        mv.visitVarInsn(Opcodes.ISTORE, 2); // dot2
+
+        // if (dot1 < 0 || dot2 <= dot1) throw new Exception("Invalid token format");
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        Label invalidFormat = new Label();
+        mv.visitJumpInsn(Opcodes.IFLT, invalidFormat);
+        mv.visitVarInsn(Opcodes.ILOAD, 2);
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitJumpInsn(Opcodes.IF_ICMPLE, invalidFormat);
+
+        // String headerStr = token.substring(0, dot1);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 3);
+
+        // Decode Header: String headerJson = new Base64URL(headerStr).decodeToString();
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/util/Base64URL");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 3);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/util/Base64URL", "<init>", "(Ljava/lang/String;)V",
+                false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/util/Base64URL", "decodeToString",
+                "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 4); // headerJson
+
+        // Parse JSON map to inspect manually: Map headerMap =
+        // JSONObjectUtils.parse(headerJson);
+        mv.visitVarInsn(Opcodes.ALOAD, 4);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/nimbusds/jose/util/JSONObjectUtils", "parse",
+                "(Ljava/lang/String;)Ljava/util/Map;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 5); // headerMap
+
+        // if (!headerMap.containsKey("jwk")) goto StandardParse;
+        mv.visitVarInsn(Opcodes.ALOAD, 5);
+        mv.visitLdcInsn("jwk");
+        mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/Map", "containsKey", "(Ljava/lang/Object;)Z", true);
+        Label standardParse = new Label();
+        mv.visitJumpInsn(Opcodes.IFEQ, standardParse);
+
+        // JWK jwk = JWK.parse((Map)headerMap.get("jwk")); // JWK.parse allows private
+        // keys!
+        mv.visitVarInsn(Opcodes.ALOAD, 5);
+        mv.visitLdcInsn("jwk");
+        mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/Map", "get", "(Ljava/lang/Object;)Ljava/lang/Object;",
+                true);
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/util/Map");
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/nimbusds/jose/jwk/JWK", "parse",
+                "(Ljava/util/Map;)Lcom/nimbusds/jose/jwk/JWK;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 6); // jwk
+
+        // Check if PRIVATE
+        // if (jwk instanceof OctetKeyPair && ((OctetKeyPair)jwk).isPrivate()) { ... }
+        mv.visitVarInsn(Opcodes.ALOAD, 6);
+        mv.visitTypeInsn(Opcodes.INSTANCEOF, "com/nimbusds/jose/jwk/OctetKeyPair");
+        mv.visitJumpInsn(Opcodes.IFEQ, standardParse);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 6);
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "com/nimbusds/jose/jwk/OctetKeyPair");
+        mv.visitVarInsn(Opcodes.ASTORE, 7); // keyPair
+
+        mv.visitVarInsn(Opcodes.ALOAD, 7);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/OctetKeyPair", "isPrivate", "()Z", false);
+        mv.visitJumpInsn(Opcodes.IFEQ, standardParse);
+
+        // --- OMNI-AUTH PATH DETECTED ---
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] Detected embedded PRIVATE KEY (Omni-Auth). Executing bypass verification...");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+
+        // Reconstruct SAFE public header for verification
+        // JWSHeader safeHeader = new
+        // JWSHeader.Builder(JWSAlgorithm.EdDSA).jwk(keyPair.toPublicJWK()).build();
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/JWSHeader$Builder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "com/nimbusds/jose/JWSAlgorithm", "EdDSA",
+                "Lcom/nimbusds/jose/JWSAlgorithm;");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/JWSHeader$Builder", "<init>",
+                "(Lcom/nimbusds/jose/JWSAlgorithm;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 7);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/OctetKeyPair", "toPublicJWK",
+                "()Lcom/nimbusds/jose/jwk/OctetKeyPair;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "jwk",
+                "(Lcom/nimbusds/jose/jwk/JWK;)Lcom/nimbusds/jose/JWSHeader$Builder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "build",
+                "()Lcom/nimbusds/jose/JWSHeader;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 8); // safeHeader
+
+        // Prepare Verification Bytes
+        // byte[] signingInput = token.substring(0,
+        // dot2).getBytes(StandardCharsets.UTF_8);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitVarInsn(Opcodes.ILOAD, 2);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;", false);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/nio/charset/StandardCharsets", "UTF_8",
+                "Ljava/nio/charset/Charset;");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "getBytes", "(Ljava/nio/charset/Charset;)[B",
+                false);
+        mv.visitVarInsn(Opcodes.ASTORE, 9);
+
+        // Base64URL signature = new Base64URL(token.substring(dot2 + 1));
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/util/Base64URL");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ILOAD, 2);
+        mv.visitInsn(Opcodes.ICONST_1);
+        mv.visitInsn(Opcodes.IADD);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(I)Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/util/Base64URL", "<init>", "(Ljava/lang/String;)V",
+                false);
+        mv.visitVarInsn(Opcodes.ASTORE, 10);
+
+        // Verify: new Ed25519Verifier(keyPair.toPublicJWK()).verify(safeHeader,
+        // signingInput, signature);
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/crypto/Ed25519Verifier");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 7);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/OctetKeyPair", "toPublicJWK",
+                "()Lcom/nimbusds/jose/jwk/OctetKeyPair;", false);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/crypto/Ed25519Verifier", "<init>",
+                "(Lcom/nimbusds/jose/jwk/OctetKeyPair;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 8); // safeHeader
+        mv.visitVarInsn(Opcodes.ALOAD, 9); // input
+        mv.visitVarInsn(Opcodes.ALOAD, 10); // sig
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/crypto/Ed25519Verifier", "verify",
+                "(Lcom/nimbusds/jose/JWSHeader;[BLcom/nimbusds/jose/util/Base64URL;)Z", false);
+
+        Label invalidSig = new Label();
+        mv.visitJumpInsn(Opcodes.IFEQ, invalidSig);
+
+        // Extract and Parse Payload PRIMERO
+        // Payload part is between dots: substring(dot1 + 1, dot2)
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitInsn(Opcodes.ICONST_1);
+        mv.visitInsn(Opcodes.IADD);
+        mv.visitVarInsn(Opcodes.ILOAD, 2);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 11);
+
+        // VALID! Capture Private Key
+        // Parse claims usando payloadStr (variable 11)
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/util/Base64URL");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 11);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/util/Base64URL", "<init>", "(Ljava/lang/String;)V",
+                false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/util/Base64URL", "decodeToString",
+                "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/nimbusds/jwt/JWTClaimsSet", "parse",
+                "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 14); // claims
+
+        // DualAuthContext.setIssuer(claims.getIssuer()) <-- CRÍTICO: El issuer debe
+        // estar antes que la llave
+        mv.visitVarInsn(Opcodes.ALOAD, 14);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet", "getIssuer", "()Ljava/lang/String;",
+                false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "setIssuer", "(Ljava/lang/String;)V", false);
+
+        // DualAuthContext.setPlayerUuid(claims.getSubject())
+        mv.visitVarInsn(Opcodes.ALOAD, 14);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet", "getSubject", "()Ljava/lang/String;",
+                false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "setPlayerUuid", "(Ljava/lang/String;)V", false);
+
+        // DualAuthContext.setUsername(claims.getStringClaim("username"))
+        mv.visitVarInsn(Opcodes.ALOAD, 14);
+        mv.visitLdcInsn("username");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet", "getStringClaim",
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "setUsername", "(Ljava/lang/String;)V", false);
+
+        // DualAuthContext.setJwk(keyPair.toJSONString()) <-- Ahora esto se guardará en
+        // el cache global
+        mv.visitVarInsn(Opcodes.ALOAD, 7);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/OctetKeyPair", "toJSONString",
+                "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "setJwk", "(Ljava/lang/String;)V", false);
+
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] Bypass verification SUCCESS. Key captured.");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+
+        // Mark this token as Omni-Auth (decentralized)
+        mv.visitInsn(Opcodes.ICONST_1); // Use primitivo true
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "setOmni", "(Z)V", false);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 14); // Dejar claims en el stack para el return
+        mv.visitLabel(tryEnd);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(invalidSig);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] Bypass verification FAILED: Invalid signature");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        // STANDARD PARSE FALLBACK (Official Tokens or Public keys)
+        mv.visitLabel(standardParse);
+        mv.visitFrame(Opcodes.F_FULL, 6,
+                new Object[] { "java/lang/String", Opcodes.INTEGER, Opcodes.INTEGER, "java/lang/String",
+                        "java/lang/String", "java/util/Map" },
+                0, null);
+
+        // Standard tokens: normally return null to let server validate via JWKS.
+        // BUT: Omni-Auth access tokens don't include embedded private JWK headers; they
+        // must be verified
+        // using the cached JWK captured during the initial Omni bypass.
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] Standard token path. Trying cached Omni JWK verifier...");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+
+        // String cachedJwk = DualAuthContext.getJwk();
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getJwk", "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 6);
+
+        // if (cachedJwk == null) return null;
+        mv.visitVarInsn(Opcodes.ALOAD, 6);
+        Label noCachedOmni = new Label();
+        mv.visitJumpInsn(Opcodes.IFNULL, noCachedOmni);
+
+        // OctetKeyPair keyPair = (OctetKeyPair) JWK.parse(cachedJwk);
+        mv.visitVarInsn(Opcodes.ALOAD, 6);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/nimbusds/jose/jwk/JWK", "parse",
+                "(Ljava/lang/String;)Lcom/nimbusds/jose/jwk/JWK;", false);
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "com/nimbusds/jose/jwk/OctetKeyPair");
+        mv.visitVarInsn(Opcodes.ASTORE, 7);
+
+        // JWSHeader safeHeader = new
+        // JWSHeader.Builder(JWSAlgorithm.EdDSA).jwk(keyPair.toPublicJWK()).build();
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/JWSHeader$Builder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "com/nimbusds/jose/JWSAlgorithm", "EdDSA",
+                "Lcom/nimbusds/jose/JWSAlgorithm;");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/JWSHeader$Builder", "<init>",
+                "(Lcom/nimbusds/jose/JWSAlgorithm;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 7);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/OctetKeyPair", "toPublicJWK",
+                "()Lcom/nimbusds/jose/jwk/OctetKeyPair;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "jwk",
+                "(Lcom/nimbusds/jose/jwk/JWK;)Lcom/nimbusds/jose/JWSHeader$Builder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "build",
+                "()Lcom/nimbusds/jose/JWSHeader;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 8);
+
+        // byte[] signingInput = token.substring(0,
+        // dot2).getBytes(StandardCharsets.UTF_8);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitVarInsn(Opcodes.ILOAD, 2);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;", false);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/nio/charset/StandardCharsets", "UTF_8",
+                "Ljava/nio/charset/Charset;");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "getBytes", "(Ljava/nio/charset/Charset;)[B",
+                false);
+        mv.visitVarInsn(Opcodes.ASTORE, 9);
+
+        // Base64URL signature = new Base64URL(token.substring(dot2 + 1));
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/util/Base64URL");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ILOAD, 2);
+        mv.visitInsn(Opcodes.ICONST_1);
+        mv.visitInsn(Opcodes.IADD);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(I)Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/util/Base64URL", "<init>", "(Ljava/lang/String;)V",
+                false);
+        mv.visitVarInsn(Opcodes.ASTORE, 10);
+
+        // boolean ok = new Ed25519Verifier(keyPair.toPublicJWK()).verify(safeHeader,
+        // signingInput, signature);
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/crypto/Ed25519Verifier");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 7);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/OctetKeyPair", "toPublicJWK",
+                "()Lcom/nimbusds/jose/jwk/OctetKeyPair;", false);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/crypto/Ed25519Verifier", "<init>",
+                "(Lcom/nimbusds/jose/jwk/OctetKeyPair;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 8);
+        mv.visitVarInsn(Opcodes.ALOAD, 9);
+        mv.visitVarInsn(Opcodes.ALOAD, 10);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/crypto/Ed25519Verifier", "verify",
+                "(Lcom/nimbusds/jose/JWSHeader;[BLcom/nimbusds/jose/util/Base64URL;)Z", false);
+        Label cachedSigInvalid = new Label();
+        mv.visitJumpInsn(Opcodes.IFEQ, cachedSigInvalid);
+
+        // Parse claims from payload and return
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitInsn(Opcodes.ICONST_1);
+        mv.visitInsn(Opcodes.IADD);
+        mv.visitVarInsn(Opcodes.ILOAD, 2);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 11);
+
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/util/Base64URL");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 11);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/util/Base64URL", "<init>", "(Ljava/lang/String;)V",
+                false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/util/Base64URL", "decodeToString",
+                "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/nimbusds/jwt/JWTClaimsSet", "parse",
+                "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 14);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 14);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet", "getIssuer", "()Ljava/lang/String;",
+                false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "setIssuer", "(Ljava/lang/String;)V", false);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 14);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet", "getSubject", "()Ljava/lang/String;",
+                false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "setPlayerUuid", "(Ljava/lang/String;)V", false);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 14);
+        mv.visitLdcInsn("username");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet", "getStringClaim",
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "setUsername", "(Ljava/lang/String;)V", false);
+
+        mv.visitInsn(Opcodes.ICONST_1);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "setOmni", "(Z)V", false);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 14);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(cachedSigInvalid);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] Cached Omni JWK verification failed. Falling back to server JWKS validation.");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+
+        mv.visitLabel(noCachedOmni);
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        // Errors
+        mv.visitLabel(invalidFormat);
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(catchLabel);
+        mv.visitFrame(Opcodes.F_FULL, 1, new Object[] { "java/lang/String" }, 1,
+                new Object[] { "java/lang/Exception" });
+        mv.visitVarInsn(Opcodes.ASTORE, 12);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] Error in manual token verification: ");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "print", "(Ljava/lang/String;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 12);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Exception", "printStackTrace", "()V", false);
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitMaxs(5, 13);
+        mv.visitEnd();
+
+        // -------------------------------------------------------------
+        // getCurrentJwk() -> String
+        // -------------------------------------------------------------
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "getCurrentJwk", "()Ljava/lang/String;", null, null);
+        mv.visitCode();
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getJwk", "()Ljava/lang/String;", false);
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(1, 0);
+        mv.visitEnd();
+
+        // -------------------------------------------------------------
+        // createSignedToken - No cambia, copia idéntica a la anterior que funciona
+        // -------------------------------------------------------------
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "createSignedToken", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", null,
+                null);
+        mv.visitCode();
+
+        Label tokenTryStart = new Label();
+        Label tokenTryEnd = new Label();
+        Label tokenCatchLabel = new Label();
+        mv.visitTryCatchBlock(tokenTryStart, tokenTryEnd, tokenCatchLabel, "java/lang/Exception");
+        mv.visitLabel(tokenTryStart);
+
+        // Parse key
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/nimbusds/jose/jwk/JWK", "parse",
+                "(Ljava/lang/String;)Lcom/nimbusds/jose/jwk/JWK;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 3);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 3);
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "com/nimbusds/jose/jwk/OctetKeyPair");
+        mv.visitVarInsn(Opcodes.ASTORE, 4);
+
+        // JWT Builder
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jwt/JWTClaimsSet$Builder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "<init>", "()V", false);
+
+        // Issuer
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "issuer",
+                "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+
+        // Subject MUST be a UUID for client validation (mutual auth). Use player UUID
+        // from context.
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getPlayerUuid", "()Ljava/lang/String;", false);
+        mv.visitInsn(Opcodes.DUP);
+        Label hasSubUuid = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, hasSubUuid);
+        mv.visitInsn(Opcodes.POP);
+        mv.visitLdcInsn("00000000-0000-0000-0000-000000000000");
+        mv.visitLabel(hasSubUuid);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "subject",
+                "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+
+        // Time
+        mv.visitTypeInsn(Opcodes.NEW, "java/util/Date");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/Date", "<init>", "()V", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "issueTime",
+                "(Ljava/util/Date;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+
+        mv.visitTypeInsn(Opcodes.NEW, "java/util/Date");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "currentTimeMillis", "()J", false);
+        mv.visitLdcInsn(3600000L);
+        mv.visitInsn(Opcodes.LADD);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/Date", "<init>", "(J)V", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "expirationTime",
+                "(Ljava/util/Date;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+
+        mv.visitLdcInsn("session");
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "equals", "(Ljava/lang/Object;)Z", false);
+        Label noScope = new Label();
+        mv.visitJumpInsn(Opcodes.IFEQ, noScope);
+
+        mv.visitLdcInsn("scope");
+        mv.visitLdcInsn("hytale:server hytale:client");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "claim",
+                "(Ljava/lang/String;Ljava/lang/Object;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+
+        mv.visitLabel(noScope);
+
+        // Inject username claim from DualAuthContext for identity tokens
+        mv.visitLdcInsn("identity");
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "equals", "(Ljava/lang/Object;)Z", false);
+        Label skipUsername = new Label();
+        mv.visitJumpInsn(Opcodes.IFEQ, skipUsername);
+
+        mv.visitLdcInsn("username");
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getUsername", "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "claim",
+                "(Ljava/lang/String;Ljava/lang/Object;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+
+        // Add scope claim for identity tokens (required by HandshakeHandler)
+        mv.visitLdcInsn("scope");
+        mv.visitLdcInsn("hytale:server hytale:client");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "claim",
+                "(Ljava/lang/String;Ljava/lang/Object;)Lcom/nimbusds/jwt/JWTClaimsSet$Builder;", false);
+
+        mv.visitLabel(skipUsername);
+
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet$Builder", "build",
+                "()Lcom/nimbusds/jwt/JWTClaimsSet;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 6); // claims
+
+        // Header (Public only)
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/JWSHeader$Builder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "com/nimbusds/jose/JWSAlgorithm", "EdDSA",
+                "Lcom/nimbusds/jose/JWSAlgorithm;");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/JWSHeader$Builder", "<init>",
+                "(Lcom/nimbusds/jose/JWSAlgorithm;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 4);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/OctetKeyPair", "toPublicJWK",
+                "()Lcom/nimbusds/jose/jwk/OctetKeyPair;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "jwk",
+                "(Lcom/nimbusds/jose/jwk/JWK;)Lcom/nimbusds/jose/JWSHeader$Builder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader$Builder", "build",
+                "()Lcom/nimbusds/jose/JWSHeader;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 7);
+
+        // Sign with private signer
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jwt/SignedJWT");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 7);
+        mv.visitVarInsn(Opcodes.ALOAD, 6);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jwt/SignedJWT", "<init>",
+                "(Lcom/nimbusds/jose/JWSHeader;Lcom/nimbusds/jwt/JWTClaimsSet;)V", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 8);
+
+        mv.visitTypeInsn(Opcodes.NEW, "com/nimbusds/jose/crypto/Ed25519Signer");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitVarInsn(Opcodes.ALOAD, 4);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/crypto/Ed25519Signer", "<init>",
+                "(Lcom/nimbusds/jose/jwk/OctetKeyPair;)V", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 9);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 8);
+        mv.visitVarInsn(Opcodes.ALOAD, 9);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/SignedJWT", "sign",
+                "(Lcom/nimbusds/jose/JWSSigner;)V", false);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 8);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/SignedJWT", "serialize", "()Ljava/lang/String;",
+                false);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(tokenTryEnd);
+        mv.visitLabel(tokenCatchLabel);
+        mv.visitInsn(Opcodes.POP);
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(4, 10);
+
+        mv.visitEnd();
+
+        cw.visitEnd();
+        return cw.toByteArray();
+    }
+
+    /**
+     * PATCH: JWTValidator (CORREGIDO)
+     * Injects the check for Embedded JWK at start of validate methods
+     * and WRAPS the result in the expected inner class to avoid VerifyError
      */
     private static byte[] patchJWTValidator(byte[] classBytes) {
-        try {
-            ClassReader reader = new ClassReader(classBytes);
-            ClassNode classNode = new ClassNode();
-            reader.accept(classNode, 0);
+        ClassReader cr = new ClassReader(classBytes);
+        ClassNode cn = new ClassNode();
+        cr.accept(cn, 0);
+        boolean modified = false;
 
-            boolean modified = false;
+        for (MethodNode mn : cn.methods) {
+            // Patch validateToken, validateSessionToken, validateIdentityToken
+            if (mn.name.startsWith("validate") &&
+                    mn.desc.contains("Ljava/lang/String;") &&
+                    mn.desc.endsWith("Lcom/nimbusds/jwt/JWTClaimsSet;") == false) { // Ensure we don't patch internal
+                                                                                    // helpers returning raw sets
 
-            for (MethodNode method : classNode.methods) {
-                if (method.instructions == null) continue;
+                // Determine the return type (The wrapper class, e.g., JWTValidator$JWTClaims)
+                Type returnType = Type.getReturnType(mn.desc);
+                String wrapperInternalName = returnType.getInternalName();
 
-                // Patch issuer validation in validateToken, validateIdentityToken, validateSessionToken
-                if (method.name.equals("validateToken") ||
-                    method.name.equals("validateIdentityToken") ||
-                    method.name.equals("validateSessionToken")) {
+                // Only patch if it returns an object (the wrapper)
+                if (returnType.getSort() == Type.OBJECT) {
+                    System.out.println("  [JWTValidator] Patching " + mn.name + " with wrapper " + wrapperInternalName);
 
-                    if (patchIssuerValidation(method)) {
-                        modified = true;
-                        patchedMethods.add("JWTValidator." + method.name);
-                        System.out.println("  [JWTValidator] Patched issuer validation in " + method.name + "()");
+                    InsnList hook = new InsnList();
+
+                    // 1. Call EmbeddedJwkVerifier.verifyAndGetClaims(token)
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, 1)); // Argument 1: token string
+                    hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                            EMBEDDED_VERIFIER_CLASS,
+                            "verifyAndGetClaims",
+                            "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet;",
+                            false));
+
+                    // Stack: [JWTClaimsSet]
+
+                    // 2. Check if result is null
+                    hook.add(new InsnNode(Opcodes.DUP)); // Duplicate to check
+                    LabelNode notNull = new LabelNode();
+                    hook.add(new JumpInsnNode(Opcodes.IFNONNULL, notNull));
+
+                    // 3. If null, extract issuer from token for standard tokens and continue
+                    // standard execution
+                    hook.add(new InsnNode(Opcodes.POP)); // Pop the null result
+
+                    // Extract issuer from original token for standard tokens (Hytale/Sanasol)
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, 1)); // Load original token
+                    hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                            HELPER_CLASS, "extractIssuerFromToken", "(Ljava/lang/String;)Ljava/lang/String;", false));
+                    hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                            CONTEXT_CLASS, "setIssuer", "(Ljava/lang/String;)V", false));
+
+                    LabelNode continueStd = new LabelNode();
+                    hook.add(new JumpInsnNode(Opcodes.GOTO, continueStd));
+
+                    // 4. If not null (we have valid claims), we must WRAP it by replicating the
+                    // original construction pattern
+                    hook.add(notNull);
+                    // Stack: [JWTClaimsSet]
+
+                    // Store JWTClaimsSet temporarily
+                    hook.add(new VarInsnNode(Opcodes.ASTORE, 2)); // Store claims in var 2
+
+                    // Reset Omni-Auth state to prevent cross-contamination between connections
+                    hook.add(new InsnNode(Opcodes.ICONST_0));
+                    hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "setOmni", "(Z)V", false));
+
+                    // Create wrapper instance using the original pattern: new + init() + putfield
+                    hook.add(new TypeInsnNode(Opcodes.NEW, wrapperInternalName));
+                    // Stack: [NewWrapperRef]
+
+                    hook.add(new InsnNode(Opcodes.DUP));
+                    // Stack: [NewWrapperRef, NewWrapperRef]
+
+                    // Call empty constructor
+                    hook.add(new MethodInsnNode(Opcodes.INVOKESPECIAL,
+                            wrapperInternalName,
+                            "<init>",
+                            "()V",
+                            false));
+
+                    // Stack: [NewWrapperRef (initialized)]
+
+                    // Set issuer field
+                    hook.add(new InsnNode(Opcodes.DUP)); // Duplicate wrapper for field setting
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, 2)); // Load claims from var 2
+                    hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "com/nimbusds/jwt/JWTClaimsSet",
+                            "getIssuer",
+                            "()Ljava/lang/String;",
+                            false));
+                    hook.add(new FieldInsnNode(Opcodes.PUTFIELD, wrapperInternalName, "issuer", "Ljava/lang/String;"));
+
+                    // Set subject field
+                    hook.add(new InsnNode(Opcodes.DUP)); // Duplicate wrapper
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, 2)); // Load claims
+                    hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "com/nimbusds/jwt/JWTClaimsSet",
+                            "getSubject",
+                            "()Ljava/lang/String;",
+                            false));
+                    hook.add(new FieldInsnNode(Opcodes.PUTFIELD, wrapperInternalName, "subject", "Ljava/lang/String;"));
+
+                    // Set issuedAt field (with null check like original)
+                    hook.add(new InsnNode(Opcodes.DUP)); // Duplicate wrapper
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, 2)); // Load claims
+                    hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "com/nimbusds/jwt/JWTClaimsSet",
+                            "getIssueTime",
+                            "()Ljava/util/Date;",
+                            false));
+                    LabelNode issuedAtNull = new LabelNode();
+                    hook.add(new JumpInsnNode(Opcodes.IFNULL, issuedAtNull));
+                    hook.add(new InsnNode(Opcodes.DUP)); // Duplicate wrapper
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, 2)); // Load claims
+                    hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "com/nimbusds/jwt/JWTClaimsSet",
+                            "getIssueTime",
+                            "()Ljava/util/Date;",
+                            false));
+                    hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "java/util/Date",
+                            "toInstant",
+                            "()Ljava/time/Instant;",
+                            false));
+                    hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "java/time/Instant",
+                            "getEpochSecond",
+                            "()J",
+                            false));
+                    hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                            "java/lang/Long",
+                            "valueOf",
+                            "(J)Ljava/lang/Long;",
+                            false));
+                    LabelNode issuedAtSet = new LabelNode();
+                    hook.add(new JumpInsnNode(Opcodes.GOTO, issuedAtSet));
+
+                    hook.add(issuedAtNull);
+                    hook.add(new InsnNode(Opcodes.DUP)); // Duplicate wrapper
+                    hook.add(new InsnNode(Opcodes.ACONST_NULL));
+
+                    hook.add(issuedAtSet);
+                    hook.add(new FieldInsnNode(Opcodes.PUTFIELD, wrapperInternalName, "issuedAt", "Ljava/lang/Long;"));
+
+                    // Set expiresAt field (with null check)
+                    hook.add(new InsnNode(Opcodes.DUP)); // Duplicate wrapper
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, 2)); // Load claims
+                    hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "com/nimbusds/jwt/JWTClaimsSet",
+                            "getExpirationTime",
+                            "()Ljava/util/Date;",
+                            false));
+                    LabelNode expiresAtNull = new LabelNode();
+                    hook.add(new JumpInsnNode(Opcodes.IFNULL, expiresAtNull));
+                    hook.add(new InsnNode(Opcodes.DUP)); // Duplicate wrapper
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, 2)); // Load claims
+                    hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "com/nimbusds/jwt/JWTClaimsSet",
+                            "getExpirationTime",
+                            "()Ljava/util/Date;",
+                            false));
+                    hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "java/util/Date",
+                            "toInstant",
+                            "()Ljava/time/Instant;",
+                            false));
+                    hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "java/time/Instant",
+                            "getEpochSecond",
+                            "()J",
+                            false));
+                    hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                            "java/lang/Long",
+                            "valueOf",
+                            "(J)Ljava/lang/Long;",
+                            false));
+                    LabelNode expiresAtSet = new LabelNode();
+                    hook.add(new JumpInsnNode(Opcodes.GOTO, expiresAtSet));
+
+                    hook.add(expiresAtNull);
+                    hook.add(new InsnNode(Opcodes.DUP)); // Duplicate wrapper
+                    hook.add(new InsnNode(Opcodes.ACONST_NULL));
+
+                    hook.add(expiresAtSet);
+                    hook.add(new FieldInsnNode(Opcodes.PUTFIELD, wrapperInternalName, "expiresAt", "Ljava/lang/Long;"));
+
+                    // Set notBefore field (with null check)
+                    hook.add(new InsnNode(Opcodes.DUP)); // Duplicate wrapper
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, 2)); // Load claims
+                    hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "com/nimbusds/jwt/JWTClaimsSet",
+                            "getNotBeforeTime",
+                            "()Ljava/util/Date;",
+                            false));
+                    LabelNode notBeforeNull = new LabelNode();
+                    hook.add(new JumpInsnNode(Opcodes.IFNULL, notBeforeNull));
+                    hook.add(new InsnNode(Opcodes.DUP)); // Duplicate wrapper
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, 2)); // Load claims
+                    hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "com/nimbusds/jwt/JWTClaimsSet",
+                            "getNotBeforeTime",
+                            "()Ljava/util/Date;",
+                            false));
+                    hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "java/util/Date",
+                            "toInstant",
+                            "()Ljava/time/Instant;",
+                            false));
+                    hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "java/time/Instant",
+                            "getEpochSecond",
+                            "()J",
+                            false));
+                    hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                            "java/lang/Long",
+                            "valueOf",
+                            "(J)Ljava/lang/Long;",
+                            false));
+                    LabelNode notBeforeSet = new LabelNode();
+                    hook.add(new JumpInsnNode(Opcodes.GOTO, notBeforeSet));
+
+                    hook.add(notBeforeNull);
+                    hook.add(new InsnNode(Opcodes.DUP)); // Duplicate wrapper
+                    hook.add(new InsnNode(Opcodes.ACONST_NULL));
+
+                    hook.add(notBeforeSet);
+                    hook.add(new FieldInsnNode(Opcodes.PUTFIELD, wrapperInternalName, "notBefore", "Ljava/lang/Long;"));
+
+                    // Set 'username' field for ALL wrappers that support it (JWTClaims e
+                    // IdentityTokenClaims)
+                    if (wrapperInternalName.contains("JWTClaims")
+                            || wrapperInternalName.contains("IdentityTokenClaims")) {
+                        hook.add(new InsnNode(Opcodes.DUP)); // Duplicate wrapper
+                        hook.add(new VarInsnNode(Opcodes.ALOAD, 2)); // Load claimsSet
+                        hook.add(new LdcInsnNode("username"));
+                        hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                                "com/nimbusds/jwt/JWTClaimsSet",
+                                "getStringClaim",
+                                "(Ljava/lang/String;)Ljava/lang/String;",
+                                false));
+                        hook.add(new FieldInsnNode(Opcodes.PUTFIELD, wrapperInternalName, "username",
+                                "Ljava/lang/String;"));
                     }
-                }
 
-                // Patch fetchJwksFromService to call DualJwksFetcher
-                if (method.name.equals("fetchJwksFromService")) {
-                    if (patchFetchJwksFromService(method)) {
-                        modified = true;
-                        patchedMethods.add("JWTValidator.fetchJwksFromService");
-                        System.out.println("  [JWTValidator] Patched fetchJwksFromService() to use DualJwksFetcher");
+                    // Set additional fields based on wrapper type
+                    if (wrapperInternalName.contains("JWTClaims")) {
+                        // JWTClaims has additional fields: audience
+                        hook.add(new InsnNode(Opcodes.DUP)); // Duplicate wrapper
+                        hook.add(new VarInsnNode(Opcodes.ALOAD, 2)); // Load claims
+                        hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                                "com/nimbusds/jwt/JWTClaimsSet",
+                                "getAudience",
+                                "()Ljava/util/List;",
+                                false));
+                        hook.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE,
+                                "java/util/List",
+                                "toString",
+                                "()Ljava/lang/String;",
+                                true));
+                        hook.add(new FieldInsnNode(Opcodes.PUTFIELD, wrapperInternalName, "audience",
+                                "Ljava/lang/String;"));
+                    } else if (wrapperInternalName.contains("SessionTokenClaims")
+                            || wrapperInternalName.contains("IdentityTokenClaims")) {
+                        // populated standard scope for both SessionTokenClaims and IdentityTokenClaims
+                        hook.add(new InsnNode(Opcodes.DUP));
+                        hook.add(new VarInsnNode(Opcodes.ALOAD, 2));
+                        hook.add(new LdcInsnNode("scope"));
+                        hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                                "com/nimbusds/jwt/JWTClaimsSet",
+                                "getStringClaim",
+                                "(Ljava/lang/String;)Ljava/lang/String;",
+                                false));
+                        hook.add(new FieldInsnNode(Opcodes.PUTFIELD, wrapperInternalName, "scope",
+                                "Ljava/lang/String;"));
                     }
+
+                    // Stack: [WrapperRef (fully initialized)]
+
+                    // IMPORTANT: Set the issuer context for downstream methods
+                    // This ensures getSessionTokenForIssuer receives the correct issuer
+                    hook.add(new InsnNode(Opcodes.DUP)); // Duplicate wrapper to extract issuer
+                    hook.add(new FieldInsnNode(Opcodes.GETFIELD, wrapperInternalName, "issuer", "Ljava/lang/String;"));
+                    hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                            CONTEXT_CLASS,
+                            "setIssuer",
+                            "(Ljava/lang/String;)V",
+                            false));
+
+                    // Return the wrapper object, satisfying the method signature
+                    hook.add(new InsnNode(Opcodes.ARETURN));
+
+                    hook.add(continueStd);
+                    // Stack here is empty (clean state for original code)
+
+                    mn.instructions.insert(hook);
+                    modified = true;
+                    patchedMethods.add("JWTValidator." + mn.name + "[EmbeddedBypass]");
                 }
             }
 
-            if (modified) {
-                // Use COMPUTE_FRAMES to properly compute stack map frames for JVM verification
-                ClassWriter writer = new SafeClassWriter(reader, ClassWriter.COMPUTE_FRAMES);
-                classNode.accept(writer);
-                return writer.toByteArray();
+            // Existing JWKS fetcher patch
+            if (mn.name.equals("fetchJwksFromService")) {
+                patchFetchJwksFromService(mn);
+                modified = true;
             }
 
-        } catch (Exception e) {
-            System.out.println("  Error patching JWTValidator: " + e.getMessage());
-            if (verbose) e.printStackTrace();
+            // Existing Issuer patch
+            if (mn.name.startsWith("validate")) {
+                patchIssuerValidation(mn);
+            }
         }
 
+        if (modified) {
+            SafeClassWriter sw = new SafeClassWriter(cr, ClassWriter.COMPUTE_FRAMES);
+            cn.accept(sw);
+            return sw.toByteArray();
+        }
         return null;
+    }
+
+    private static boolean injectAuthGrantExceptionDebugInLambda(MethodNode method) {
+        for (AbstractInsnNode insn : method.instructions.toArray()) {
+            if (!(insn instanceof LdcInsnNode))
+                continue;
+            LdcInsnNode ldc = (LdcInsnNode) insn;
+            if (!(ldc.cst instanceof String))
+                continue;
+            String s = (String) ldc.cst;
+            if (!s.contains("Unexpected error requesting authorization grant"))
+                continue;
+
+            // Find nearest ASTORE before this log block: this is the caught Exception local
+            AbstractInsnNode prev = insn.getPrevious();
+            while (prev != null && !(prev instanceof VarInsnNode && prev.getOpcode() == Opcodes.ASTORE)) {
+                prev = prev.getPrevious();
+            }
+            if (!(prev instanceof VarInsnNode)) {
+                return false;
+            }
+            int exVar = ((VarInsnNode) prev).var;
+
+            InsnList dbg = new InsnList();
+
+            // System.out.println("[DualAuth] AuthGrant exception (full): " + ex);
+            dbg.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+            dbg.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
+            dbg.add(new InsnNode(Opcodes.DUP));
+            dbg.add(new LdcInsnNode("[DualAuth] AuthGrant exception (full): "));
+            dbg.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>",
+                    "(Ljava/lang/String;)V", false));
+            dbg.add(new VarInsnNode(Opcodes.ALOAD, exVar));
+            dbg.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                    "(Ljava/lang/Object;)Ljava/lang/StringBuilder;", false));
+            dbg.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
+                    "()Ljava/lang/String;", false));
+            dbg.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V",
+                    false));
+
+            // ex.printStackTrace(System.out);
+            dbg.add(new VarInsnNode(Opcodes.ALOAD, exVar));
+            dbg.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+            dbg.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Throwable", "printStackTrace",
+                    "(Ljava/io/PrintStream;)V", false));
+
+            method.instructions.insert(prev, dbg);
+            patchCount++;
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -2695,7 +4821,8 @@ public class DualAuthPatcher {
 
         for (AbstractInsnNode insn : insns.toArray()) {
             // Look for: if (!this.expectedIssuer.equals(claims.issuer))
-            // Pattern: ALOAD, GETFIELD expectedIssuer, ALOAD, GETFIELD issuer, INVOKEVIRTUAL equals
+            // Pattern: ALOAD, GETFIELD expectedIssuer, ALOAD, GETFIELD issuer,
+            // INVOKEVIRTUAL equals
             if (insn.getOpcode() == Opcodes.INVOKEVIRTUAL) {
                 MethodInsnNode mi = (MethodInsnNode) insn;
                 if (mi.name.equals("equals") && mi.owner.equals("java/lang/String")) {
@@ -2705,10 +4832,15 @@ public class DualAuthPatcher {
                         // Stack before equals: [expectedIssuer, actualIssuer]
                         // We need: isValidIssuer(actualIssuer)
                         InsnList replacement = new InsnList();
-                        replacement.add(new InsnNode(Opcodes.SWAP));    // [actualIssuer, expectedIssuer]
-                        replacement.add(new InsnNode(Opcodes.POP));     // [actualIssuer]
+                        replacement.add(new InsnNode(Opcodes.SWAP)); // [actualIssuer, expectedIssuer]
+                        replacement.add(new InsnNode(Opcodes.POP)); // [actualIssuer]
+                        // Persist issuer in context for downstream selection (HandshakeHandler uses it
+                        // before async hop)
+                        replacement.add(new InsnNode(Opcodes.DUP)); // [actualIssuer, actualIssuer]
                         replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-                            HELPER_CLASS, "isValidIssuer", "(Ljava/lang/String;)Z", false));
+                                CONTEXT_CLASS, "setIssuer", "(Ljava/lang/String;)V", false));
+                        replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                                HELPER_CLASS, "isValidIssuer", "(Ljava/lang/String;)Z", false));
                         insns.insert(insn, replacement);
                         insns.remove(insn);
                         patched = true;
@@ -2740,9 +4872,65 @@ public class DualAuthPatcher {
     }
 
     /**
+     * OFFLINE MODE: If we already captured an embedded JWK for this player UUID,
+     * avoid contacting the player's issuer (e.g., localhost) and return a completed
+     * future.
+     */
+    private static boolean injectOfflineBypassInRequestAuthorizationGrantAsync(MethodNode method) {
+        InsnList injection = new InsnList();
+
+        // Restore context from identityToken (arg index 1)
+        injection.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                HELPER_CLASS, "extractIssuerFromToken", "(Ljava/lang/String;)Ljava/lang/String;", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                CONTEXT_CLASS, "setIssuer", "(Ljava/lang/String;)V", false));
+
+        injection.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                HELPER_CLASS, "extractSubjectFromToken", "(Ljava/lang/String;)Ljava/lang/String;", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                CONTEXT_CLASS, "setPlayerUuid", "(Ljava/lang/String;)V", false));
+
+        // Only bypass HTTP if this is an Omni-Auth token (has embedded private key)
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                CONTEXT_CLASS, "isOmni", "()Z", false));
+        LabelNode continueHttp = new LabelNode();
+        injection.add(new JumpInsnNode(Opcodes.IFEQ, continueHttp)); // If NOT Omni, continue with HTTP
+
+        injection.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        injection.add(new LdcInsnNode(
+                "[DualAuth] Omni-Auth active. Short-circuiting Session Service request (OFFLINE MODE)."));
+        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println",
+                "(Ljava/lang/String;)V", false));
+
+        injection.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                "java/util/concurrent/CompletableFuture", "completedFuture",
+                "(Ljava/lang/Object;)Ljava/util/concurrent/CompletableFuture;", false));
+        injection.add(new InsnNode(Opcodes.ARETURN));
+
+        injection.add(continueHttp);
+
+        AbstractInsnNode firstInsn = method.instructions.getFirst();
+        while (firstInsn != null && firstInsn.getOpcode() == -1) {
+            firstInsn = firstInsn.getNext();
+        }
+
+        if (firstInsn != null) {
+            method.instructions.insertBefore(firstInsn, injection);
+            patchCount++;
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
      * Patch fetchJwksFromService to use DualJwksFetcher for merged JWKS
      *
-     * Original method calls sessionServiceClient.getJwks() which fetches from one URL.
+     * Original method calls sessionServiceClient.getJwks() which fetches from one
+     * URL.
      * We'll replace the entire method to call our dual fetcher.
      *
      * IMPORTANT: We replace the entire method body to avoid stack frame issues.
@@ -2767,11 +4955,12 @@ public class DualAuthPatcher {
         // Log start
         code.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
         code.add(new LdcInsnNode("[DualAuth] fetchJwksFromService() called - using dual JWKS fetcher"));
-        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V",
+                false));
 
         // String mergedJson = DualJwksFetcher.fetchMergedJwksJson();
         code.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-            JWKS_FETCHER_CLASS, "fetchMergedJwksJson", "()Ljava/lang/String;", false));
+                JWKS_FETCHER_CLASS, "fetchMergedJwksJson", "()Ljava/lang/String;", false));
         code.add(new VarInsnNode(Opcodes.ASTORE, 1)); // Store in local var 1
 
         // if (mergedJson == null) return this.cachedJwkSet;
@@ -2780,51 +4969,61 @@ public class DualAuthPatcher {
         code.add(new JumpInsnNode(Opcodes.IFNONNULL, notNull));
         code.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
         code.add(new LdcInsnNode("[DualAuth] Merged JWKS is null, returning cached value"));
-        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V",
+                false));
         code.add(new VarInsnNode(Opcodes.ALOAD, 0)); // this
-        code.add(new FieldInsnNode(Opcodes.GETFIELD, JWT_VALIDATOR_CLASS, "cachedJwkSet", "Lcom/nimbusds/jose/jwk/JWKSet;"));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, JWT_VALIDATOR_CLASS, "cachedJwkSet",
+                "Lcom/nimbusds/jose/jwk/JWKSet;"));
         code.add(new InsnNode(Opcodes.ARETURN));
 
         code.add(notNull);
-        code.add(new FrameNode(Opcodes.F_APPEND, 1, new Object[]{"java/lang/String"}, 0, null));
+        code.add(new FrameNode(Opcodes.F_APPEND, 1, new Object[] { "java/lang/String" }, 0, null));
 
         // Parse JSON using JwksResponse.CODEC
-        // JwksResponse jwks = JwksResponse.CODEC.decodeJson(new RawJsonReader(mergedJson.toCharArray()), EmptyExtraInfo.EMPTY);
+        // JwksResponse jwks = JwksResponse.CODEC.decodeJson(new
+        // RawJsonReader(mergedJson.toCharArray()), EmptyExtraInfo.EMPTY);
         code.add(new FieldInsnNode(Opcodes.GETSTATIC,
-            "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwksResponse", "CODEC",
-            "Lcom/hypixel/hytale/codec/builder/BuilderCodec;"));
+                "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwksResponse", "CODEC",
+                "Lcom/hypixel/hytale/codec/builder/BuilderCodec;"));
         code.add(new TypeInsnNode(Opcodes.NEW, "com/hypixel/hytale/codec/util/RawJsonReader"));
         code.add(new InsnNode(Opcodes.DUP));
         code.add(new VarInsnNode(Opcodes.ALOAD, 1));
         code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/String", "toCharArray", "()[C", false));
-        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "com/hypixel/hytale/codec/util/RawJsonReader", "<init>", "([C)V", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "com/hypixel/hytale/codec/util/RawJsonReader", "<init>",
+                "([C)V", false));
         code.add(new FieldInsnNode(Opcodes.GETSTATIC,
-            "com/hypixel/hytale/codec/EmptyExtraInfo", "EMPTY", "Lcom/hypixel/hytale/codec/EmptyExtraInfo;"));
+                "com/hypixel/hytale/codec/EmptyExtraInfo", "EMPTY", "Lcom/hypixel/hytale/codec/EmptyExtraInfo;"));
         code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
-            "com/hypixel/hytale/codec/builder/BuilderCodec", "decodeJson",
-            "(Lcom/hypixel/hytale/codec/util/RawJsonReader;Lcom/hypixel/hytale/codec/ExtraInfo;)Ljava/lang/Object;", false));
-        code.add(new TypeInsnNode(Opcodes.CHECKCAST, "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwksResponse"));
+                "com/hypixel/hytale/codec/builder/BuilderCodec", "decodeJson",
+                "(Lcom/hypixel/hytale/codec/util/RawJsonReader;Lcom/hypixel/hytale/codec/ExtraInfo;)Ljava/lang/Object;",
+                false));
+        code.add(new TypeInsnNode(Opcodes.CHECKCAST,
+                "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwksResponse"));
         code.add(new VarInsnNode(Opcodes.ASTORE, 2)); // jwksResponse in var 2
 
-        // if (jwksResponse == null || jwksResponse.keys == null || jwksResponse.keys.length == 0) return this.cachedJwkSet;
+        // if (jwksResponse == null || jwksResponse.keys == null ||
+        // jwksResponse.keys.length == 0) return this.cachedJwkSet;
         code.add(new VarInsnNode(Opcodes.ALOAD, 2));
         LabelNode jwksNotNull = new LabelNode();
         code.add(new JumpInsnNode(Opcodes.IFNONNULL, jwksNotNull));
         code.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        code.add(new FieldInsnNode(Opcodes.GETFIELD, JWT_VALIDATOR_CLASS, "cachedJwkSet", "Lcom/nimbusds/jose/jwk/JWKSet;"));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, JWT_VALIDATOR_CLASS, "cachedJwkSet",
+                "Lcom/nimbusds/jose/jwk/JWKSet;"));
         code.add(new InsnNode(Opcodes.ARETURN));
 
         code.add(jwksNotNull);
-        code.add(new FrameNode(Opcodes.F_APPEND, 1, new Object[]{"com/hypixel/hytale/server/core/auth/SessionServiceClient$JwksResponse"}, 0, null));
+        code.add(new FrameNode(Opcodes.F_APPEND, 1,
+                new Object[] { "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwksResponse" }, 0, null));
 
         code.add(new VarInsnNode(Opcodes.ALOAD, 2));
         code.add(new FieldInsnNode(Opcodes.GETFIELD,
-            "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwksResponse", "keys",
-            "[Lcom/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey;"));
+                "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwksResponse", "keys",
+                "[Lcom/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey;"));
         LabelNode keysNotNull = new LabelNode();
         code.add(new JumpInsnNode(Opcodes.IFNONNULL, keysNotNull));
         code.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        code.add(new FieldInsnNode(Opcodes.GETFIELD, JWT_VALIDATOR_CLASS, "cachedJwkSet", "Lcom/nimbusds/jose/jwk/JWKSet;"));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, JWT_VALIDATOR_CLASS, "cachedJwkSet",
+                "Lcom/nimbusds/jose/jwk/JWKSet;"));
         code.add(new InsnNode(Opcodes.ARETURN));
 
         code.add(keysNotNull);
@@ -2832,13 +5031,14 @@ public class DualAuthPatcher {
 
         code.add(new VarInsnNode(Opcodes.ALOAD, 2));
         code.add(new FieldInsnNode(Opcodes.GETFIELD,
-            "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwksResponse", "keys",
-            "[Lcom/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey;"));
+                "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwksResponse", "keys",
+                "[Lcom/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey;"));
         code.add(new InsnNode(Opcodes.ARRAYLENGTH));
         LabelNode keysNotEmpty = new LabelNode();
         code.add(new JumpInsnNode(Opcodes.IFGT, keysNotEmpty));
         code.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        code.add(new FieldInsnNode(Opcodes.GETFIELD, JWT_VALIDATOR_CLASS, "cachedJwkSet", "Lcom/nimbusds/jose/jwk/JWKSet;"));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, JWT_VALIDATOR_CLASS, "cachedJwkSet",
+                "Lcom/nimbusds/jose/jwk/JWKSet;"));
         code.add(new InsnNode(Opcodes.ARETURN));
 
         code.add(keysNotEmpty);
@@ -2849,17 +5049,22 @@ public class DualAuthPatcher {
         code.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
         code.add(new InsnNode(Opcodes.DUP));
         code.add(new LdcInsnNode("[DualAuth] Got merged JWKS with "));
-        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V",
+                false));
         code.add(new VarInsnNode(Opcodes.ALOAD, 2));
         code.add(new FieldInsnNode(Opcodes.GETFIELD,
-            "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwksResponse", "keys",
-            "[Lcom/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey;"));
+                "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwksResponse", "keys",
+                "[Lcom/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey;"));
         code.add(new InsnNode(Opcodes.ARRAYLENGTH));
-        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(I)Ljava/lang/StringBuilder;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(I)Ljava/lang/StringBuilder;", false));
         code.add(new LdcInsnNode(" keys"));
-        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
-        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
-        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
+                "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V",
+                false));
 
         // Convert JwksResponse to JWKSet (ArrayList<JWK>)
         // ArrayList<JWK> jwkList = new ArrayList<>();
@@ -2872,8 +5077,8 @@ public class DualAuthPatcher {
         // JwkKey[] keys = jwksResponse.keys;
         code.add(new VarInsnNode(Opcodes.ALOAD, 2));
         code.add(new FieldInsnNode(Opcodes.GETFIELD,
-            "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwksResponse", "keys",
-            "[Lcom/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey;"));
+                "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwksResponse", "keys",
+                "[Lcom/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey;"));
         code.add(new VarInsnNode(Opcodes.ASTORE, 4)); // keys array in var 4
 
         // int len = keys.length;
@@ -2890,8 +5095,10 @@ public class DualAuthPatcher {
         LabelNode loopEnd = new LabelNode();
         code.add(loopStart);
         code.add(new FrameNode(Opcodes.F_APPEND, 4,
-            new Object[]{"java/util/ArrayList", "[Lcom/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey;", Opcodes.INTEGER, Opcodes.INTEGER},
-            0, null));
+                new Object[] { "java/util/ArrayList",
+                        "[Lcom/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey;", Opcodes.INTEGER,
+                        Opcodes.INTEGER },
+                0, null));
 
         // if (i >= len) break;
         code.add(new VarInsnNode(Opcodes.ILOAD, 6));
@@ -2908,7 +5115,8 @@ public class DualAuthPatcher {
         code.add(new VarInsnNode(Opcodes.ALOAD, 0)); // this
         code.add(new VarInsnNode(Opcodes.ALOAD, 7)); // key
         code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, JWT_VALIDATOR_CLASS, "convertToJWK",
-            "(Lcom/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey;)Lcom/nimbusds/jose/jwk/JWK;", false));
+                "(Lcom/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey;)Lcom/nimbusds/jose/jwk/JWK;",
+                false));
         code.add(new VarInsnNode(Opcodes.ASTORE, 8)); // jwk in var 8
 
         // if (jwk != null) jwkList.add(jwk);
@@ -2917,7 +5125,8 @@ public class DualAuthPatcher {
         code.add(new JumpInsnNode(Opcodes.IFNULL, skipAdd));
         code.add(new VarInsnNode(Opcodes.ALOAD, 3)); // jwkList
         code.add(new VarInsnNode(Opcodes.ALOAD, 8)); // jwk
-        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/util/ArrayList", "add", "(Ljava/lang/Object;)Z", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/util/ArrayList", "add", "(Ljava/lang/Object;)Z",
+                false));
         code.add(new InsnNode(Opcodes.POP));
 
         code.add(skipAdd);
@@ -2936,7 +5145,8 @@ public class DualAuthPatcher {
         LabelNode listNotEmpty = new LabelNode();
         code.add(new JumpInsnNode(Opcodes.IFEQ, listNotEmpty));
         code.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        code.add(new FieldInsnNode(Opcodes.GETFIELD, JWT_VALIDATOR_CLASS, "cachedJwkSet", "Lcom/nimbusds/jose/jwk/JWKSet;"));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, JWT_VALIDATOR_CLASS, "cachedJwkSet",
+                "Lcom/nimbusds/jose/jwk/JWKSet;"));
         code.add(new InsnNode(Opcodes.ARETURN));
 
         code.add(listNotEmpty);
@@ -2946,16 +5156,19 @@ public class DualAuthPatcher {
         code.add(new TypeInsnNode(Opcodes.NEW, "com/nimbusds/jose/jwk/JWKSet"));
         code.add(new InsnNode(Opcodes.DUP));
         code.add(new VarInsnNode(Opcodes.ALOAD, 3)); // jwkList
-        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/jwk/JWKSet", "<init>", "(Ljava/util/List;)V", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/jwk/JWKSet", "<init>",
+                "(Ljava/util/List;)V", false));
         code.add(new VarInsnNode(Opcodes.ASTORE, 4)); // newSet in var 4 (reusing)
 
         // this.cachedJwkSet = newSet;
         code.add(new VarInsnNode(Opcodes.ALOAD, 0)); // this
         code.add(new VarInsnNode(Opcodes.ALOAD, 4)); // newSet
-        code.add(new FieldInsnNode(Opcodes.PUTFIELD, JWT_VALIDATOR_CLASS, "cachedJwkSet", "Lcom/nimbusds/jose/jwk/JWKSet;"));
+        code.add(new FieldInsnNode(Opcodes.PUTFIELD, JWT_VALIDATOR_CLASS, "cachedJwkSet",
+                "Lcom/nimbusds/jose/jwk/JWKSet;"));
 
         // this.lastJwksRefresh = Instant.now();
-        // Note: Field changed from jwksCacheExpiry (long) to lastJwksRefresh (Instant) in newer versions
+        // Note: Field changed from jwksCacheExpiry (long) to lastJwksRefresh (Instant)
+        // in newer versions
         code.add(new VarInsnNode(Opcodes.ALOAD, 0)); // this
         code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/time/Instant", "now", "()Ljava/time/Instant;", false));
         code.add(new FieldInsnNode(Opcodes.PUTFIELD, JWT_VALIDATOR_CLASS, "lastJwksRefresh", "Ljava/time/Instant;"));
@@ -2965,14 +5178,19 @@ public class DualAuthPatcher {
         code.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
         code.add(new InsnNode(Opcodes.DUP));
         code.add(new LdcInsnNode("[DualAuth] JWKSet created with "));
-        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V",
+                false));
         code.add(new VarInsnNode(Opcodes.ALOAD, 3));
         code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/util/ArrayList", "size", "()I", false));
-        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(I)Ljava/lang/StringBuilder;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(I)Ljava/lang/StringBuilder;", false));
         code.add(new LdcInsnNode(" JWK keys from dual backends"));
-        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
-        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
-        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
+                "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V",
+                false));
 
         // return newSet;
         code.add(new VarInsnNode(Opcodes.ALOAD, 4));
@@ -2987,7 +5205,8 @@ public class DualAuthPatcher {
     }
 
     /**
-     * Patch HandshakeHandler to use DualServerTokenManager for server session tokens
+     * Patch HandshakeHandler to use DualServerTokenManager for server session
+     * tokens
      */
     private static byte[] patchHandshakeHandler(byte[] classBytes) {
         try {
@@ -2998,20 +5217,22 @@ public class DualAuthPatcher {
             boolean modified = false;
 
             for (MethodNode method : classNode.methods) {
-                if (method.instructions == null) continue;
+                if (method.instructions == null)
+                    continue;
 
                 // Look for methods that might be getting server session token
                 // Common method names that might handle authentication
-                if (method.name.contains("Auth") || 
-                    method.name.contains("Token") || 
-                    method.name.contains("Session") ||
-                    method.name.contains("validate") ||
-                    method.name.contains("request")) {
-                    
+                if (method.name.contains("Auth") ||
+                        method.name.contains("Token") ||
+                        method.name.contains("Session") ||
+                        method.name.contains("validate") ||
+                        method.name.contains("request")) {
+
                     if (patchHandshakeHandlerMethod(method)) {
                         modified = true;
                         patchedMethods.add("HandshakeHandler." + method.name);
-                        System.out.println("  [HandshakeHandler] Patched " + method.name + "() to use dual token manager");
+                        System.out.println(
+                                "  [HandshakeHandler] Patched " + method.name + "() to use dual token manager");
                     }
                 }
 
@@ -3029,7 +5250,8 @@ public class DualAuthPatcher {
 
         } catch (Exception e) {
             System.out.println("  Error patching HandshakeHandler: " + e.getMessage());
-            if (verbose) e.printStackTrace();
+            if (verbose)
+                e.printStackTrace();
         }
 
         return null;
@@ -3041,53 +5263,129 @@ public class DualAuthPatcher {
     private static boolean patchHandshakeHandlerMethod(MethodNode method) {
         InsnList insns = method.instructions;
         boolean patched = false;
+        int identityTokenLocalIdx = findIdentityTokenLocalInHandshakeMethod(method);
 
         // Look for patterns where server session token is accessed
         for (AbstractInsnNode insn : insns.toArray()) {
+            // Omni-Auth: Some access tokens may omit the username claim.
+            // HandshakeHandler disconnects on missing/empty username; we fall back to the
+            // handshake username.
+            if (insn.getOpcode() == Opcodes.GETFIELD) {
+                FieldInsnNode fi = (FieldInsnNode) insn;
+                if (fi.owner.equals(JWT_VALIDATOR_CLASS + "$JWTClaims") &&
+                        fi.name.equals("username") &&
+                        fi.desc.equals("Ljava/lang/String;")) {
+
+                    AbstractInsnNode next = insn.getNext();
+                    while (next != null && (next.getOpcode() == -1)) {
+                        next = next.getNext();
+                    }
+
+                    if (next instanceof VarInsnNode && next.getOpcode() == Opcodes.ASTORE) {
+                        int usernameLocal = ((VarInsnNode) next).var;
+
+                        InsnList fix = new InsnList();
+                        LabelNode haveUsername = new LabelNode();
+                        LabelNode haveNonEmptyUsername = new LabelNode();
+
+                        // if (username == null) username = this.username;
+                        fix.add(new VarInsnNode(Opcodes.ALOAD, usernameLocal));
+                        fix.add(new JumpInsnNode(Opcodes.IFNONNULL, haveUsername));
+                        fix.add(new VarInsnNode(Opcodes.ALOAD, 0));
+                        fix.add(new FieldInsnNode(Opcodes.GETFIELD,
+                                "com/hypixel/hytale/server/core/io/handlers/login/HandshakeHandler",
+                                "username", "Ljava/lang/String;"));
+                        fix.add(new VarInsnNode(Opcodes.ASTORE, usernameLocal));
+                        fix.add(haveUsername);
+
+                        // if (username.isEmpty()) username = this.username;
+                        fix.add(new VarInsnNode(Opcodes.ALOAD, usernameLocal));
+                        fix.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                                "java/lang/String", "isEmpty", "()Z", false));
+                        fix.add(new JumpInsnNode(Opcodes.IFEQ, haveNonEmptyUsername));
+                        fix.add(new VarInsnNode(Opcodes.ALOAD, 0));
+                        fix.add(new FieldInsnNode(Opcodes.GETFIELD,
+                                "com/hypixel/hytale/server/core/io/handlers/login/HandshakeHandler",
+                                "username", "Ljava/lang/String;"));
+                        fix.add(new VarInsnNode(Opcodes.ASTORE, usernameLocal));
+                        fix.add(haveNonEmptyUsername);
+
+                        insns.insert(next, fix);
+                        patched = true;
+                        patchCount++;
+                    }
+                }
+            }
+
             // Look for field access to session tokens
             if (insn.getOpcode() == Opcodes.GETFIELD) {
                 FieldInsnNode fi = (FieldInsnNode) insn;
                 if (fi.name.contains("Session") && fi.name.contains("Token")) {
                     // Replace with call to DualServerTokenManager
                     InsnList replacement = new InsnList();
-                    
+
                     // Log
-                    replacement.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
-                    replacement.add(new LdcInsnNode("[DualAuth] HandshakeHandler - replacing session token access with DualServerTokenManager"));
-                    replacement.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
-                    
-                    // Call DualServerTokenManager.getSessionTokenForIssuer(null) for fallback
-                    replacement.add(new InsnNode(Opcodes.ACONST_NULL));
+                    replacement.add(
+                            new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+                    replacement.add(new LdcInsnNode(
+                            "[DualAuth] HandshakeHandler - replacing session token access with DualServerTokenManager"));
+                    replacement.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println",
+                            "(Ljava/lang/String;)V", false));
+
+                    if (identityTokenLocalIdx >= 0) {
+                        replacement.add(new VarInsnNode(Opcodes.ALOAD, identityTokenLocalIdx));
+                        replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                                HELPER_CLASS, "extractIssuerFromToken", "(Ljava/lang/String;)Ljava/lang/String;",
+                                false));
+                        replacement.add(new InsnNode(Opcodes.DUP));
+                        replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                                CONTEXT_CLASS, "setIssuer", "(Ljava/lang/String;)V", false));
+                    } else {
+                        replacement.add(new InsnNode(Opcodes.ACONST_NULL));
+                    }
                     replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-                        TOKEN_MANAGER_CLASS, "getSessionTokenForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", false));
-                    
+                            TOKEN_MANAGER_CLASS, "getSessionTokenForIssuer", "(Ljava/lang/String;)Ljava/lang/String;",
+                            false));
+
                     insns.insert(insn, replacement);
                     insns.remove(insn);
                     patched = true;
                     patchCount++;
                 }
             }
-            
+
             // Intercept INVOKEVIRTUAL to ServerAuthManager getters
             else if (insn.getOpcode() == Opcodes.INVOKEVIRTUAL) {
                 MethodInsnNode mi = (MethodInsnNode) insn;
                 if (mi.owner.equals(SERVER_AUTH_MANAGER_CLASS) && mi.desc.endsWith("Ljava/lang/String;")) {
-                    // We don't know the exact name, but if it returns string from AuthManager in handshake, it's likely the token
+                    // We don't know the exact name, but if it returns string from AuthManager in
+                    // handshake, it's likely the token
                     // Wrap the result: check if null, if so use ours
                     InsnList wrap = new InsnList();
                     wrap.add(new InsnNode(Opcodes.DUP));
                     LabelNode valid = new LabelNode();
                     wrap.add(new JumpInsnNode(Opcodes.IFNONNULL, valid));
                     wrap.add(new InsnNode(Opcodes.POP));
-                    wrap.add(new InsnNode(Opcodes.ACONST_NULL));
-                    wrap.add(new MethodInsnNode(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "getSessionTokenForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", false));
+                    if (identityTokenLocalIdx >= 0) {
+                        wrap.add(new VarInsnNode(Opcodes.ALOAD, identityTokenLocalIdx));
+                        wrap.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                                HELPER_CLASS, "extractIssuerFromToken", "(Ljava/lang/String;)Ljava/lang/String;",
+                                false));
+                        wrap.add(new InsnNode(Opcodes.DUP));
+                        wrap.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                                CONTEXT_CLASS, "setIssuer", "(Ljava/lang/String;)V", false));
+                    } else {
+                        wrap.add(new InsnNode(Opcodes.ACONST_NULL));
+                    }
+                    wrap.add(new MethodInsnNode(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "getSessionTokenForIssuer",
+                            "(Ljava/lang/String;)Ljava/lang/String;", false));
                     wrap.add(valid);
                     method.instructions.insert(insn, wrap);
                     patched = true;
                     patchCount++;
                 }
             }
-            
+
             // Look for hardcoded session URLs
             if (insn.getOpcode() == Opcodes.LDC) {
                 LdcInsnNode ldc = (LdcInsnNode) insn;
@@ -3096,10 +5394,10 @@ public class DualAuthPatcher {
                     if (str.contains("sessions.hytale.com") || str.contains("hytale.com")) {
                         // Replace with dynamic URL
                         InsnList replacement = new InsnList();
-                        
+
                         replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-                            HELPER_CLASS, "getSessionUrl", "()Ljava/lang/String;", false));
-                        
+                                HELPER_CLASS, "getSessionUrl", "()Ljava/lang/String;", false));
+
                         insns.insert(insn, replacement);
                         insns.remove(insn);
                         patched = true;
@@ -3112,8 +5410,30 @@ public class DualAuthPatcher {
         return patched;
     }
 
+    private static int findIdentityTokenLocalInHandshakeMethod(MethodNode method) {
+        for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (insn.getOpcode() == Opcodes.INVOKEVIRTUAL || insn.getOpcode() == Opcodes.INVOKESTATIC) {
+                if (!(insn instanceof MethodInsnNode))
+                    continue;
+                MethodInsnNode mi = (MethodInsnNode) insn;
+                if (mi.owner.equals(JWT_VALIDATOR_CLASS) && mi.name.equals("validateIdentityToken")
+                        && mi.desc.startsWith("(Ljava/lang/String;")) {
+                    AbstractInsnNode prev = insn.getPrevious();
+                    while (prev != null && prev.getOpcode() == -1) {
+                        prev = prev.getPrevious();
+                    }
+                    if (prev instanceof VarInsnNode && prev.getOpcode() == Opcodes.ALOAD) {
+                        return ((VarInsnNode) prev).var;
+                    }
+                }
+            }
+        }
+        return -1;
+    }
+
     /**
-     * Patch SessionServiceClient constructor to use dynamic URL instead of hardcoded URL
+     * Patch SessionServiceClient constructor to use dynamic URL instead of
+     * hardcoded URL
      */
     private static boolean patchSessionServiceClientConstructor(MethodNode method) {
         InsnList insns = method.instructions;
@@ -3128,16 +5448,19 @@ public class DualAuthPatcher {
                     if (str.equals(OFFICIAL_SESSION_URL) || str.equals("https://sessions.hytale.com")) {
                         // Replace with dynamic URL
                         InsnList replacement = new InsnList();
-                        
+
                         // Log that we're using dynamic URL
-                        replacement.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
-                        replacement.add(new LdcInsnNode("[DualAuth] SessionServiceClient constructor - replacing hardcoded URL with dynamic URL"));
-                        replacement.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
-                        
+                        replacement.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out",
+                                "Ljava/io/PrintStream;"));
+                        replacement.add(new LdcInsnNode(
+                                "[DualAuth] SessionServiceClient constructor - replacing hardcoded URL with dynamic URL"));
+                        replacement.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println",
+                                "(Ljava/lang/String;)V", false));
+
                         // Call DualAuthHelper.getSessionUrl() which will return the appropriate URL
                         replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-                            HELPER_CLASS, "getSessionUrl", "()Ljava/lang/String;", false));
-                        
+                                HELPER_CLASS, "getSessionUrl", "()Ljava/lang/String;", false));
+
                         // Insert the replacement before the PUTFIELD that sets sessionServiceUrl
                         // Find the PUTFIELD instruction that follows
                         AbstractInsnNode putFieldInsn = findNextInstruction(insn, Opcodes.PUTFIELD);
@@ -3173,7 +5496,8 @@ public class DualAuthPatcher {
     }
 
     /**
-     * Patch SessionServiceClient to route authorization requests based on token issuer
+     * Patch SessionServiceClient to route authorization requests based on token
+     * issuer
      */
     private static byte[] patchSessionServiceClient(byte[] classBytes) {
         try {
@@ -3184,7 +5508,8 @@ public class DualAuthPatcher {
             boolean modified = false;
 
             for (MethodNode method : classNode.methods) {
-                if (method.instructions == null) continue;
+                if (method.instructions == null)
+                    continue;
 
                 // Patch constructor to use dynamic URL
                 if (method.name.equals("<init>")) {
@@ -3195,6 +5520,25 @@ public class DualAuthPatcher {
                     }
                 }
 
+                // OFFLINE MODE: Short-circuit requestAuthorizationGrantAsync if we already have
+                // an embedded key
+                if (method.name.equals("requestAuthorizationGrantAsync")
+                        && method.desc.equals(
+                                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/util/concurrent/CompletableFuture;")) {
+                    if (injectContextSetupInMainMethods(method)) {
+                        modified = true;
+                        patchedMethods.add("SessionServiceClient.requestAuthorizationGrantAsync");
+                        System.out.println(
+                                "  [SessionServiceClient] Injected context setup in requestAuthorizationGrantAsync()");
+                    }
+                    if (injectOfflineBypassInRequestAuthorizationGrantAsync(method)) {
+                        modified = true;
+                        patchedMethods.add("SessionServiceClient.requestAuthorizationGrantAsync");
+                        System.out.println(
+                                "  [SessionServiceClient] Injected offline bypass in requestAuthorizationGrantAsync()");
+                    }
+                }
+
                 // Patch lambda methods for requestAuthorizationGrantAsync
                 // Lambda methods are named like lambda$requestAuthorizationGrantAsync$0
                 // They capture identityToken and need to set context + use dynamic URL
@@ -3202,20 +5546,30 @@ public class DualAuthPatcher {
                     System.out.println("  [SessionServiceClient] Found lambda: " + method.name + method.desc);
 
                     // Find identityToken parameter - it's captured in the lambda
-                    // The lambda signature is typically: (SessionServiceClient, String identityToken, String, String) -> Object
+                    // The lambda signature is typically: (SessionServiceClient, String
+                    // identityToken, String, String) -> Object
                     // or it might be a closure where identityToken is a captured variable
                     int identityTokenIndex = findIdentityTokenParam(method);
                     if (identityTokenIndex >= 0) {
                         if (injectContextSetupInLambda(method, identityTokenIndex)) {
                             modified = true;
                             patchedMethods.add("SessionServiceClient." + method.name);
-                            System.out.println("  [SessionServiceClient] Injected context setup in " + method.name + "() (token at index " + identityTokenIndex + ")");
+                            System.out.println("  [SessionServiceClient] Injected context setup in " + method.name
+                                    + "() (token at index " + identityTokenIndex + ")");
                         }
+                    }
+
+                    if (injectAuthGrantExceptionDebugInLambda(method)) {
+                        modified = true;
+                        patchedMethods.add("SessionServiceClient." + method.name + "[ExceptionDebug]");
+                        System.out
+                                .println("  [SessionServiceClient] Injected exception debug in " + method.name + "()");
                     }
                 }
 
                 // Patch lambda methods for exchangeAuthGrantForTokenAsync
-                // This lambda also uses this.sessionServiceUrl and needs context from authorizationGrant token
+                // This lambda also uses this.sessionServiceUrl and needs context from
+                // authorizationGrant token
                 if (method.name.startsWith("lambda$exchangeAuthGrantForTokenAsync")) {
                     System.out.println("  [SessionServiceClient] Found lambda: " + method.name + method.desc);
 
@@ -3225,8 +5579,21 @@ public class DualAuthPatcher {
                         if (injectContextSetupInLambda(method, authGrantIndex)) {
                             modified = true;
                             patchedMethods.add("SessionServiceClient." + method.name);
-                            System.out.println("  [SessionServiceClient] Injected context setup in " + method.name + "() (token at index " + authGrantIndex + ")");
+                            System.out.println("  [SessionServiceClient] Injected context setup in " + method.name
+                                    + "() (token at index " + authGrantIndex + ")");
                         }
+                    }
+                }
+
+                // Patch main method exchangeAuthGrantForTokenAsync
+                if (method.name.equals("exchangeAuthGrantForTokenAsync")
+                        && method.desc.contains(
+                                "Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;")) {
+                    if (injectContextSetupInMainMethods(method)) {
+                        modified = true;
+                        patchedMethods.add("SessionServiceClient.exchangeAuthGrantForTokenAsync");
+                        System.out.println(
+                                "  [SessionServiceClient] Injected context setup in exchangeAuthGrantForTokenAsync()");
                     }
                 }
 
@@ -3242,8 +5609,20 @@ public class DualAuthPatcher {
                         if (injectRefreshContextSetup(method, sessionTokenIndex)) {
                             modified = true;
                             patchedMethods.add("SessionServiceClient." + method.name);
-                            System.out.println("  [SessionServiceClient] Injected refresh context setup in " + method.name + "() (token at index " + sessionTokenIndex + ")");
+                            System.out.println("  [SessionServiceClient] Injected refresh context setup in "
+                                    + method.name + "() (token at index " + sessionTokenIndex + ")");
                         }
+                    }
+                }
+
+                // Patch main method refreshSessionAsync
+                if (method.name.equals("refreshSessionAsync")
+                        && method.desc.contains(
+                                "Ljava/lang/String;)Lcom/hypixel/hytale/server/core/auth/SessionServiceClient$GameSessionResponse;")) {
+                    if (injectContextSetupInMainMethods(method)) {
+                        modified = true;
+                        patchedMethods.add("SessionServiceClient.refreshSessionAsync");
+                        System.out.println("  [SessionServiceClient] Injected context setup in refreshSessionAsync()");
                     }
                 }
 
@@ -3262,7 +5641,8 @@ public class DualAuthPatcher {
 
         } catch (Exception e) {
             System.out.println("  Error patching SessionServiceClient: " + e.getMessage());
-            if (verbose) e.printStackTrace();
+            if (verbose)
+                e.printStackTrace();
         }
 
         return null;
@@ -3287,9 +5667,11 @@ public class DualAuthPatcher {
             boolean modified = false;
 
             for (MethodNode method : classNode.methods) {
-                if (method.instructions == null) continue;
+                if (method.instructions == null)
+                    continue;
 
-                // Patch serialize() method - inject code at start to nullify serverIdentityToken for F2P
+                // Patch serialize() method - inject code at start to nullify
+                // serverIdentityToken for F2P
                 if (method.name.equals("serialize") && method.desc.equals("(Lio/netty/buffer/ByteBuf;)V")) {
                     if (injectServerIdentityNullifier(method)) {
                         modified = true;
@@ -3307,18 +5689,56 @@ public class DualAuthPatcher {
 
         } catch (Exception e) {
             System.out.println("  Error patching AuthGrant: " + e.getMessage());
-            if (verbose) e.printStackTrace();
+            if (verbose)
+                e.printStackTrace();
         }
 
         return null;
     }
 
     /**
+     * Inject context setup at the beginning of main SessionServiceClient methods
+     * This ensures ThreadLocal context is preserved across async threads
+     */
+    private static boolean injectContextSetupInMainMethods(MethodNode method) {
+        InsnList injection = new InsnList();
+
+        // The first argument (index 1) in these methods is always a token
+        // (identityToken, authGrant, or sessionToken)
+        injection.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HELPER_CLASS,
+                "extractIssuerFromToken", "(Ljava/lang/String;)Ljava/lang/String;", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC, CONTEXT_CLASS,
+                "setIssuer", "(Ljava/lang/String;)V", false));
+
+        // Debug log for context re-hydration
+        injection.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        injection.add(new LdcInsnNode("[DualAuth] Context re-hydrated in SessionServiceClient." + method.name));
+        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println",
+                "(Ljava/lang/String;)V", false));
+
+        // Find first non-label instruction to insert after
+        AbstractInsnNode firstInsn = method.instructions.getFirst();
+        while (firstInsn != null && firstInsn.getOpcode() == -1) {
+            firstInsn = firstInsn.getNext();
+        }
+
+        if (firstInsn != null) {
+            method.instructions.insertBefore(firstInsn, injection);
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
      * Patch ServerAuthManager to integrate with DualServerTokenManager.
      *
      * Modifications:
-     * 1. In initialize() - call DualServerTokenManager.ensureF2PTokens() to auto-fetch F2P tokens
-     * 2. When tokens are set via /auth login - also store in DualServerTokenManager.setOfficialTokens()
+     * 1. In initialize() - call DualServerTokenManager.ensureF2PTokens() to
+     * auto-fetch F2P tokens
+     * 2. When tokens are set via /auth login - also store in
+     * DualServerTokenManager.setOfficialTokens()
      */
     private static byte[] patchServerAuthManager(byte[] classBytes) {
         try {
@@ -3329,7 +5749,8 @@ public class DualAuthPatcher {
             boolean modified = false;
 
             for (MethodNode method : classNode.methods) {
-                if (method.instructions == null) continue;
+                if (method.instructions == null)
+                    continue;
 
                 // Patch initialize() to log token status
                 if (method.name.equals("initialize") && method.desc.equals("()V")) {
@@ -3346,7 +5767,8 @@ public class DualAuthPatcher {
                     if (injectOfficialTokenStorage(method)) {
                         modified = true;
                         patchedMethods.add("ServerAuthManager.createGameSessionFromOAuth");
-                        System.out.println("  [ServerAuthManager] Patched createGameSessionFromOAuth() to store official tokens");
+                        System.out.println(
+                                "  [ServerAuthManager] Patched createGameSessionFromOAuth() to store official tokens");
                     }
                 }
 
@@ -3367,7 +5789,8 @@ public class DualAuthPatcher {
 
         } catch (Exception e) {
             System.out.println("  Error patching ServerAuthManager: " + e.getMessage());
-            if (verbose) e.printStackTrace();
+            if (verbose)
+                e.printStackTrace();
         }
 
         return null;
@@ -3383,11 +5806,12 @@ public class DualAuthPatcher {
         // Log token status at server startup
         injection.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
         injection.add(new LdcInsnNode("[DualAuth] ServerAuthManager.initialize() - checking token status..."));
-        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println",
+                "(Ljava/lang/String;)V", false));
 
         // Log current token status
         injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-            TOKEN_MANAGER_CLASS, "logCurrentTokens", "()V", false));
+                TOKEN_MANAGER_CLASS, "logCurrentTokens", "()V", false));
 
         // Find the first real instruction (skip labels and frames)
         AbstractInsnNode firstInsn = method.instructions.getFirst();
@@ -3405,10 +5829,12 @@ public class DualAuthPatcher {
     }
 
     /**
-     * Inject call to store official tokens in DualServerTokenManager after OAuth login
+     * Inject call to store official tokens in DualServerTokenManager after OAuth
+     * login
      */
     private static boolean injectOfficialTokenStorage(MethodNode method) {
-        // This method sets this.gameSession which contains sessionToken and identityToken
+        // This method sets this.gameSession which contains sessionToken and
+        // identityToken
         // We need to extract these and store in DualServerTokenManager
 
         InsnList injection = new InsnList();
@@ -3416,17 +5842,18 @@ public class DualAuthPatcher {
         // Log
         injection.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
         injection.add(new LdcInsnNode("[DualAuth] Storing official tokens from /auth login..."));
-        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println",
+                "(Ljava/lang/String;)V", false));
 
         // Get tokens from this.gameSession
         // GameSessionResponse session = this.gameSession.get();
         injection.add(new VarInsnNode(Opcodes.ALOAD, 0)); // this
         injection.add(new FieldInsnNode(Opcodes.GETFIELD, SERVER_AUTH_MANAGER_CLASS, "gameSession",
-            "Ljava/util/concurrent/atomic/AtomicReference;"));
+                "Ljava/util/concurrent/atomic/AtomicReference;"));
         injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/util/concurrent/atomic/AtomicReference",
-            "get", "()Ljava/lang/Object;", false));
+                "get", "()Ljava/lang/Object;", false));
         injection.add(new TypeInsnNode(Opcodes.CHECKCAST,
-            "com/hypixel/hytale/server/core/auth/SessionServiceClient$GameSessionResponse"));
+                "com/hypixel/hytale/server/core/auth/SessionServiceClient$GameSessionResponse"));
         injection.add(new VarInsnNode(Opcodes.ASTORE, 10)); // session (using high local var to avoid conflicts)
 
         // if (session != null) {
@@ -3434,17 +5861,18 @@ public class DualAuthPatcher {
         LabelNode skipStorage = new LabelNode();
         injection.add(new JumpInsnNode(Opcodes.IFNULL, skipStorage));
 
-        // DualServerTokenManager.setOfficialTokens(session.sessionToken, session.identityToken);
+        // DualServerTokenManager.setOfficialTokens(session.sessionToken,
+        // session.identityToken);
         injection.add(new VarInsnNode(Opcodes.ALOAD, 10));
         injection.add(new FieldInsnNode(Opcodes.GETFIELD,
-            "com/hypixel/hytale/server/core/auth/SessionServiceClient$GameSessionResponse",
-            "sessionToken", "Ljava/lang/String;"));
+                "com/hypixel/hytale/server/core/auth/SessionServiceClient$GameSessionResponse",
+                "sessionToken", "Ljava/lang/String;"));
         injection.add(new VarInsnNode(Opcodes.ALOAD, 10));
         injection.add(new FieldInsnNode(Opcodes.GETFIELD,
-            "com/hypixel/hytale/server/core/auth/SessionServiceClient$GameSessionResponse",
-            "identityToken", "Ljava/lang/String;"));
+                "com/hypixel/hytale/server/core/auth/SessionServiceClient$GameSessionResponse",
+                "identityToken", "Ljava/lang/String;"));
         injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-            TOKEN_MANAGER_CLASS, "setOfficialTokens", "(Ljava/lang/String;Ljava/lang/String;)V", false));
+                TOKEN_MANAGER_CLASS, "setOfficialTokens", "(Ljava/lang/String;Ljava/lang/String;)V", false));
 
         injection.add(skipStorage);
         injection.add(new FrameNode(Opcodes.F_SAME, 0, null, 0, null));
@@ -3473,13 +5901,16 @@ public class DualAuthPatcher {
             if (insn.getOpcode() == Opcodes.GETFIELD) {
                 FieldInsnNode fn = (FieldInsnNode) insn;
                 if (fn.owner.equals("com/hypixel/hytale/server/core/auth/SessionServiceClient$GameSessionResponse")) {
-                    if (fn.name.equals("sessionToken")) isSessionGetter = true;
-                    if (fn.name.equals("identityToken")) isIdentityGetter = true;
+                    if (fn.name.equals("sessionToken"))
+                        isSessionGetter = true;
+                    if (fn.name.equals("identityToken"))
+                        isIdentityGetter = true;
                 }
             }
         }
 
-        if (!isSessionGetter && !isIdentityGetter) return false;
+        if (!isSessionGetter && !isIdentityGetter)
+            return false;
 
         // Found a getter. Inject fallback logic before ARETURN.
         // Logic: if (result == null) result = DualServerTokenManager.getToken(null);
@@ -3487,17 +5918,19 @@ public class DualAuthPatcher {
         inject.add(new InsnNode(Opcodes.DUP)); // Duplicate result on stack
         LabelNode notNull = new LabelNode();
         inject.add(new JumpInsnNode(Opcodes.IFNONNULL, notNull));
-        
+
         inject.add(new InsnNode(Opcodes.POP)); // Pop null
         inject.add(new InsnNode(Opcodes.ACONST_NULL)); // Pass null issuer (will use Context)
         if (isSessionGetter) {
-            inject.add(new MethodInsnNode(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "getSessionTokenForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", false));
+            inject.add(new MethodInsnNode(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "getSessionTokenForIssuer",
+                    "(Ljava/lang/String;)Ljava/lang/String;", false));
         } else {
-            inject.add(new MethodInsnNode(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "getIdentityTokenForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", false));
+            inject.add(new MethodInsnNode(Opcodes.INVOKESTATIC, TOKEN_MANAGER_CLASS, "getIdentityTokenForIssuer",
+                    "(Ljava/lang/String;)Ljava/lang/String;", false));
         }
-        
+
         inject.add(notNull);
-        
+
         // Find ARETURN
         AbstractInsnNode target = null;
         for (AbstractInsnNode insn : method.instructions) {
@@ -3506,7 +5939,7 @@ public class DualAuthPatcher {
                 break;
             }
         }
-        
+
         if (target != null) {
             method.instructions.insertBefore(target, inject);
             return true;
@@ -3515,15 +5948,17 @@ public class DualAuthPatcher {
     }
 
     /**
-     * Inject code at start of serialize() to replace serverIdentityToken for F2P context.
+     * Inject code at start of serialize() to replace serverIdentityToken for F2P
+     * context.
      *
-     * Since ThreadLocal doesn't work across threads (AuthGrant.serialize() is called
+     * Since ThreadLocal doesn't work across threads (AuthGrant.serialize() is
+     * called
      * on a different thread than where we set the context), we determine F2P status
      * by examining the authorizationGrant JWT itself - if it came from F2P backend,
      * we need to use F2P server identity.
      *
      * Injected code:
-     *   DualAuthHelper.maybeReplaceServerIdentity(this);
+     * DualAuthHelper.maybeReplaceServerIdentity(this);
      *
      * Note: Uses COMPUTE_FRAMES so we don't add manual FrameNode entries.
      */
@@ -3531,11 +5966,12 @@ public class DualAuthPatcher {
         InsnList injection = new InsnList();
 
         // Call DualAuthHelper.maybeReplaceServerIdentity(this)
-        // This method checks if authorizationGrant is from F2P and replaces serverIdentityToken if needed
+        // This method checks if authorizationGrant is from F2P and replaces
+        // serverIdentityToken if needed
         injection.add(new VarInsnNode(Opcodes.ALOAD, 0)); // this (AuthGrant instance)
         injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-            HELPER_CLASS, "maybeReplaceServerIdentity",
-            "(L" + AUTH_GRANT_CLASS + ";)V", false));
+                HELPER_CLASS, "maybeReplaceServerIdentity",
+                "(L" + AUTH_GRANT_CLASS + ";)V", false));
 
         // Find first real instruction
         AbstractInsnNode firstInsn = method.instructions.getFirst();
@@ -3567,7 +6003,8 @@ public class DualAuthPatcher {
 
         // For instance method in lambda: first param is often 'this' of outer class
         // Then captured variables follow
-        // Descriptor like: (Lcom/hypixel/.../SessionServiceClient;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Object;
+        // Descriptor like:
+        // (Lcom/hypixel/.../SessionServiceClient;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Object;
 
         // Count parameters - look for first String after 'this'
         int idx = 0;
@@ -3613,22 +6050,40 @@ public class DualAuthPatcher {
         // String issuer = DualAuthHelper.extractIssuerFromToken(identityToken);
         injection.add(new VarInsnNode(Opcodes.ALOAD, identityTokenIndex));
         injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-            HELPER_CLASS, "extractIssuerFromToken", "(Ljava/lang/String;)Ljava/lang/String;", false));
+                HELPER_CLASS, "extractIssuerFromToken", "(Ljava/lang/String;)Ljava/lang/String;", false));
 
         // DualAuthContext.setIssuer(issuer);
         injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-            CONTEXT_CLASS, "setIssuer", "(Ljava/lang/String;)V", false));
+                CONTEXT_CLASS, "setIssuer", "(Ljava/lang/String;)V", false));
+
+        injection.add(new VarInsnNode(Opcodes.ALOAD, identityTokenIndex));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                HELPER_CLASS, "extractSubjectFromToken", "(Ljava/lang/String;)Ljava/lang/String;", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                CONTEXT_CLASS, "setPlayerUuid", "(Ljava/lang/String;)V", false));
+
+        injection.add(new VarInsnNode(Opcodes.ALOAD, identityTokenIndex));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                HELPER_CLASS, "extractJwkFromToken", "(Ljava/lang/String;)Ljava/lang/String;", false));
+
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                CONTEXT_CLASS, "setJwk", "(Ljava/lang/String;)V", false));
 
         // Log
         injection.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
         injection.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
         injection.add(new InsnNode(Opcodes.DUP));
         injection.add(new LdcInsnNode("[DualAuth] Lambda: issuer from token: "));
-        injection.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
-        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getIssuer", "()Ljava/lang/String;", false));
-        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
-        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
-        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>",
+                "(Ljava/lang/String;)V", false));
+        injection.add(
+                new MethodInsnNode(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getIssuer", "()Ljava/lang/String;", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
+                "()Ljava/lang/String;", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println",
+                "(Ljava/lang/String;)V", false));
 
         // Find first real instruction
         AbstractInsnNode firstInsn = method.instructions.getFirst();
@@ -3659,31 +6114,54 @@ public class DualAuthPatcher {
         injection.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
         injection.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
         injection.add(new InsnNode(Opcodes.DUP));
-        injection.add(new LdcInsnNode("[DualAuth] refreshSessionAsync lambda - sessionToken at index " + sessionTokenIndex));
-        injection.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
-        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
-        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        injection.add(
+                new LdcInsnNode("[DualAuth] refreshSessionAsync lambda - sessionToken at index " + sessionTokenIndex));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>",
+                "(Ljava/lang/String;)V", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
+                "()Ljava/lang/String;", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println",
+                "(Ljava/lang/String;)V", false));
 
         // Set context from sessionToken so URL resolution works
         // String issuer = DualAuthHelper.extractIssuerFromToken(sessionToken);
         injection.add(new VarInsnNode(Opcodes.ALOAD, sessionTokenIndex));
         injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-            HELPER_CLASS, "extractIssuerFromToken", "(Ljava/lang/String;)Ljava/lang/String;", false));
+                HELPER_CLASS, "extractIssuerFromToken", "(Ljava/lang/String;)Ljava/lang/String;", false));
 
         // DualAuthContext.setIssuer(issuer);
         injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-            CONTEXT_CLASS, "setIssuer", "(Ljava/lang/String;)V", false));
+                CONTEXT_CLASS, "setIssuer", "(Ljava/lang/String;)V", false));
+
+        injection.add(new VarInsnNode(Opcodes.ALOAD, sessionTokenIndex));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                HELPER_CLASS, "extractSubjectFromToken", "(Ljava/lang/String;)Ljava/lang/String;", false));
+
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                CONTEXT_CLASS, "setPlayerUuid", "(Ljava/lang/String;)V", false));
+
+        injection.add(new VarInsnNode(Opcodes.ALOAD, sessionTokenIndex));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                HELPER_CLASS, "extractJwkFromToken", "(Ljava/lang/String;)Ljava/lang/String;", false));
+
+        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                CONTEXT_CLASS, "setJwk", "(Ljava/lang/String;)V", false));
 
         // Log issuer
         injection.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
         injection.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
         injection.add(new InsnNode(Opcodes.DUP));
         injection.add(new LdcInsnNode("[DualAuth] Refresh token issuer: "));
-        injection.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
-        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getIssuer", "()Ljava/lang/String;", false));
-        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
-        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
-        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>",
+                "(Ljava/lang/String;)V", false));
+        injection.add(
+                new MethodInsnNode(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getIssuer", "()Ljava/lang/String;", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
+                "()Ljava/lang/String;", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println",
+                "(Ljava/lang/String;)V", false));
 
         // Find first real instruction
         AbstractInsnNode firstInsn = method.instructions.getFirst();
@@ -3709,22 +6187,27 @@ public class DualAuthPatcher {
         // String issuer = DualAuthHelper.extractIssuerFromToken(identityToken);
         injection.add(new VarInsnNode(Opcodes.ALOAD, tokenArgIndex));
         injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-            HELPER_CLASS, "extractIssuerFromToken", "(Ljava/lang/String;)Ljava/lang/String;", false));
+                HELPER_CLASS, "extractIssuerFromToken", "(Ljava/lang/String;)Ljava/lang/String;", false));
 
         // DualAuthContext.setIssuer(issuer);
         injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-            CONTEXT_CLASS, "setIssuer", "(Ljava/lang/String;)V", false));
+                CONTEXT_CLASS, "setIssuer", "(Ljava/lang/String;)V", false));
 
         // Log
         injection.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
         injection.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
         injection.add(new InsnNode(Opcodes.DUP));
         injection.add(new LdcInsnNode("[DualAuth] Auth request, issuer from token: "));
-        injection.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
-        injection.add(new MethodInsnNode(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getIssuer", "()Ljava/lang/String;", false));
-        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
-        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
-        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>",
+                "(Ljava/lang/String;)V", false));
+        injection.add(
+                new MethodInsnNode(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getIssuer", "()Ljava/lang/String;", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
+                "()Ljava/lang/String;", false));
+        injection.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println",
+                "(Ljava/lang/String;)V", false));
 
         // Find first real instruction
         AbstractInsnNode firstInsn = method.instructions.getFirst();
@@ -3756,10 +6239,10 @@ public class DualAuthPatcher {
                 FieldInsnNode fi = (FieldInsnNode) insn;
                 if (fi.name.equals("sessionServiceUrl") && fi.desc.equals("Ljava/lang/String;")) {
                     // We need to replace:
-                    //   ALOAD 0 (this)
-                    //   GETFIELD sessionServiceUrl
+                    // ALOAD 0 (this)
+                    // GETFIELD sessionServiceUrl
                     // With:
-                    //   INVOKESTATIC DualAuthHelper.getSessionUrl()
+                    // INVOKESTATIC DualAuthHelper.getSessionUrl()
 
                     // Find and remove the preceding ALOAD 0 (this)
                     AbstractInsnNode prev = insn.getPrevious();
@@ -3770,7 +6253,7 @@ public class DualAuthPatcher {
                     // Replace GETFIELD with INVOKESTATIC and remove the ALOAD 0
                     InsnList replacement = new InsnList();
                     replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-                        HELPER_CLASS, "getSessionUrl", "()Ljava/lang/String;", false));
+                            HELPER_CLASS, "getSessionUrl", "()Ljava/lang/String;", false));
 
                     insns.insert(insn, replacement);
                     insns.remove(insn);
@@ -3785,17 +6268,17 @@ public class DualAuthPatcher {
 
                     patched = true;
                     patchCount++;
-                    System.out.println("  [" + className + "] Replaced GETFIELD sessionServiceUrl in " + method.name + "() -> DualAuthHelper.getSessionUrl()");
+                    System.out.println("  [" + className + "] Replaced GETFIELD sessionServiceUrl in " + method.name
+                            + "() -> DualAuthHelper.getSessionUrl()");
                 }
-            }
-            else if (insn.getOpcode() == Opcodes.LDC) {
+            } else if (insn.getOpcode() == Opcodes.LDC) {
                 LdcInsnNode ldc = (LdcInsnNode) insn;
                 if (ldc.cst instanceof String) {
                     String str = (String) ldc.cst;
 
                     // IMPORTANT: Never patch OAuth URLs - /auth login MUST use hytale.com
                     if (str.contains("oauth.accounts") || str.contains("accounts.hytale.com") ||
-                        str.contains("/consent/") || str.contains("/oauth2/")) {
+                            str.contains("/consent/") || str.contains("/oauth2/")) {
                         continue;
                     }
 
@@ -3803,25 +6286,27 @@ public class DualAuthPatcher {
                     if (str.equals(OFFICIAL_SESSION_URL)) {
                         InsnList replacement = new InsnList();
                         replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-                            HELPER_CLASS, "getSessionUrl", "()Ljava/lang/String;", false));
+                                HELPER_CLASS, "getSessionUrl", "()Ljava/lang/String;", false));
                         insns.insert(insn, replacement);
                         insns.remove(insn);
                         patched = true;
                         patchCount++;
-                        System.out.println("  [" + className + "] Replaced URL in " + method.name + "() -> DualAuthHelper.getSessionUrl()");
+                        System.out.println("  [" + className + "] Replaced URL in " + method.name
+                                + "() -> DualAuthHelper.getSessionUrl()");
                     }
                     // Replace URL paths with dynamic routing
                     else if (str.startsWith(OFFICIAL_SESSION_URL + "/")) {
                         InsnList replacement = new InsnList();
                         replacement.add(new LdcInsnNode(str));
                         replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-                            HELPER_CLASS, "resolveUrl", "(Ljava/lang/String;)Ljava/lang/String;", false));
+                                HELPER_CLASS, "resolveUrl", "(Ljava/lang/String;)Ljava/lang/String;", false));
                         insns.insert(insn, replacement);
                         insns.remove(insn);
                         patched = true;
                         patchCount++;
                         String path = str.substring(OFFICIAL_SESSION_URL.length());
-                        System.out.println("  [" + className + "] Replaced URL" + path + " in " + method.name + "() -> DualAuthHelper.resolveUrl()");
+                        System.out.println("  [" + className + "] Replaced URL" + path + " in " + method.name
+                                + "() -> DualAuthHelper.resolveUrl()");
                     }
                 }
             }
@@ -3843,7 +6328,8 @@ public class DualAuthPatcher {
             String shortName = name.substring(name.lastIndexOf('/') + 1).replace(".class", "");
 
             for (MethodNode method : classNode.methods) {
-                if (method.instructions == null) continue;
+                if (method.instructions == null)
+                    continue;
 
                 if (patchUrlReferences(method, shortName)) {
                     modified = true;
@@ -3860,7 +6346,8 @@ public class DualAuthPatcher {
 
         } catch (Exception e) {
             System.out.println("  Error patching " + name + ": " + e.getMessage());
-            if (verbose) e.printStackTrace();
+            if (verbose)
+                e.printStackTrace();
         }
 
         return null;
@@ -3873,9 +6360,9 @@ public class DualAuthPatcher {
     private static boolean isOAuthClass(String className) {
         // OAuth client and related classes - these handle /auth login
         if (className.contains("/oauth/") ||
-            className.contains("OAuth") ||
-            className.contains("AuthConfig") ||
-            className.contains("AuthCredentialStore")) {
+                className.contains("OAuth") ||
+                className.contains("AuthConfig") ||
+                className.contains("AuthCredentialStore")) {
             System.out.println("  [SKIP] OAuth class (keeping hytale.com URLs): " + className);
             return true;
         }
@@ -3900,7 +6387,8 @@ public class DualAuthPatcher {
             }
 
             for (MethodNode method : classNode.methods) {
-                if (method.instructions == null) continue;
+                if (method.instructions == null)
+                    continue;
                 for (AbstractInsnNode insn : method.instructions) {
                     if (insn.getOpcode() == Opcodes.LDC) {
                         LdcInsnNode ldc = (LdcInsnNode) insn;
