@@ -1045,9 +1045,6 @@ public class DualAuthPatcher {
                 mv.visitMaxs(3, 2);
                 mv.visitEnd();
 
-                mv.visitMaxs(4, 1);
-                mv.visitEnd();
-
                 // public static String getSessionUrl()
                 // Returns the session URL based on current context's issuer
                 // For backward compatibility: returns the actual issuer (e.g.,
