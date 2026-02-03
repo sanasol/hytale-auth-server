@@ -2697,7 +2697,7 @@ public class DualAuthPatcher {
                 mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "length", "()I", false);
                 mv.visitIntInsn(Opcodes.BIPUSH, 9);
                 Label skipComma = new Label();
-                mv.visitJumpInsn(Opcodes.IFLE, skipComma);
+                mv.visitJumpInsn(Opcodes.IF_ICMPLE, skipComma);
                 mv.visitVarInsn(Opcodes.ALOAD, 6);
                 mv.visitLdcInsn(",");
                 mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
