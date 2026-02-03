@@ -2518,6 +2518,60 @@ public class DualAuthPatcher {
                 mv.visitMaxs(4, 4);
                 mv.visitEnd();
 
+                // Helper: extractKeysContent(String json) -> Returns inner string inside
+                // "keys": [...]
+                mv = cw.visitMethod(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "extractKeysContent",
+                                "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+                mv.visitCode();
+                // find "keys":
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitLdcInsn("\"keys\":");
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(Ljava/lang/String;)I",
+                                false);
+                mv.visitVarInsn(Opcodes.ISTORE, 1);
+
+                // find [
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitIntInsn(Opcodes.BIPUSH, '[');
+                mv.visitVarInsn(Opcodes.ILOAD, 1);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(II)I", false);
+                mv.visitVarInsn(Opcodes.ISTORE, 2);
+
+                // find last ]
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitIntInsn(Opcodes.BIPUSH, ']');
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "lastIndexOf", "(I)I", false);
+                mv.visitVarInsn(Opcodes.ISTORE, 3);
+
+                // checks
+                mv.visitVarInsn(Opcodes.ILOAD, 1);
+                mv.visitInsn(Opcodes.ICONST_M1);
+                Label fail = new Label();
+                mv.visitJumpInsn(Opcodes.IF_ICMPEQ, fail);
+                mv.visitVarInsn(Opcodes.ILOAD, 2);
+                mv.visitInsn(Opcodes.ICONST_M1);
+                mv.visitJumpInsn(Opcodes.IF_ICMPEQ, fail);
+                mv.visitVarInsn(Opcodes.ILOAD, 3);
+                mv.visitVarInsn(Opcodes.ILOAD, 2);
+                mv.visitJumpInsn(Opcodes.IF_ICMPLE, fail); // if end <= start
+
+                // return substring(start+1, end).trim()
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitVarInsn(Opcodes.ILOAD, 2);
+                mv.visitInsn(Opcodes.ICONST_1);
+                mv.visitInsn(Opcodes.IADD);
+                mv.visitVarInsn(Opcodes.ILOAD, 3);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;",
+                                false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "trim", "()Ljava/lang/String;", false);
+                mv.visitInsn(Opcodes.ARETURN);
+
+                mv.visitLabel(fail);
+                mv.visitLdcInsn("");
+                mv.visitInsn(Opcodes.ARETURN);
+                mv.visitMaxs(4, 4);
+                mv.visitEnd();
+
                 // public static String fetchMergedJwksJson()
                 // Fetches JWKS from both backends and merges them
                 mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_SYNCHRONIZED,
