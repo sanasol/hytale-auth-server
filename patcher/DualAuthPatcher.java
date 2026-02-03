@@ -2239,6 +2239,11 @@ public class DualAuthPatcher {
                 cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "F2P_JWKS_URL", "Ljava/lang/String;", null, null)
                                 .visitEnd();
 
+                // Dynamic Issuer Discovery: List of dynamically discovered issuers
+                cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "dynamicIssuers", "Ljava/util/List;", null,
+                                null)
+                                .visitEnd();
+
                 // Static Initializer (<clinit>)
                 mv = cw.visitMethod(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
                 mv.visitCode();
@@ -2270,6 +2275,13 @@ public class DualAuthPatcher {
                 mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;",
                                 false);
                 mv.visitFieldInsn(Opcodes.PUTSTATIC, JWKS_FETCHER_CLASS, "F2P_JWKS_URL", "Ljava/lang/String;");
+
+                // Initialize dynamicIssuers list (thread-safe)
+                mv.visitTypeInsn(Opcodes.NEW, "java/util/concurrent/CopyOnWriteArrayList");
+                mv.visitInsn(Opcodes.DUP);
+                mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/concurrent/CopyOnWriteArrayList", "<init>", "()V",
+                                false);
+                mv.visitFieldInsn(Opcodes.PUTSTATIC, JWKS_FETCHER_CLASS, "dynamicIssuers", "Ljava/util/List;");
 
                 mv.visitInsn(Opcodes.RETURN);
                 mv.visitMaxs(2, 0);
@@ -2357,6 +2369,81 @@ public class DualAuthPatcher {
                 mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
                 mv.visitInsn(Opcodes.RETURN);
                 mv.visitMaxs(1, 1);
+                mv.visitEnd();
+
+                // public static void registerIssuer(String issuer)
+                // Dynamically registers a new issuer for JWKS fetching
+                mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                                "registerIssuer", "(Ljava/lang/String;)V", null, null);
+                mv.visitCode();
+
+                // Validate issuer using Helper
+                mv.visitVarInsn(Opcodes.ALOAD, 0); // issuer
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "isValidIssuer", "(Ljava/lang/String;)Z", false);
+                Label isValid = new Label();
+                mv.visitJumpInsn(Opcodes.IFNE, isValid);
+                mv.visitInsn(Opcodes.RETURN);
+                mv.visitLabel(isValid);
+
+                // Skip if official issuer
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "isOfficialIssuer", "(Ljava/lang/String;)Z",
+                                false);
+                Label notOfficial = new Label();
+                mv.visitJumpInsn(Opcodes.IFEQ, notOfficial);
+                mv.visitInsn(Opcodes.RETURN);
+                mv.visitLabel(notOfficial);
+
+                // Skip if configured F2P issuer
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitFieldInsn(Opcodes.GETSTATIC, HELPER_CLASS, "F2P_ISSUER", "Ljava/lang/String;");
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains", "(Ljava/lang/CharSequence;)Z",
+                                false);
+                Label notF2P = new Label();
+                mv.visitJumpInsn(Opcodes.IFEQ, notF2P);
+                mv.visitInsn(Opcodes.RETURN);
+                mv.visitLabel(notF2P);
+
+                // Check if already registered
+                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "dynamicIssuers", "Ljava/util/List;");
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "contains", "(Ljava/lang/Object;)Z",
+                                true);
+                Label notDuplicate = new Label();
+                mv.visitJumpInsn(Opcodes.IFEQ, notDuplicate);
+                mv.visitInsn(Opcodes.RETURN);
+                mv.visitLabel(notDuplicate);
+
+                // Log discovery
+                mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+                mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+                mv.visitInsn(Opcodes.DUP);
+                mv.visitLdcInsn("[DualAuth] Dynamic Issuer Discovery: ");
+                mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V",
+                                false);
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitLdcInsn(". Invalidating JWKS cache.");
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;",
+                                false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V",
+                                false);
+
+                // Add to list
+                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "dynamicIssuers", "Ljava/util/List;");
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "add", "(Ljava/lang/Object;)Z", true);
+                mv.visitInsn(Opcodes.POP);
+
+                // Invalidate cache
+                mv.visitInsn(Opcodes.ACONST_NULL);
+                mv.visitFieldInsn(Opcodes.PUTSTATIC, JWKS_FETCHER_CLASS, "cachedMergedJson", "Ljava/lang/String;");
+
+                mv.visitInsn(Opcodes.RETURN);
+                mv.visitMaxs(3, 1);
                 mv.visitEnd();
 
                 // public static String fetchJwksJson(String url)
@@ -2634,7 +2721,67 @@ public class DualAuthPatcher {
                 mv.visitVarInsn(Opcodes.ALOAD, 1);
                 mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "mergeJwks",
                                 "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", false);
-                mv.visitVarInsn(Opcodes.ASTORE, 6);
+                mv.visitVarInsn(Opcodes.ASTORE, 6); // Accumulated result in var 6
+
+                // Loop through dynamic issuers
+                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "dynamicIssuers", "Ljava/util/List;");
+                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "iterator", "()Ljava/util/Iterator;",
+                                true);
+                mv.visitVarInsn(Opcodes.ASTORE, 7); // Iterator in var 7
+
+                Label loopStart = new Label();
+                Label loopEnd = new Label();
+                mv.visitLabel(loopStart);
+                mv.visitVarInsn(Opcodes.ALOAD, 7);
+                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/Iterator", "hasNext", "()Z", true);
+                mv.visitJumpInsn(Opcodes.IFEQ, loopEnd);
+
+                // Get next issuer
+                mv.visitVarInsn(Opcodes.ALOAD, 7);
+                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/Iterator", "next", "()Ljava/lang/Object;", true);
+                mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/String");
+                mv.visitVarInsn(Opcodes.ASTORE, 8); // issuer in var 8
+
+                // Build URL: issuer + /.well-known/jwks.json
+                mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+                mv.visitInsn(Opcodes.DUP);
+                mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
+                mv.visitVarInsn(Opcodes.ALOAD, 8);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitLdcInsn("/.well-known/jwks.json");
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;",
+                                false);
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "fetchJwksJson",
+                                "(Ljava/lang/String;)Ljava/lang/String;", false);
+                mv.visitVarInsn(Opcodes.ASTORE, 9); // fetched JSON in var 9
+
+                // Log
+                mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+                mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+                mv.visitInsn(Opcodes.DUP);
+                mv.visitLdcInsn("[DualAuth] Merging dynamic keys from: ");
+                mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V",
+                                false);
+                mv.visitVarInsn(Opcodes.ALOAD, 8);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;",
+                                false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V",
+                                false);
+
+                // Merge
+                mv.visitVarInsn(Opcodes.ALOAD, 6);
+                mv.visitVarInsn(Opcodes.ALOAD, 9);
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "mergeJwks",
+                                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", false);
+                mv.visitVarInsn(Opcodes.ASTORE, 6); // Update accumulated
+
+                mv.visitJumpInsn(Opcodes.GOTO, loopStart);
+                mv.visitLabel(loopEnd);
 
                 // Update cache
                 mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "cachedMergedJson", "Ljava/lang/String;");
@@ -5773,8 +5920,21 @@ public class DualAuthPatcher {
                                         hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
                                                         HELPER_CLASS, "extractIssuerFromToken",
                                                         "(Ljava/lang/String;)Ljava/lang/String;", false));
+                                        // Stack: [issuer]
+
+                                        // Duplicate issuer for both setIssuer and registerIssuer
+                                        hook.add(new InsnNode(Opcodes.DUP)); // [issuer, issuer]
+
+                                        // Set issuer in context
                                         hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
                                                         CONTEXT_CLASS, "setIssuer", "(Ljava/lang/String;)V", false));
+                                        // Stack: [issuer]
+
+                                        // Register issuer for dynamic discovery
+                                        hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                                                        JWKS_FETCHER_CLASS, "registerIssuer", "(Ljava/lang/String;)V",
+                                                        false));
+                                        // Stack: []
 
                                         LabelNode continueStd = new LabelNode();
                                         hook.add(new JumpInsnNode(Opcodes.GOTO, continueStd));
