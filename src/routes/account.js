@@ -163,21 +163,13 @@ async function handleGameProfile(req, res, body, uuid, name) {
  */
 async function handleSkin(req, res, body, uuid, name, invalidateHeadCache) {
   console.log('skin update:', uuid, 'fields:', Object.keys(body).join(', '));
+  console.log('skin update body sample:', uuid, 'haircut:', body.haircut, 'bodyType:', body.bodyCharacteristic);
 
-  const existingData = await storage.getUserData(uuid);
+  // Use atomic update to prevent race conditions with multiple workers
+  const savedData = await storage.atomicUpdateSkin(uuid, body);
 
-  // Merge instead of overwrite to preserve existing values
-  // This prevents data loss when partial updates are sent
-  existingData.skin = {
-    ...existingData.skin,  // Keep existing skin data
-    ...body                // Overlay new values
-  };
-  existingData.lastUpdated = new Date().toISOString();
-
-  // Log the merge result for debugging
-  console.log('skin merge result:', uuid, 'total fields:', Object.keys(existingData.skin).length);
-
-  await storage.saveUserData(uuid, existingData);
+  // Log the result
+  console.log('skin saved atomically:', uuid, 'haircut:', savedData?.skin?.haircut);
 
   // Invalidate head image cache since skin changed
   if (invalidateHeadCache) {

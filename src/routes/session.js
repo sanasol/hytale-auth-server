@@ -99,13 +99,28 @@ function handleGameSessionChild(req, res, body, uuid, name) {
 
 /**
  * Delete game session (logout/cleanup)
+ * The client sends the identity token in Authorization header (not session token)
+ * We need to parse it to get the UUID and remove the player from all servers
  */
 async function handleGameSessionDelete(req, res, headers) {
   console.log('game-session delete');
 
   if (headers && headers.authorization) {
     const token = headers.authorization.replace('Bearer ', '');
-    await storage.removeSession(token);
+
+    // First try to remove by session token (in case it is one)
+    const removed = await storage.removeSession(token);
+
+    if (!removed) {
+      // Token is likely an identity token, parse it to get UUID
+      const tokenData = auth.parseToken(token);
+      if (tokenData && tokenData.uuid) {
+        console.log(`Session delete for player UUID: ${tokenData.uuid} (${tokenData.name || 'unknown'})`);
+        await storage.removePlayerFromAllServers(tokenData.uuid);
+      } else {
+        console.log('Session delete: could not extract UUID from token');
+      }
+    }
   }
 
   res.writeHead(204);
@@ -135,6 +150,23 @@ function handleAuthorizationGrant(req, res, body, uuid, name, headers) {
 
   // Extract audience from request (server's unique ID)
   const audience = body.aud || body.audience || body.server_id || crypto.randomUUID();
+
+  // Capture server info from User-Agent if this is a HytaleServer request
+  const userAgent = req.headers['user-agent'] || '';
+  if (userAgent.startsWith('HytaleServer/')) {
+    // Extract version from User-Agent: HytaleServer/2026.01.27-734d39026
+    const versionMatch = userAgent.match(/HytaleServer\/(\S+)/);
+    if (versionMatch && audience) {
+      storage.setServerVersion(audience, versionMatch[1]);
+    }
+    // Capture server IP
+    const serverIp = req.headers['x-forwarded-for']?.split(',')[0].trim()
+                     || req.headers['x-real-ip']
+                     || req.socket?.remoteAddress;
+    if (serverIp && audience) {
+      storage.setServerIp(audience, serverIp);
+    }
+  }
 
   // Get request host for dynamic issuer
   const requestHost = req.headers.host;

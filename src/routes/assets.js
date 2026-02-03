@@ -1,4 +1,5 @@
 const assets = require('../services/assets');
+const storage = require('../services/storage');
 const config = require('../config');
 const { sendJson, sendBinary } = require('../utils/response');
 
@@ -374,10 +375,15 @@ function handleAssetRoute(req, res, urlPath) {
 }
 
 /**
- * Download route - serve files from downloads directory
- * Used for HytaleServer.jar and other downloadable files
+ * Download route - redirect to CDN or serve from local
+ * Used for HytaleServer.jar, Assets.zip and other downloadable files
+ *
+ * Behavior:
+ * 1. Check if CDN link is configured for this file
+ * 2. If yes, redirect (302) to CDN and record metrics
+ * 3. If no, serve from local downloads directory
  */
-function handleDownload(req, res, urlPath) {
+async function handleDownload(req, res, urlPath) {
   const fs = require('fs');
   const path = require('path');
 
@@ -390,16 +396,37 @@ function handleDownload(req, res, urlPath) {
     return;
   }
 
+  // Check if we have a CDN link configured
+  const downloadLink = await storage.getDownloadLink(filename);
+
+  if (downloadLink.isExternal && downloadLink.url) {
+    // Record the download metric
+    storage.recordDownload(filename, downloadLink.url);
+
+    // Redirect to CDN
+    console.log(`Download redirect: ${filename} -> ${downloadLink.url.substring(0, 50)}...`);
+    res.writeHead(302, {
+      'Location': downloadLink.url,
+      'Cache-Control': 'no-cache'
+    });
+    res.end();
+    return;
+  }
+
+  // Fallback: serve from local downloads directory
   const filePath = path.join(config.downloadsDir, filename);
 
   if (!fs.existsSync(filePath)) {
-    sendJson(res, 404, { error: 'File not found' });
+    sendJson(res, 404, { error: 'File not found and no CDN link configured' });
     return;
   }
 
   try {
     const stat = fs.statSync(filePath);
     const content = fs.readFileSync(filePath);
+
+    // Record download from local
+    storage.recordDownload(filename, 'local');
 
     // Determine content type
     let contentType = 'application/octet-stream';

@@ -7,6 +7,8 @@ const { redis, connect: connectRedis, isConnected } = require('./services/redis'
 const storage = require('./services/storage');
 const auth = require('./services/auth');
 const assets = require('./services/assets');
+const requestLogger = require('./services/requestLogger');
+const nativeRenderer = require('./services/nativeRenderer');
 const middleware = require('./middleware');
 const { sendJson } = require('./utils/response');
 
@@ -17,11 +19,13 @@ const routes = require('./routes');
  * Main request handler
  */
 async function handleRequest(req, res) {
+  const startTime = Date.now();
   const timestamp = new Date().toISOString();
 
-  // Skip logging for telemetry endpoints (too noisy)
+  // Skip console logging for telemetry endpoints (too noisy)
   if (!req.url.includes('/telemetry')) {
-    console.log(`${timestamp} ${req.method} ${req.url}`);
+    const clientIp = requestLogger.getClientIp(req);
+    console.log(`${timestamp} ${req.method} ${req.url} [${clientIp}]`);
   }
 
   // CORS headers
@@ -30,6 +34,7 @@ async function handleRequest(req, res) {
   // Handle OPTIONS preflight
   if (req.method === 'OPTIONS') {
     middleware.handleOptions(req, res);
+    requestLogger.log(req, res, null, startTime);
     return;
   }
 
@@ -40,7 +45,8 @@ async function handleRequest(req, res) {
   // Handle binary uploads (like head-cache) before consuming body as string
   const headCacheMatch = urlPath.match(/^\/avatar\/([^/]+)\/head-cache$/);
   if (headCacheMatch && req.method === 'POST') {
-    routes.avatar.handleAvatarRoutes(req, res, urlPath, {});
+    await routes.avatar.handleAvatarRoutes(req, res, urlPath, {});
+    requestLogger.log(req, res, { type: 'binary-upload' }, startTime);
     return;
   }
 
@@ -52,6 +58,13 @@ async function handleRequest(req, res) {
 
   // Route the request
   await routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope);
+
+  // Log the request to file
+  // Set LOG_TELEMETRY=false to skip telemetry endpoints (reduces noise)
+  const skipTelemetry = process.env.LOG_TELEMETRY === 'false';
+  if (!skipTelemetry || !req.url.includes('/telemetry')) {
+    requestLogger.log(req, res, body, startTime);
+  }
 }
 
 /**
@@ -70,6 +83,14 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
   if (urlPath.startsWith('/customizer')) {
     routes.avatar.handleCustomizerRoute(req, res, urlPath);
     return;
+  }
+
+  // Debug SSR routes (before other routes to avoid catch-all)
+  if (urlPath.startsWith('/debug/')) {
+    console.log('[DEBUG ROUTE] Matched /debug/', urlPath);
+    const handled = await routes.debug.handleDebugRoutes(req, res, urlPath);
+    console.log('[DEBUG ROUTE] Handled:', handled);
+    if (handled) return;
   }
 
   // Cosmetics list API
@@ -269,15 +290,44 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     return;
   }
 
-  // Admin dashboard HTML page (no auth - login happens client-side)
+  // Admin dashboard HTML page - redirect to servers page
   if (urlPath === '/admin' || urlPath === '/admin/') {
-    routes.admin.handleAdminDashboard(req, res);
+    res.writeHead(302, { Location: '/admin/page/servers' });
+    res.end();
+    return;
+  }
+
+  // Admin pages (no auth - login happens client-side)
+  if (urlPath === '/admin/page/servers') {
+    routes.adminPages.handleServersPage(req, res);
+    return;
+  }
+  if (urlPath === '/admin/page/players') {
+    routes.adminPages.handlePlayersPage(req, res);
+    return;
+  }
+  if (urlPath === '/admin/page/logs') {
+    routes.adminPages.handleLogsPage(req, res);
+    return;
+  }
+  if (urlPath === '/admin/page/metrics') {
+    routes.adminPages.handleMetricsPage(req, res);
+    return;
+  }
+  if (urlPath === '/admin/page/settings') {
+    routes.adminPages.handleSettingsPage(req, res);
     return;
   }
 
   // Test page for head embed
   if (urlPath === '/test/head') {
     routes.avatar.handleTestHeadPage(req, res);
+    return;
+  }
+
+  // Prometheus metrics endpoint (no auth for scraping)
+  if (urlPath === '/metrics') {
+    await routes.admin.handlePrometheusMetrics(req, res);
     return;
   }
 
@@ -289,6 +339,64 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
       return;
     }
   }
+
+  // ====== Optimized Admin APIs ======
+
+  // Active servers API (optimized)
+  if (urlPath === '/admin/api/servers') {
+    await routes.admin.handleActiveServersApi(req, res, url);
+    return;
+  }
+
+  // Active players API (optimized)
+  if (urlPath === '/admin/api/players') {
+    await routes.admin.handleActivePlayersApi(req, res, url);
+    return;
+  }
+
+  // Metrics time-series API
+  if (urlPath === '/admin/api/metrics/timeseries') {
+    await routes.admin.handleMetricsTimeSeries(req, res, url);
+    return;
+  }
+
+  // Metrics snapshot API
+  if (urlPath === '/admin/api/metrics/snapshot') {
+    await routes.admin.handleMetricsSnapshot(req, res);
+    return;
+  }
+
+  // Hardware stats API
+  if (urlPath === '/admin/api/metrics/hardware') {
+    await routes.admin.handleHardwareStats(req, res);
+    return;
+  }
+
+  // Analytics stats API (session end data, events, distributions)
+  if (urlPath === '/admin/api/analytics') {
+    await routes.admin.handleAnalyticsStats(req, res);
+    return;
+  }
+
+  // Settings APIs
+  if (urlPath === '/admin/api/settings/downloads') {
+    if (req.method === 'POST') {
+      await routes.admin.handleSaveDownloadLinks(req, res, body);
+    } else {
+      await routes.admin.handleGetDownloadLinks(req, res);
+    }
+    return;
+  }
+  if (urlPath === '/admin/api/settings/download-stats') {
+    await routes.admin.handleGetDownloadStats(req, res);
+    return;
+  }
+  if (urlPath === '/admin/api/settings/download-history') {
+    await routes.admin.handleGetDownloadHistory(req, res, url);
+    return;
+  }
+
+  // Legacy admin APIs (for backward compatibility)
 
   // Active sessions API
   if (urlPath === '/admin/sessions' || urlPath === '/sessions/active') {
@@ -302,7 +410,7 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     return;
   }
 
-  // Admin servers API
+  // Admin servers API (legacy)
   if (urlPath.startsWith('/admin/servers')) {
     await routes.admin.handleAdminServers(req, res, url);
     return;
@@ -317,6 +425,30 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
   // Pre-render queue
   if (urlPath === '/admin/prerender-queue') {
     await routes.admin.handlePrerenderQueue(req, res);
+    return;
+  }
+
+  // Request logs API
+  if (urlPath === '/admin/logs') {
+    await routes.admin.handleAdminLogs(req, res, url);
+    return;
+  }
+
+  // Request logs stats
+  if (urlPath === '/admin/logs/stats') {
+    await routes.admin.handleAdminLogsStats(req, res);
+    return;
+  }
+
+  // Admin cleanup API
+  if (urlPath === '/admin/cleanup') {
+    await routes.admin.handleAdminCleanup(req, res);
+    return;
+  }
+
+  // Admin data counts API
+  if (urlPath === '/admin/counts') {
+    await routes.admin.handleAdminDataCounts(req, res);
     return;
   }
 
@@ -346,9 +478,9 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     return;
   }
 
-  // Telemetry endpoint
+  // Telemetry endpoint - process and store player state
   if (urlPath.includes('/telemetry') || urlPath.includes('/analytics') || urlPath.includes('/event')) {
-    sendJson(res, 200, { success: true, received: true });
+    await routes.telemetry.handleTelemetry(req, res, body, headers);
     return;
   }
 
@@ -376,9 +508,14 @@ async function startServer() {
   console.log(`Domain: ${config.domain}`);
   console.log(`Data directory: ${config.dataDir}`);
   console.log(`Assets path: ${config.assetsPath}`);
+  console.log(`Request logs: ${requestLogger.LOG_FILE}`);
 
   // Pre-load cosmetics
   assets.preloadCosmetics();
+
+  // Initialize native renderer (optional - will log status)
+  const rendererAvailable = nativeRenderer.init();
+  console.log(`Native renderer: ${rendererAvailable ? 'available' : 'not available (install: npm install three gl canvas sharp)'}`);
 
   // Connect to Redis
   await connectRedis();
@@ -409,6 +546,7 @@ async function startServer() {
       console.log(`  - Admin API: /admin/sessions, /admin/stats`);
       console.log(`  - Server auto-auth: /server/auto-auth`);
       console.log(`  - OAuth device flow: /oauth2/device/auth, /oauth2/token`);
+      console.log(`  - Debug SSR: /debug/ssr`);
     }
   });
 }

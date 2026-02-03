@@ -218,7 +218,7 @@ function extractAsset(assetPath) {
 
   for (const tryPath of pathsToTry) {
     try {
-      const content = execSync(`unzip -p "${config.assetsPath}" "${tryPath}"`, {
+      const content = execSync(`unzip -p "${config.assetsPath}" "${tryPath}" 2>/dev/null`, {
         maxBuffer: 50 * 1024 * 1024
       });
       return content;

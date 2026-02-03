@@ -49,6 +49,8 @@ services:
   # Hytale Auth Server
   hytale-auth:
     build: .
+    ports:
+      - "3000:3000"
     environment:
       # IMPORTANT: Your domain must be exactly 10 characters (same as hytale.com)
       DOMAIN: "sanasol.ws"

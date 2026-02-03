@@ -24,6 +24,12 @@ function handleServerAutoAuth(req, res, body) {
   // Server name for logging/identification (optional)
   const serverName = body.server_name || body.serverName || `Server-${serverId.substring(0, 8)}`;
 
+  // Capture server IP from proxy headers
+  const serverIp = req.headers['x-forwarded-for']?.split(',')[0].trim()
+                   || req.headers['x-real-ip']
+                   || req.socket?.remoteAddress
+                   || 'unknown';
+
   // Generate a server-specific UUID (deterministic based on server_id for consistency)
   const serverUuid = generateServerUuid(serverId);
 
@@ -44,10 +50,14 @@ function handleServerAutoAuth(req, res, body) {
   // Register the server session
   storage.registerSession(sessionToken, serverUuid, serverName, serverId);
 
+  // Store server name and IP for admin dashboard
+  storage.setServerName(serverId, serverName);
+  storage.setServerIp(serverId, serverIp);
+
   // Calculate expiresAt for Java client compatibility
   const expiresAt = new Date(Date.now() + config.sessionTtl * 1000).toISOString();
 
-  console.log('server/auto-auth success:', serverUuid, serverName);
+  console.log(`server/auto-auth success: ${serverUuid} "${serverName}" from IP ${serverIp}`);
 
   sendJson(res, 200, {
     identityToken: identityToken,
@@ -108,7 +118,7 @@ function handleServerGameProfiles(req, res, headers) {
  *
  * Note: For official mode, this would redirect to hytale.com
  */
-function handleOAuthDeviceAuth(req, res, body) {
+async function handleOAuthDeviceAuth(req, res, body) {
   console.log('oauth2/device/auth request:', JSON.stringify(body));
 
   const clientId = body.client_id || 'hytale-server';
@@ -119,7 +129,7 @@ function handleOAuthDeviceAuth(req, res, body) {
   const userCode = generateUserCode();
 
   // Store the device code for later exchange (auto-approved for F2P)
-  storage.registerDeviceCode(deviceCode, userCode, clientId, scope);
+  await storage.registerDeviceCode(deviceCode, userCode, clientId, scope);
 
   // Return verification URLs pointing to oauth.accounts subdomain (matches what patched server expects)
   // Note: Traefik routes oauth.accounts.sanasol.ws -> this same auth server
@@ -137,12 +147,12 @@ function handleOAuthDeviceAuth(req, res, body) {
  * OAuth device verification page
  * Displays user code entry form (or auto-approves in F2P mode)
  */
-function handleOAuthDeviceVerify(req, res, query) {
+async function handleOAuthDeviceVerify(req, res, query) {
   const userCode = query.user_code || query.code || '';
 
   // In F2P mode, auto-approve any device code
   if (userCode) {
-    storage.approveDeviceCode(userCode);
+    await storage.approveDeviceCode(userCode);
   }
 
   // Return a simple HTML page
@@ -229,7 +239,7 @@ function handleOAuthToken(req, res, body) {
 /**
  * Handle device code exchange for tokens
  */
-function handleDeviceCodeExchange(req, res, body) {
+async function handleDeviceCodeExchange(req, res, body) {
   const deviceCode = body.device_code;
   const clientId = body.client_id || 'hytale-server';
 
@@ -241,7 +251,7 @@ function handleDeviceCodeExchange(req, res, body) {
   }
 
   // Check if device code exists and is approved
-  const deviceData = storage.getDeviceCode(deviceCode);
+  const deviceData = await storage.getDeviceCode(deviceCode);
 
   if (!deviceData) {
     return sendJson(res, 400, {
@@ -252,7 +262,7 @@ function handleDeviceCodeExchange(req, res, body) {
 
   if (!deviceData.approved) {
     // In F2P mode, auto-approve
-    storage.approveDeviceCode(deviceData.userCode);
+    await storage.approveDeviceCode(deviceData.userCode);
     deviceData.approved = true;
   }
 
@@ -273,7 +283,7 @@ function handleDeviceCodeExchange(req, res, body) {
   const idToken = auth.generateIdentityToken(serverUuid, serverName, 'openid hytale:server', ['game.base'], requestHost);
 
   // Clean up device code
-  storage.consumeDeviceCode(deviceCode);
+  await storage.consumeDeviceCode(deviceCode);
 
   sendJson(res, 200, {
     access_token: accessToken,
