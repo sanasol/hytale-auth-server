@@ -110,7 +110,7 @@ def create_omni_token(
         "exp": now + 3600,  # 1 hour expiry
         "username": username,
         "omni": True,  # Flag indicating Omni-Auth token
-        "scp": "hytale:client"  # Required scope for client authentication
+        "scope": "hytale:client"  # Required scope for client authentication (server uses "scope" not "scp")
     }
 
     # Encode header and payload
