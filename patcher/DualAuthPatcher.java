@@ -539,20 +539,40 @@ public class DualAuthPatcher {
                 mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/ThreadLocal", "set", "(Ljava/lang/Object;)V",
                                 false);
 
-                // If jwk == null, don't touch global caches (ConcurrentHashMap doesn't accept
-                // null)
+                // if (jwk != null) ...
                 mv.visitVarInsn(Opcodes.ALOAD, 0);
                 Label jwkNotNull = new Label();
                 mv.visitJumpInsn(Opcodes.IFNONNULL, jwkNotNull);
                 mv.visitInsn(Opcodes.RETURN);
                 mv.visitLabel(jwkNotNull);
 
-                // Save in global cache if there is an issuer
+                // Save in global cache (Issuer) -> ONLY if NOT Omni or if issuer is official
                 mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getIssuer", "()Ljava/lang/String;", false);
                 mv.visitVarInsn(Opcodes.ASTORE, 1);
                 mv.visitVarInsn(Opcodes.ALOAD, 1);
-                Label skipGlobal = new Label();
-                mv.visitJumpInsn(Opcodes.IFNULL, skipGlobal);
+                Label skipGlobalIssuer = new Label();
+                mv.visitJumpInsn(Opcodes.IFNULL, skipGlobalIssuer);
+
+                // CHECK SECURITY: Is this an official-style issuer?
+                mv.visitVarInsn(Opcodes.ALOAD, 1); // issuer
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "isOfficialIssuer", "(Ljava/lang/String;)Z",
+                                false);
+                Label doStore = new Label();
+                mv.visitJumpInsn(Opcodes.IFNE, doStore); // Is official, safe to cache by issuer
+
+                // Check F2P (Sanasol)
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "isF2P", "()Z", false);
+                mv.visitJumpInsn(Opcodes.IFNE, doStore); // Is F2P, safe to cache by issuer
+
+                // If we reach here, it's Omni/Decentralized/Localhost.
+                // DO NOT STORE in Issuer cache to avoid "localhost" collision between
+                // users.
+                mv.visitJumpInsn(Opcodes.GOTO, skipGlobalIssuer);
+
+                mv.visitLabel(doStore);
+                mv.visitFrame(Opcodes.F_APPEND, 1, new Object[] { "java/lang/String" }, 0, null);
+
+                // Store in Issuer Cache
                 mv.visitFieldInsn(Opcodes.GETSTATIC, CONTEXT_CLASS, "globalJwkCache",
                                 "Ljava/util/concurrent/ConcurrentHashMap;");
                 mv.visitVarInsn(Opcodes.ALOAD, 1);
@@ -560,9 +580,11 @@ public class DualAuthPatcher {
                 mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/concurrent/ConcurrentHashMap", "put",
                                 "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", false);
                 mv.visitInsn(Opcodes.POP);
-                mv.visitLabel(skipGlobal);
 
-                // Save in global cache by UUID if exists
+                mv.visitLabel(skipGlobalIssuer);
+                mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+
+                // Save in global cache by UUID if exists (THIS IS CRITICAL FOR OMNI-AUTH)
                 mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "getPlayerUuid", "()Ljava/lang/String;", false);
                 mv.visitVarInsn(Opcodes.ASTORE, 2);
                 mv.visitVarInsn(Opcodes.ALOAD, 2);
@@ -1931,6 +1953,24 @@ public class DualAuthPatcher {
                                 "isOmniIssuerTrusted", "(Ljava/lang/String;)Z", null, null);
                 mv.visitCode();
 
+                // Debug: Print the issuer being checked
+                mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+                mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+                mv.visitInsn(Opcodes.DUP);
+                mv.visitLdcInsn("[DualAuth] isOmniIssuerTrusted: checking '");
+                mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V",
+                                false);
+                mv.visitVarInsn(Opcodes.ALOAD, 0); // issuer
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitLdcInsn("' against HYTALE_TRUSTED_ISSUERS...");
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;",
+                                false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V",
+                                false);
+
                 // If issuer is null, return false
                 mv.visitVarInsn(Opcodes.ALOAD, 0);
                 Label omniIssuerNotNull = new Label();
@@ -1946,10 +1986,16 @@ public class DualAuthPatcher {
                                 "(Ljava/lang/String;)Ljava/lang/String;", false);
                 mv.visitVarInsn(Opcodes.ASTORE, 1); // trustedCsv
 
-                // If null or empty, return false
                 mv.visitVarInsn(Opcodes.ALOAD, 1);
                 Label trustedNotNull = new Label();
                 mv.visitJumpInsn(Opcodes.IFNONNULL, trustedNotNull);
+
+                // Debug: No trusted issuers set
+                mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+                mv.visitLdcInsn("[DualAuth] isOmniIssuerTrusted: HYTALE_TRUSTED_ISSUERS is NOT set.");
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V",
+                                false);
+
                 mv.visitInsn(Opcodes.ICONST_0);
                 mv.visitInsn(Opcodes.IRETURN);
 
@@ -4914,6 +4960,27 @@ public class DualAuthPatcher {
                 mv.visitVarInsn(Opcodes.ALOAD, 14);
                 mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet", "getIssuer",
                                 "()Ljava/lang/String;", false);
+                mv.visitVarInsn(Opcodes.ASTORE, 13); // temp issuer var
+
+                // Log strict mode check
+                mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+                mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+                mv.visitInsn(Opcodes.DUP);
+                mv.visitLdcInsn("[DualAuth] Strict Mode: checking if issuer '");
+                mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V",
+                                false);
+                mv.visitVarInsn(Opcodes.ALOAD, 13);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitLdcInsn("' is trusted...");
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;",
+                                false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V",
+                                false);
+
+                mv.visitVarInsn(Opcodes.ALOAD, 13);
                 mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "isOmniIssuerTrusted",
                                 "(Ljava/lang/String;)Z", false);
                 mv.visitJumpInsn(Opcodes.IFNE, allowOmniBypass); // If trusted, do proper verification
