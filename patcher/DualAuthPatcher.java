@@ -834,15 +834,18 @@ public class DualAuthPatcher {
 
         mv.visitLabel(trustAllFalse);
 
-        // Strict mode: reject Omni-Auth tokens entirely
+        // Strict mode: for Omni-Auth tokens, check TRUSTED_ISSUERS via isOmniIssuerTrusted
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "isOmni", "()Z", false);
         Label strictNotOmni = new Label();
         mv.visitJumpInsn(Opcodes.IFEQ, strictNotOmni);
-        mv.visitInsn(Opcodes.ICONST_0);
-        mv.visitInsn(Opcodes.IRETURN);
+        // This is an Omni-Auth token - check if issuer is in TRUSTED_ISSUERS
+        mv.visitVarInsn(Opcodes.ALOAD, 0); // issuer
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "isOmniIssuerTrusted",
+                "(Ljava/lang/String;)Z", false);
+        mv.visitInsn(Opcodes.IRETURN); // Return true if trusted, false if not
         mv.visitLabel(strictNotOmni);
 
-        // Trusted issuer allowlist: HYTALE_TRUSTED_ISSUERS=https://a,https://b
+        // Non-Omni tokens: check TRUSTED_ISSUERS allowlist
         mv.visitLdcInsn("HYTALE_TRUSTED_ISSUERS");
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "getenv",
                 "(Ljava/lang/String;)Ljava/lang/String;", false);
@@ -1792,6 +1795,148 @@ public class DualAuthPatcher {
         mv.visitInsn(Opcodes.ACONST_NULL);
         mv.visitInsn(Opcodes.ARETURN);
         mv.visitMaxs(4, 4);
+        mv.visitEnd();
+
+        // public static boolean isOmniIssuerTrusted(String issuer)
+        // Checks if Omni-Auth issuer is in TRUSTED_ISSUERS list
+        // This is used when TRUST_ALL_ISSUERS=false to still allow specific issuers
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "isOmniIssuerTrusted", "(Ljava/lang/String;)Z", null, null);
+        mv.visitCode();
+
+        // If issuer is null, return false
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        Label omniIssuerNotNull = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, omniIssuerNotNull);
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitInsn(Opcodes.IRETURN);
+
+        mv.visitLabel(omniIssuerNotNull);
+
+        // Get TRUSTED_ISSUERS env
+        mv.visitLdcInsn("HYTALE_TRUSTED_ISSUERS");
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "getenv",
+                "(Ljava/lang/String;)Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 1); // trustedCsv
+
+        // If null or empty, return false
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        Label trustedNotNull = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, trustedNotNull);
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitInsn(Opcodes.IRETURN);
+
+        mv.visitLabel(trustedNotNull);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "trim", "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 1);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "isEmpty", "()Z", false);
+        Label trustedNotEmpty = new Label();
+        mv.visitJumpInsn(Opcodes.IFEQ, trustedNotEmpty);
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitInsn(Opcodes.IRETURN);
+
+        mv.visitLabel(trustedNotEmpty);
+
+        // Extract host from issuer URL for matching
+        // Try to get just the host part: http://127.0.0.1:12345 -> 127.0.0.1
+        mv.visitVarInsn(Opcodes.ALOAD, 0); // issuer
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "toLowerCase", "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 2); // issuerLower
+
+        // Split trusted issuers by comma and check each
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitLdcInsn(",");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "split",
+                "(Ljava/lang/String;)[Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 3); // parts[]
+
+        // Loop through parts
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitVarInsn(Opcodes.ISTORE, 4); // i = 0
+
+        Label omniLoopCheck = new Label();
+        Label omniLoopBody = new Label();
+        Label omniReturnFalse = new Label();
+
+        mv.visitJumpInsn(Opcodes.GOTO, omniLoopCheck);
+
+        mv.visitLabel(omniLoopBody);
+        // part = parts[i].trim().toLowerCase()
+        mv.visitVarInsn(Opcodes.ALOAD, 3);
+        mv.visitVarInsn(Opcodes.ILOAD, 4);
+        mv.visitInsn(Opcodes.AALOAD);
+        mv.visitVarInsn(Opcodes.ASTORE, 5); // part
+
+        mv.visitVarInsn(Opcodes.ALOAD, 5);
+        Label omniPartNotNull = new Label();
+        mv.visitJumpInsn(Opcodes.IFNONNULL, omniPartNotNull);
+        mv.visitIincInsn(4, 1); // i++ - skip null parts
+        mv.visitJumpInsn(Opcodes.GOTO, omniLoopCheck);
+
+        mv.visitLabel(omniPartNotNull);
+        mv.visitVarInsn(Opcodes.ALOAD, 5);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "trim", "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "toLowerCase", "()Ljava/lang/String;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 5);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 5);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "isEmpty", "()Z", false);
+        Label omniPartNotEmpty = new Label();
+        mv.visitJumpInsn(Opcodes.IFEQ, omniPartNotEmpty);
+        mv.visitIincInsn(4, 1);
+        mv.visitJumpInsn(Opcodes.GOTO, omniLoopCheck);
+
+        mv.visitLabel(omniPartNotEmpty);
+
+        // Check if issuer contains the trusted part (host match)
+        // e.g., "http://127.0.0.1:12345" contains "127.0.0.1"
+        mv.visitVarInsn(Opcodes.ALOAD, 2); // issuerLower
+        mv.visitVarInsn(Opcodes.ALOAD, 5); // part
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
+                "(Ljava/lang/CharSequence;)Z", false);
+        Label omniNoMatch = new Label();
+        mv.visitJumpInsn(Opcodes.IFEQ, omniNoMatch);
+
+        // Match found! Log and return true
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitLdcInsn("[DualAuth] Omni-Auth issuer trusted via TRUSTED_ISSUERS: ");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitLdcInsn(" (matched: ");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 5);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitLdcInsn(")");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitInsn(Opcodes.ICONST_1);
+        mv.visitInsn(Opcodes.IRETURN);
+
+        mv.visitLabel(omniNoMatch);
+        mv.visitIincInsn(4, 1); // i++
+
+        mv.visitLabel(omniLoopCheck);
+        mv.visitVarInsn(Opcodes.ILOAD, 4); // i
+        mv.visitVarInsn(Opcodes.ALOAD, 3); // parts
+        mv.visitInsn(Opcodes.ARRAYLENGTH);
+        mv.visitJumpInsn(Opcodes.IF_ICMPLT, omniLoopBody);
+
+        // No match found
+        mv.visitLabel(omniReturnFalse);
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitInsn(Opcodes.IRETURN);
+
+        mv.visitMaxs(6, 6);
         mv.visitEnd();
 
         cw.visitEnd();
@@ -4457,10 +4602,8 @@ public class DualAuthPatcher {
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/Boolean", "parseBoolean", "(Ljava/lang/String;)Z", false);
         mv.visitJumpInsn(Opcodes.IFNE, allowOmniBypass);
 
-        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-        mv.visitLdcInsn("[DualAuth] Omni-Auth rejected (HYTALE_TRUST_ALL_ISSUERS=false)");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
-
+        // TRUST_ALL_ISSUERS=false - check TRUSTED_ISSUERS before rejecting
+        // First, parse the claims to get the issuer
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitVarInsn(Opcodes.ILOAD, 1);
         mv.visitInsn(Opcodes.ICONST_1);
@@ -4479,7 +4622,20 @@ public class DualAuthPatcher {
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/nimbusds/jwt/JWTClaimsSet", "parse",
                 "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 14);
+
+        // Get issuer from claims and check TRUSTED_ISSUERS
         mv.visitVarInsn(Opcodes.ALOAD, 14);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet", "getIssuer",
+                "()Ljava/lang/String;", false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "isOmniIssuerTrusted",
+                "(Ljava/lang/String;)Z", false);
+        mv.visitJumpInsn(Opcodes.IFNE, allowOmniBypass); // If trusted, do proper verification
+
+        // Not in TRUSTED_ISSUERS - reject
+        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        mv.visitLdcInsn("[DualAuth] Omni-Auth rejected (HYTALE_TRUST_ALL_ISSUERS=false, issuer not in TRUSTED_ISSUERS)");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        mv.visitInsn(Opcodes.ACONST_NULL);
         mv.visitInsn(Opcodes.ARETURN);
 
         mv.visitLabel(allowOmniBypass);
@@ -4964,7 +5120,9 @@ public class DualAuthPatcher {
 
                     int claimsVar = mn.maxLocals;
                     int envVar = claimsVar + 1;
-                    mn.maxLocals = envVar + 1;
+                    int issuerVar = envVar + 1;        // For Omni-Auth issuer check
+                    int trustedCsvVar = issuerVar + 1; // For TRUSTED_ISSUERS env
+                    mn.maxLocals = trustedCsvVar + 1;
 
                     InsnList hook = new InsnList();
 
@@ -5050,6 +5208,27 @@ public class DualAuthPatcher {
                     hook.add(new JumpInsnNode(Opcodes.GOTO, afterOmniDecision));
 
                     hook.add(strictOmni);
+                    // TRUST_ALL_ISSUERS=false, but check TRUSTED_ISSUERS before rejecting
+                    // Get issuer from claims
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, claimsVar));
+                    hook.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "com/nimbusds/jwt/JWTClaimsSet",
+                            "getIssuer",
+                            "()Ljava/lang/String;",
+                            false));
+                    hook.add(new VarInsnNode(Opcodes.ASTORE, issuerVar));
+
+                    // Check TRUSTED_ISSUERS for Omni-Auth
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, issuerVar));
+                    hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                            HELPER_CLASS,
+                            "isOmniIssuerTrusted",
+                            "(Ljava/lang/String;)Z",
+                            false));
+                    // If trusted, jump to allowOmni
+                    hook.add(new JumpInsnNode(Opcodes.IFNE, allowOmni));
+
+                    // Not trusted - reject Omni-Auth
                     hook.add(new InsnNode(Opcodes.ICONST_0));
                     hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "setOmni", "(Z)V", false));
                     hook.add(new InsnNode(Opcodes.ACONST_NULL));
