@@ -664,7 +664,7 @@ jobs:
       # STRICT MODE TESTS (TRUST_ALL_ISSUERS=false)
       # ==========================================
 
-      - name: Start Server (strict mode - trust disabled)
+      - name: Start Server (strict mode - trust disabled, WITH CLI tokens)
         working-directory: server
         run: |
           # Create separate data directory for strict mode test
@@ -673,7 +673,7 @@ jobs:
           echo "Using isolated data directory: universe_strict"
 
           echo "Starting Hytale server with HYTALE_TRUST_ALL_ISSUERS=false (strict mode)..."
-          echo "Note: No CLI tokens - server will auto-fetch F2P tokens only"
+          echo "IMPORTANT: Testing WITH CLI tokens to verify server can validate its own identity"
           HYTALE_TRUST_ALL_ISSUERS=false \
           java -Xmx2G \
             -jar HytaleServerPatched.jar \
@@ -682,6 +682,8 @@ jobs:
             --universe universe_strict \
             --auth-mode authenticated \
             --disable-sentry \
+            --session-token "$HYTALE_SERVER_SESSION_TOKEN" \
+            --identity-token "$HYTALE_SERVER_IDENTITY_TOKEN" \
             2>&1 | tee server_strict.log &
 
           SERVER_PID=$!
