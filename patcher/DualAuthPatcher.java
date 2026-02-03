@@ -2220,15 +2220,7 @@ public class DualAuthPatcher {
 
         /**
          * Generate DualJwksFetcher class - High Performance Segregated Cache.
-         * 
-         * Separates caching into:
-         * 1. Base Cache (Official + Configured): Refreshes hourly.
-         * 2. Dynamic Cache (Discovery): Fetches once per new issuer, persisted in RAM
-         * map.
-         * 
-         * Optimization: Rebuilding the full JWK set happens in memory via string
-         * concatenation,
-         * preventing network spam when new providers are discovered.
+         * v9.2.1 FIX: Defines extractKeysContent BEFORE callers to ensure linkage.
          */
         private static byte[] generateDualJwksFetcher() {
                 ClassWriter cw = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
@@ -2237,61 +2229,35 @@ public class DualAuthPatcher {
                 cw.visit(Opcodes.V17, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL, JWKS_FETCHER_CLASS, null,
                                 "java/lang/Object", null);
 
-                // STATIC CONSTANTS
+                // Fields
                 cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "OFFICIAL_JWKS_URL", "Ljava/lang/String;", null,
                                 null).visitEnd();
                 cw.visitField(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "F2P_JWKS_URL", "Ljava/lang/String;", null, null)
                                 .visitEnd();
-
-                // CACHE STORAGE
-                // cachedBaseKeysContent: Stores the prepared string content of Official + Local
-                // keys
                 cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE, "cachedBaseKeysContent",
                                 "Ljava/lang/String;", null, null).visitEnd();
                 cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE, "lastBaseFetchMs", "J",
                                 null, null).visitEnd();
-
-                // dynamicIssuerCache: ConcurrentMap<String(Issuer), String(KeysContent)>
                 cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "dynamicIssuerCache",
                                 "Ljava/util/concurrent/ConcurrentHashMap;", null, null).visitEnd();
-
-                // finalAggregatedJson: The final JSON string returned to JWTValidator (memoized
-                // result)
                 cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE, "finalAggregatedJson",
                                 "Ljava/lang/String;", null, null).visitEnd();
 
-                // Static Initializer
+                // <clinit>
                 mv = cw.visitMethod(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
                 mv.visitCode();
-
-                // 1. Set URLs
-                mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
-                mv.visitInsn(Opcodes.DUP);
-                mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
                 mv.visitFieldInsn(Opcodes.GETSTATIC, HELPER_CLASS, "OFFICIAL_URL", "Ljava/lang/String;");
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
                 mv.visitLdcInsn("/.well-known/jwks.json");
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;",
-                                false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "concat",
+                                "(Ljava/lang/String;)Ljava/lang/String;", false);
                 mv.visitFieldInsn(Opcodes.PUTSTATIC, JWKS_FETCHER_CLASS, "OFFICIAL_JWKS_URL", "Ljava/lang/String;");
 
-                mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
-                mv.visitInsn(Opcodes.DUP);
-                mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
                 mv.visitFieldInsn(Opcodes.GETSTATIC, HELPER_CLASS, "F2P_URL", "Ljava/lang/String;");
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
                 mv.visitLdcInsn("/.well-known/jwks.json");
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;",
-                                false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "concat",
+                                "(Ljava/lang/String;)Ljava/lang/String;", false);
                 mv.visitFieldInsn(Opcodes.PUTSTATIC, JWKS_FETCHER_CLASS, "F2P_JWKS_URL", "Ljava/lang/String;");
 
-                // 2. Init ConcurrentHashMap
                 mv.visitTypeInsn(Opcodes.NEW, "java/util/concurrent/ConcurrentHashMap");
                 mv.visitInsn(Opcodes.DUP);
                 mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/concurrent/ConcurrentHashMap", "<init>", "()V",
@@ -2299,15 +2265,13 @@ public class DualAuthPatcher {
                 mv.visitFieldInsn(Opcodes.PUTSTATIC, JWKS_FETCHER_CLASS, "dynamicIssuerCache",
                                 "Ljava/util/concurrent/ConcurrentHashMap;");
 
-                // 3. Init cachedBaseKeysContent = "" to avoid NPE
                 mv.visitLdcInsn("");
                 mv.visitFieldInsn(Opcodes.PUTSTATIC, JWKS_FETCHER_CLASS, "cachedBaseKeysContent", "Ljava/lang/String;");
-
                 mv.visitInsn(Opcodes.RETURN);
                 mv.visitMaxs(2, 0);
                 mv.visitEnd();
 
-                // Constructor (Private)
+                // Constructor
                 mv = cw.visitMethod(Opcodes.ACC_PRIVATE, "<init>", "()V", null, null);
                 mv.visitCode();
                 mv.visitVarInsn(Opcodes.ALOAD, 0);
@@ -2316,246 +2280,46 @@ public class DualAuthPatcher {
                 mv.visitMaxs(1, 1);
                 mv.visitEnd();
 
-                // -------------------------------------------------------------
-                // registerIssuer(String issuer)
-                // ONLY fetches if issuer is not already in the cache map.
-                // -------------------------------------------------------------
-                mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "registerIssuer", "(Ljava/lang/String;)V",
-                                null, null);
-                mv.visitCode();
-
-                // 1. Check validity & redundancy (Fast checks)
-                mv.visitVarInsn(Opcodes.ALOAD, 0);
-                mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "isValidIssuer", "(Ljava/lang/String;)Z", false);
-                Label doRegister = new Label();
-                mv.visitJumpInsn(Opcodes.IFNE, doRegister);
-                mv.visitInsn(Opcodes.RETURN);
-                mv.visitLabel(doRegister);
-
-                // Is it official or configured base? Skip dynamic reg
-                mv.visitVarInsn(Opcodes.ALOAD, 0);
-                mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "isOfficialIssuer", "(Ljava/lang/String;)Z",
-                                false);
-                Label finish = new Label();
-                mv.visitJumpInsn(Opcodes.IFNE, finish);
-
-                mv.visitVarInsn(Opcodes.ALOAD, 0);
-                mv.visitFieldInsn(Opcodes.GETSTATIC, HELPER_CLASS, "F2P_ISSUER", "Ljava/lang/String;");
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains", "(Ljava/lang/CharSequence;)Z",
-                                false);
-                mv.visitJumpInsn(Opcodes.IFNE, finish);
-
-                // 2. Check if already cached (Memory Check - Very Fast)
-                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "dynamicIssuerCache",
-                                "Ljava/util/concurrent/ConcurrentHashMap;");
-                mv.visitVarInsn(Opcodes.ALOAD, 0);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/concurrent/ConcurrentHashMap", "containsKey",
-                                "(Ljava/lang/Object;)Z", false);
-                mv.visitJumpInsn(Opcodes.IFNE, finish);
-
-                // 3. NEW ISSUER! Fetch ONLY this one
-                mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-                mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
-                mv.visitInsn(Opcodes.DUP);
-                mv.visitLdcInsn("[DualAuth] Discovering NEW issuer keys: ");
-                mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V",
-                                false);
-                mv.visitVarInsn(Opcodes.ALOAD, 0);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;",
-                                false);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V",
-                                false);
-
-                // Construct URL: issuer + /.well-known/jwks.json
-                mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
-                mv.visitInsn(Opcodes.DUP);
-                mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
-                mv.visitVarInsn(Opcodes.ALOAD, 0);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
-                mv.visitLdcInsn("/.well-known/jwks.json");
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;",
-                                false);
-
-                // Call Fetch
-                mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "fetchJwksJson",
-                                "(Ljava/lang/String;)Ljava/lang/String;", false);
-                mv.visitVarInsn(Opcodes.ASTORE, 1); // jsonRaw
-
-                // Check Null
-                mv.visitVarInsn(Opcodes.ALOAD, 1);
-                mv.visitJumpInsn(Opcodes.IFNULL, finish);
-
-                // Extract Inner Content (removes {"keys": [ ... ]}) for faster merging later
-                mv.visitVarInsn(Opcodes.ALOAD, 1);
-                mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "extractKeysContent",
-                                "(Ljava/lang/String;)Ljava/lang/String;", false);
-                mv.visitVarInsn(Opcodes.ASTORE, 2); // cleanedJson
-
-                // Store in Map
-                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "dynamicIssuerCache",
-                                "Ljava/util/concurrent/ConcurrentHashMap;");
-                mv.visitVarInsn(Opcodes.ALOAD, 0); // issuer key
-                mv.visitVarInsn(Opcodes.ALOAD, 2); // content value
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/concurrent/ConcurrentHashMap", "put",
-                                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", false);
-                mv.visitInsn(Opcodes.POP);
-
-                // Invalidate Aggregated Result Cache (Requires Fast In-Memory Rebuild)
-                mv.visitInsn(Opcodes.ACONST_NULL);
-                mv.visitFieldInsn(Opcodes.PUTSTATIC, JWKS_FETCHER_CLASS, "finalAggregatedJson", "Ljava/lang/String;");
-
-                mv.visitLabel(finish);
-                mv.visitInsn(Opcodes.RETURN);
-                mv.visitMaxs(3, 3);
-                mv.visitEnd();
-
-                // public static String fetchJwksJson(String url)
-                // Fetches JWKS JSON from a single URL
-                mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-                                "fetchJwksJson", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
-                mv.visitCode();
-
-                // Debug: Print the URL being fetched
-                // System.out.println("[DualAuth] Fetching JWKS from: " + url);
-                mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-                mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
-                mv.visitInsn(Opcodes.DUP);
-                mv.visitLdcInsn("[DualAuth] Fetching JWKS from: ");
-                mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V",
-                                false);
-                mv.visitVarInsn(Opcodes.ALOAD, 0); // url parameter
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;",
-                                false);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V",
-                                false);
-
-                // HttpClient client =
-                // HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
-                // Note: HttpClient.newBuilder() is a static method on an abstract class, so
-                // itf=false
-                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpClient", "newBuilder",
-                                "()Ljava/net/http/HttpClient$Builder;", false);
-                mv.visitLdcInsn(5L);
-                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/time/Duration", "ofSeconds",
-                                "(J)Ljava/time/Duration;", false);
-                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpClient$Builder", "connectTimeout",
-                                "(Ljava/time/Duration;)Ljava/net/http/HttpClient$Builder;", true);
-                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpClient$Builder", "build",
-                                "()Ljava/net/http/HttpClient;", true);
-                mv.visitVarInsn(Opcodes.ASTORE, 1);
-
-                // HttpRequest request = HttpRequest.newBuilder()
-                // .uri(URI.create(url))
-                // .header("Accept", "application/json")
-                // .timeout(Duration.ofSeconds(5))
-                // .GET()
-                // .build();
-                // Note: HttpRequest.newBuilder() is a static method on an abstract class, so
-                // itf=false
-                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpRequest", "newBuilder",
-                                "()Ljava/net/http/HttpRequest$Builder;", false);
-                mv.visitVarInsn(Opcodes.ALOAD, 0);
-                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/URI", "create",
-                                "(Ljava/lang/String;)Ljava/net/URI;", false);
-                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "uri",
-                                "(Ljava/net/URI;)Ljava/net/http/HttpRequest$Builder;", true);
-                mv.visitLdcInsn("Accept");
-                mv.visitLdcInsn("application/json");
-                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "header",
-                                "(Ljava/lang/String;Ljava/lang/String;)Ljava/net/http/HttpRequest$Builder;", true);
-                mv.visitLdcInsn(5L);
-                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/time/Duration", "ofSeconds",
-                                "(J)Ljava/time/Duration;", false);
-                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "timeout",
-                                "(Ljava/time/Duration;)Ljava/net/http/HttpRequest$Builder;", true);
-                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "GET",
-                                "()Ljava/net/http/HttpRequest$Builder;", true);
-                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "build",
-                                "()Ljava/net/http/HttpRequest;", true);
-                mv.visitVarInsn(Opcodes.ASTORE, 2);
-
-                // HttpResponse<String> response = client.send(request,
-                // HttpResponse.BodyHandlers.ofString());
-                mv.visitVarInsn(Opcodes.ALOAD, 1);
-                mv.visitVarInsn(Opcodes.ALOAD, 2);
-                // Note: BodyHandlers.ofString() is a static method on a class, so itf=false
-                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpResponse$BodyHandlers", "ofString",
-                                "()Ljava/net/http/HttpResponse$BodyHandler;", false);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/net/http/HttpClient", "send",
-                                "(Ljava/net/http/HttpRequest;Ljava/net/http/HttpResponse$BodyHandler;)Ljava/net/http/HttpResponse;",
-                                false);
-                mv.visitVarInsn(Opcodes.ASTORE, 3);
-
-                // if (response.statusCode() != 200) return null;
-                mv.visitVarInsn(Opcodes.ALOAD, 3);
-                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpResponse", "statusCode", "()I", true);
-                mv.visitIntInsn(Opcodes.SIPUSH, 200);
-                Label statusOk = new Label();
-                mv.visitJumpInsn(Opcodes.IF_ICMPEQ, statusOk);
-                mv.visitInsn(Opcodes.ACONST_NULL);
-                mv.visitInsn(Opcodes.ARETURN);
-
-                mv.visitLabel(statusOk);
-                mv.visitFrame(Opcodes.F_APPEND, 3,
-                                new Object[] { "java/net/http/HttpClient", "java/net/http/HttpRequest",
-                                                "java/net/http/HttpResponse" },
-                                0, null);
-
-                // return (String) response.body();
-                mv.visitVarInsn(Opcodes.ALOAD, 3);
-                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpResponse", "body",
-                                "()Ljava/lang/Object;", true);
-                mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/String");
-                mv.visitInsn(Opcodes.ARETURN);
-
-                mv.visitMaxs(4, 4);
-                mv.visitEnd();
-
-                // Helper: extractKeysContent(String json) -> Returns inner string inside
-                // "keys": [...]
+                // --- DEFINE extractKeysContent FIRST (before callers) ---
                 mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "extractKeysContent",
                                 "(Ljava/lang/String;)Ljava/lang/String;", null, null);
                 mv.visitCode();
-                // find "keys":
+                Label errLabel = new Label();
+
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                Label nullCheck = new Label();
+                mv.visitJumpInsn(Opcodes.IFNONNULL, nullCheck);
+                mv.visitLdcInsn("");
+                mv.visitInsn(Opcodes.ARETURN);
+                mv.visitLabel(nullCheck);
+                mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+
                 mv.visitVarInsn(Opcodes.ALOAD, 0);
                 mv.visitLdcInsn("\"keys\":");
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(Ljava/lang/String;)I",
-                                false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(Ljava/lang/String;)I", false);
                 mv.visitVarInsn(Opcodes.ISTORE, 1);
 
-                // find [
                 mv.visitVarInsn(Opcodes.ALOAD, 0);
                 mv.visitIntInsn(Opcodes.BIPUSH, '[');
                 mv.visitVarInsn(Opcodes.ILOAD, 1);
                 mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(II)I", false);
                 mv.visitVarInsn(Opcodes.ISTORE, 2);
 
-                // find last ]
                 mv.visitVarInsn(Opcodes.ALOAD, 0);
                 mv.visitIntInsn(Opcodes.BIPUSH, ']');
                 mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "lastIndexOf", "(I)I", false);
                 mv.visitVarInsn(Opcodes.ISTORE, 3);
 
-                // checks
                 mv.visitVarInsn(Opcodes.ILOAD, 1);
                 mv.visitInsn(Opcodes.ICONST_M1);
-                Label fail = new Label();
-                mv.visitJumpInsn(Opcodes.IF_ICMPEQ, fail);
+                mv.visitJumpInsn(Opcodes.IF_ICMPEQ, errLabel);
                 mv.visitVarInsn(Opcodes.ILOAD, 2);
                 mv.visitInsn(Opcodes.ICONST_M1);
-                mv.visitJumpInsn(Opcodes.IF_ICMPEQ, fail);
+                mv.visitJumpInsn(Opcodes.IF_ICMPEQ, errLabel);
                 mv.visitVarInsn(Opcodes.ILOAD, 3);
                 mv.visitVarInsn(Opcodes.ILOAD, 2);
-                mv.visitJumpInsn(Opcodes.IF_ICMPLE, fail); // if end <= start
+                mv.visitJumpInsn(Opcodes.IF_ICMPLE, errLabel);
 
-                // return substring(start+1, end).trim()
                 mv.visitVarInsn(Opcodes.ALOAD, 0);
                 mv.visitVarInsn(Opcodes.ILOAD, 2);
                 mv.visitInsn(Opcodes.ICONST_1);
@@ -2566,169 +2330,315 @@ public class DualAuthPatcher {
                 mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "trim", "()Ljava/lang/String;", false);
                 mv.visitInsn(Opcodes.ARETURN);
 
-                mv.visitLabel(fail);
+                mv.visitLabel(errLabel);
+                mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
                 mv.visitLdcInsn("");
                 mv.visitInsn(Opcodes.ARETURN);
                 mv.visitMaxs(4, 4);
                 mv.visitEnd();
 
-                // -------------------------------------------------------------
-                // fetchMergedJwksJson()
-                // Implementation: Segregated Cache (Memory-Efficient Rebuild)
-                // -------------------------------------------------------------
-                mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_SYNCHRONIZED, "fetchMergedJwksJson", "()Ljava/lang/String;", null, null);
+                // --- registerIssuer(String issuer) ---
+                mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "registerIssuer", "(Ljava/lang/String;)V",
+                                null, null);
                 mv.visitCode();
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "isValidIssuer", "(Ljava/lang/String;)Z", false);
+                Label doRegister = new Label();
+                mv.visitJumpInsn(Opcodes.IFNE, doRegister);
+                mv.visitInsn(Opcodes.RETURN);
+                mv.visitLabel(doRegister);
+                mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
 
-                // 1. Maintenance: Update Base Cache?
-                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "currentTimeMillis", "()J", false);
-                mv.visitVarInsn(Opcodes.LSTORE, 0); // now
-                mv.visitVarInsn(Opcodes.LLOAD, 0);
-                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "lastBaseFetchMs", "J");
-                mv.visitInsn(Opcodes.LSUB);
-                mv.visitLdcInsn(3600000L); // 1h TTL for base cache
-                mv.visitInsn(Opcodes.LCMP);
-                Label skipBaseRefresh = new Label();
-                mv.visitJumpInsn(Opcodes.IFLE, skipBaseRefresh);
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, HELPER_CLASS, "isOfficialIssuer", "(Ljava/lang/String;)Z",
+                                false);
+                Label finish = new Label();
+                mv.visitJumpInsn(Opcodes.IFNE, finish);
 
-                // Fetch Base (Official + F2P)
-                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "OFFICIAL_JWKS_URL", "Ljava/lang/String;");
-                mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "fetchJwksJson", "(Ljava/lang/String;)Ljava/lang/String;", false);
-                mv.visitVarInsn(Opcodes.ASTORE, 2); // offJson
-                
-                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "F2P_JWKS_URL", "Ljava/lang/String;");
-                mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "fetchJwksJson", "(Ljava/lang/String;)Ljava/lang/String;", false);
-                mv.visitVarInsn(Opcodes.ASTORE, 3); // f2pJson
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitFieldInsn(Opcodes.GETSTATIC, HELPER_CLASS, "F2P_ISSUER", "Ljava/lang/String;");
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
+                                "(Ljava/lang/CharSequence;)Z", false);
+                mv.visitJumpInsn(Opcodes.IFNE, finish);
+
+                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "dynamicIssuerCache",
+                                "Ljava/util/concurrent/ConcurrentHashMap;");
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/concurrent/ConcurrentHashMap", "containsKey",
+                                "(Ljava/lang/Object;)Z", false);
+                mv.visitJumpInsn(Opcodes.IFNE, finish);
 
                 mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
                 mv.visitInsn(Opcodes.DUP);
                 mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
-                mv.visitVarInsn(Opcodes.ASTORE, 4); // baseSB
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitLdcInsn("/.well-known/jwks.json");
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;",
+                                false);
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "fetchJwksJson",
+                                "(Ljava/lang/String;)Ljava/lang/String;", false);
+                mv.visitVarInsn(Opcodes.ASTORE, 1);
 
-                // Clean and Add Official
+                mv.visitVarInsn(Opcodes.ALOAD, 1);
+                mv.visitJumpInsn(Opcodes.IFNULL, finish);
+
+                mv.visitVarInsn(Opcodes.ALOAD, 1);
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "extractKeysContent",
+                                "(Ljava/lang/String;)Ljava/lang/String;", false);
+                mv.visitVarInsn(Opcodes.ASTORE, 2);
+
+                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "dynamicIssuerCache",
+                                "Ljava/util/concurrent/ConcurrentHashMap;");
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
                 mv.visitVarInsn(Opcodes.ALOAD, 2);
-                Label offEmpty = new Label();
-                mv.visitJumpInsn(Opcodes.IFNULL, offEmpty);
-                mv.visitVarInsn(Opcodes.ALOAD, 4);
-                mv.visitVarInsn(Opcodes.ALOAD, 2);
-                mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "extractKeysContent", "(Ljava/lang/String;)Ljava/lang/String;", false);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/concurrent/ConcurrentHashMap", "put",
+                                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", false);
                 mv.visitInsn(Opcodes.POP);
-                mv.visitLabel(offEmpty);
 
-                // Add comma if base contains something and we are about to add F2P
-                mv.visitVarInsn(Opcodes.ALOAD, 3);
-                Label f2pEmpty = new Label();
-                mv.visitJumpInsn(Opcodes.IFNULL, f2pEmpty);
-                
-                mv.visitVarInsn(Opcodes.ALOAD, 4);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "length", "()I", false);
-                Label skipF2pComma = new Label();
-                mv.visitJumpInsn(Opcodes.IFLE, skipF2pComma);
-                
-                mv.visitVarInsn(Opcodes.ALOAD, 4);
-                mv.visitLdcInsn(",");
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
-                mv.visitInsn(Opcodes.POP);
-                
-                mv.visitLabel(skipF2pComma);
-                mv.visitVarInsn(Opcodes.ALOAD, 4);
-                mv.visitVarInsn(Opcodes.ALOAD, 3);
-                mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "extractKeysContent", "(Ljava/lang/String;)Ljava/lang/String;", false);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
-                mv.visitInsn(Opcodes.POP);
-                mv.visitLabel(f2pEmpty);
-
-                // Update fields
-                mv.visitVarInsn(Opcodes.ALOAD, 4);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
-                mv.visitFieldInsn(Opcodes.PUTSTATIC, JWKS_FETCHER_CLASS, "cachedBaseKeysContent", "Ljava/lang/String;");
-                mv.visitVarInsn(Opcodes.LLOAD, 0);
-                mv.visitFieldInsn(Opcodes.PUTSTATIC, JWKS_FETCHER_CLASS, "lastBaseFetchMs", "J");
-                
-                // Signal Aggregate invalid
                 mv.visitInsn(Opcodes.ACONST_NULL);
                 mv.visitFieldInsn(Opcodes.PUTSTATIC, JWKS_FETCHER_CLASS, "finalAggregatedJson", "Ljava/lang/String;");
 
-                mv.visitLabel(skipBaseRefresh);
+                mv.visitLabel(finish);
+                mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+                mv.visitInsn(Opcodes.RETURN);
+                mv.visitMaxs(3, 3);
+                mv.visitEnd();
 
-                // 2. Return Global Aggregate if valid
-                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "finalAggregatedJson", "Ljava/lang/String;");
-                mv.visitVarInsn(Opcodes.ASTORE, 5); // currentGlobal
-                mv.visitVarInsn(Opcodes.ALOAD, 5);
-                Label rebuildLabel = new Label();
-                mv.visitJumpInsn(Opcodes.IFNULL, rebuildLabel);
-                mv.visitVarInsn(Opcodes.ALOAD, 5);
+                // --- fetchJwksJson(String url) ---
+                mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "fetchJwksJson",
+                                "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+                mv.visitCode();
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpClient", "newBuilder",
+                                "()Ljava/net/http/HttpClient$Builder;", false);
+                mv.visitLdcInsn(5L);
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/time/Duration", "ofSeconds", "(J)Ljava/time/Duration;",
+                                false);
+                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpClient$Builder", "connectTimeout",
+                                "(Ljava/time/Duration;)Ljava/net/http/HttpClient$Builder;", true);
+                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpClient$Builder", "build",
+                                "()Ljava/net/http/HttpClient;", true);
+                mv.visitVarInsn(Opcodes.ASTORE, 1);
+
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpRequest", "newBuilder",
+                                "()Ljava/net/http/HttpRequest$Builder;", false);
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/URI", "create", "(Ljava/lang/String;)Ljava/net/URI;",
+                                false);
+                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "uri",
+                                "(Ljava/net/URI;)Ljava/net/http/HttpRequest$Builder;", true);
+                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "GET",
+                                "()Ljava/net/http/HttpRequest$Builder;", true);
+                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpRequest$Builder", "build",
+                                "()Ljava/net/http/HttpRequest;", true);
+                mv.visitVarInsn(Opcodes.ASTORE, 2);
+
+                Label tryStart = new Label(), tryEnd = new Label(), catchHandler = new Label();
+                mv.visitTryCatchBlock(tryStart, tryEnd, catchHandler, "java/lang/Exception");
+
+                mv.visitLabel(tryStart);
+                mv.visitVarInsn(Opcodes.ALOAD, 1);
+                mv.visitVarInsn(Opcodes.ALOAD, 2);
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/http/HttpResponse$BodyHandlers", "ofString",
+                                "()Ljava/net/http/HttpResponse$BodyHandler;", false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/net/http/HttpClient", "send",
+                                "(Ljava/net/http/HttpRequest;Ljava/net/http/HttpResponse$BodyHandler;)Ljava/net/http/HttpResponse;",
+                                false);
+                mv.visitVarInsn(Opcodes.ASTORE, 3);
+
+                mv.visitVarInsn(Opcodes.ALOAD, 3);
+                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpResponse", "statusCode", "()I", true);
+                mv.visitIntInsn(Opcodes.SIPUSH, 200);
+                Label statusFail = new Label();
+                mv.visitJumpInsn(Opcodes.IF_ICMPNE, statusFail);
+
+                mv.visitVarInsn(Opcodes.ALOAD, 3);
+                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/net/http/HttpResponse", "body", "()Ljava/lang/Object;",
+                                true);
+                mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/String");
+                mv.visitLabel(tryEnd);
                 mv.visitInsn(Opcodes.ARETURN);
 
-                mv.visitLabel(rebuildLabel);
+                mv.visitLabel(statusFail);
+                mv.visitFrame(Opcodes.F_FULL, 4,
+                                new Object[] { "java/lang/String", "java/net/http/HttpClient", "java/net/http/HttpRequest",
+                                                "java/net/http/HttpResponse" },
+                                0, new Object[] {});
+                mv.visitInsn(Opcodes.ACONST_NULL);
+                mv.visitInsn(Opcodes.ARETURN);
 
-                // 3. FAST REBUILD
+                mv.visitLabel(catchHandler);
+                mv.visitFrame(Opcodes.F_FULL, 3,
+                                new Object[] { "java/lang/String", "java/net/http/HttpClient", "java/net/http/HttpRequest" }, 1,
+                                new Object[] { "java/lang/Exception" });
+                mv.visitInsn(Opcodes.POP);
+                mv.visitInsn(Opcodes.ACONST_NULL);
+                mv.visitInsn(Opcodes.ARETURN);
+                mv.visitMaxs(3, 4);
+                mv.visitEnd();
+
+                // --- fetchMergedJwksJson() ---
+                mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_SYNCHRONIZED,
+                                "fetchMergedJwksJson", "()Ljava/lang/String;", null, null);
+                mv.visitCode();
+
+                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "finalAggregatedJson", "Ljava/lang/String;");
+                mv.visitVarInsn(Opcodes.ASTORE, 0);
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                Label refresh = new Label();
+                mv.visitJumpInsn(Opcodes.IFNULL, refresh);
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitInsn(Opcodes.ARETURN);
+
+                mv.visitLabel(refresh);
+                mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "currentTimeMillis", "()J", false);
+                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "lastBaseFetchMs", "J");
+                mv.visitInsn(Opcodes.LSUB);
+                mv.visitLdcInsn(3600000L);
+                mv.visitInsn(Opcodes.LCMP);
+                Label skipBase = new Label();
+                mv.visitJumpInsn(Opcodes.IFLE, skipBase);
+
+                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "OFFICIAL_JWKS_URL", "Ljava/lang/String;");
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "fetchJwksJson",
+                                "(Ljava/lang/String;)Ljava/lang/String;", false);
+                mv.visitVarInsn(Opcodes.ASTORE, 1);
+
+                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "F2P_JWKS_URL", "Ljava/lang/String;");
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "fetchJwksJson",
+                                "(Ljava/lang/String;)Ljava/lang/String;", false);
+                mv.visitVarInsn(Opcodes.ASTORE, 2);
+
+                mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+                mv.visitInsn(Opcodes.DUP);
+                mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
+                mv.visitVarInsn(Opcodes.ASTORE, 3);
+
+                mv.visitVarInsn(Opcodes.ALOAD, 1);
+                Label offNull = new Label();
+                mv.visitJumpInsn(Opcodes.IFNULL, offNull);
+                mv.visitVarInsn(Opcodes.ALOAD, 3);
+                mv.visitVarInsn(Opcodes.ALOAD, 1);
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "extractKeysContent",
+                                "(Ljava/lang/String;)Ljava/lang/String;", false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitInsn(Opcodes.POP);
+                mv.visitLabel(offNull);
+                mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+
+                mv.visitVarInsn(Opcodes.ALOAD, 2);
+                Label f2pNull = new Label();
+                mv.visitJumpInsn(Opcodes.IFNULL, f2pNull);
+                mv.visitVarInsn(Opcodes.ALOAD, 3);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "length", "()I", false);
+                Label f2pComma = new Label();
+                mv.visitJumpInsn(Opcodes.IFLE, f2pComma);
+                mv.visitVarInsn(Opcodes.ALOAD, 3);
+                mv.visitLdcInsn(",");
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitInsn(Opcodes.POP);
+                mv.visitLabel(f2pComma);
+                mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+                mv.visitVarInsn(Opcodes.ALOAD, 3);
+                mv.visitVarInsn(Opcodes.ALOAD, 2);
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, JWKS_FETCHER_CLASS, "extractKeysContent",
+                                "(Ljava/lang/String;)Ljava/lang/String;", false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitInsn(Opcodes.POP);
+                mv.visitLabel(f2pNull);
+                mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+
+                mv.visitVarInsn(Opcodes.ALOAD, 3);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;",
+                                false);
+                mv.visitFieldInsn(Opcodes.PUTSTATIC, JWKS_FETCHER_CLASS, "cachedBaseKeysContent", "Ljava/lang/String;");
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "currentTimeMillis", "()J", false);
+                mv.visitFieldInsn(Opcodes.PUTSTATIC, JWKS_FETCHER_CLASS, "lastBaseFetchMs", "J");
+
+                mv.visitLabel(skipBase);
+                mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+
                 mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
                 mv.visitInsn(Opcodes.DUP);
                 mv.visitLdcInsn("{\"keys\":[");
-                mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
-                mv.visitVarInsn(Opcodes.ASTORE, 6); // aggregateSB
+                mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V",
+                                false);
+                mv.visitVarInsn(Opcodes.ASTORE, 1);
 
-                // Base keys
-                mv.visitVarInsn(Opcodes.ALOAD, 6);
+                mv.visitVarInsn(Opcodes.ALOAD, 1);
                 mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "cachedBaseKeysContent", "Ljava/lang/String;");
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
                 mv.visitInsn(Opcodes.POP);
 
-                // Dynamic keys
-                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "dynamicIssuerCache", "Ljava/util/concurrent/ConcurrentHashMap;");
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/concurrent/ConcurrentHashMap", "values", "()Ljava/util/Collection;", false);
-                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/Collection", "iterator", "()Ljava/util/Iterator;", true);
-                mv.visitVarInsn(Opcodes.ASTORE, 7); // it
+                mv.visitFieldInsn(Opcodes.GETSTATIC, JWKS_FETCHER_CLASS, "dynamicIssuerCache",
+                                "Ljava/util/concurrent/ConcurrentHashMap;");
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/util/concurrent/ConcurrentHashMap", "values",
+                                "()Ljava/util/Collection;", false);
+                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/Collection", "iterator", "()Ljava/util/Iterator;",
+                                true);
+                mv.visitVarInsn(Opcodes.ASTORE, 2);
 
-                Label loopStart = new Label(), loopEnd = new Label();
-                mv.visitLabel(loopStart);
-                mv.visitVarInsn(Opcodes.ALOAD, 7);
+                Label loop = new Label(), end = new Label();
+                mv.visitLabel(loop);
+                mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+                mv.visitVarInsn(Opcodes.ALOAD, 2);
                 mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/Iterator", "hasNext", "()Z", true);
-                mv.visitJumpInsn(Opcodes.IFEQ, loopEnd);
-                
-                mv.visitVarInsn(Opcodes.ALOAD, 7);
+                mv.visitJumpInsn(Opcodes.IFEQ, end);
+                mv.visitVarInsn(Opcodes.ALOAD, 2);
                 mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/Iterator", "next", "()Ljava/lang/Object;", true);
                 mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/String");
-                mv.visitVarInsn(Opcodes.ASTORE, 8); // dynamicContent
+                mv.visitVarInsn(Opcodes.ASTORE, 3);
 
-                // Comma check ('{"keys":[' is length 9)
-                mv.visitVarInsn(Opcodes.ALOAD, 6);
+                mv.visitVarInsn(Opcodes.ALOAD, 1);
                 mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "length", "()I", false);
                 mv.visitIntInsn(Opcodes.BIPUSH, 9);
-                Label skipComma = new Label();
-                mv.visitJumpInsn(Opcodes.IF_ICMPLE, skipComma);
-                mv.visitVarInsn(Opcodes.ALOAD, 6);
+                Label dynComma = new Label();
+                mv.visitJumpInsn(Opcodes.IF_ICMPLE, dynComma);
+                mv.visitVarInsn(Opcodes.ALOAD, 1);
                 mv.visitLdcInsn(",");
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
                 mv.visitInsn(Opcodes.POP);
-                mv.visitLabel(skipComma);
+                mv.visitLabel(dynComma);
+                mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
 
-                mv.visitVarInsn(Opcodes.ALOAD, 6);
-                mv.visitVarInsn(Opcodes.ALOAD, 8);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitVarInsn(Opcodes.ALOAD, 1);
+                mv.visitVarInsn(Opcodes.ALOAD, 3);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
                 mv.visitInsn(Opcodes.POP);
+                mv.visitJumpInsn(Opcodes.GOTO, loop);
 
-                mv.visitJumpInsn(Opcodes.GOTO, loopStart);
-                mv.visitLabel(loopEnd);
-
-                mv.visitVarInsn(Opcodes.ALOAD, 6);
+                mv.visitLabel(end);
+                mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
+                mv.visitVarInsn(Opcodes.ALOAD, 1);
                 mv.visitLdcInsn("]}");
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                                "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
                 mv.visitInsn(Opcodes.POP);
 
-                mv.visitVarInsn(Opcodes.ALOAD, 6);
-                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+                mv.visitVarInsn(Opcodes.ALOAD, 1);
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;",
+                                false);
                 mv.visitInsn(Opcodes.DUP);
                 mv.visitFieldInsn(Opcodes.PUTSTATIC, JWKS_FETCHER_CLASS, "finalAggregatedJson", "Ljava/lang/String;");
                 mv.visitInsn(Opcodes.ARETURN);
-
-                mv.visitMaxs(4, 9);
+                mv.visitMaxs(3, 4);
                 mv.visitEnd();
 
                 cw.visitEnd();
                 return cw.toByteArray();
         }
+
 
         /**
          * Generate DualServerIdentity class - Fetches and caches F2P server identity
