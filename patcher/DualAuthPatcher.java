@@ -392,7 +392,7 @@ public class DualAuthPatcher {
         cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
                 "currentJwk", "Ljava/lang/ThreadLocal;", null, null).visitEnd();
 
-        // NUEVO: Cache global para Omni-Auth
+        // NEW: Global cache for Omni-Auth
         cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
                 "globalJwkCache", "Ljava/util/concurrent/ConcurrentHashMap;", null, null).visitEnd();
 
@@ -4568,8 +4568,8 @@ public class DualAuthPatcher {
                 "(Ljava/lang/String;)Lcom/nimbusds/jwt/JWTClaimsSet;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 14); // claims
 
-        // DualAuthContext.setIssuer(claims.getIssuer()) <-- CRÍTICO: El issuer debe
-        // estar antes que la llave
+        // DualAuthContext.setIssuer(claims.getIssuer()) <-- CRITICAL: The issuer must
+        // be set before the key
         mv.visitVarInsn(Opcodes.ALOAD, 14);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/JWTClaimsSet", "getIssuer", "()Ljava/lang/String;",
                 false);
@@ -4588,8 +4588,8 @@ public class DualAuthPatcher {
                 "(Ljava/lang/String;)Ljava/lang/String;", false);
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "setUsername", "(Ljava/lang/String;)V", false);
 
-        // DualAuthContext.setJwk(keyPair.toJSONString()) <-- Ahora esto se guardará en
-        // el cache global
+        // DualAuthContext.setJwk(keyPair.toJSONString()) <-- Now this will be stored in
+        // the global cache
         mv.visitVarInsn(Opcodes.ALOAD, 7);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/OctetKeyPair", "toJSONString",
                 "()Ljava/lang/String;", false);
@@ -4600,10 +4600,10 @@ public class DualAuthPatcher {
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
 
         // Mark this token as Omni-Auth (decentralized)
-        mv.visitInsn(Opcodes.ICONST_1); // Use primitivo true
+        mv.visitInsn(Opcodes.ICONST_1); // Use primitive true
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, CONTEXT_CLASS, "setOmni", "(Z)V", false);
 
-        mv.visitVarInsn(Opcodes.ALOAD, 14); // Dejar claims en el stack para el return
+        mv.visitVarInsn(Opcodes.ALOAD, 14); // Leave claims in the stack for the return
         mv.visitLabel(tryEnd);
         mv.visitInsn(Opcodes.ARETURN);
 
@@ -4785,9 +4785,6 @@ public class DualAuthPatcher {
         mv.visitMaxs(1, 0);
         mv.visitEnd();
 
-        // -------------------------------------------------------------
-        // createSignedToken - No cambia, copia idéntica a la anterior que funciona
-        // -------------------------------------------------------------
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
                 "createSignedToken", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", null,
                 null);
