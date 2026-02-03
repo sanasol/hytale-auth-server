@@ -747,12 +747,15 @@ jobs:
           sleep 2
 
           NEW_LOGS=$(tail -n +"$LOG_LINES_BEFORE" server/server_strict.log)
-          # In strict mode with no trusted issuers, self-signed tokens should be REJECTED
-          if echo "$NEW_LOGS" | grep -qiE "untrusted issuer|issuer not trusted|issuer.*not.*allowed|rejected.*issuer"; then
+          # In strict mode with no trusted issuers, self-signed Omni-Auth tokens should be REJECTED
+          if echo "$NEW_LOGS" | grep -qiE "Omni-Auth rejected.*TRUST_ALL_ISSUERS=false|TRUST_ALL_ISSUERS=false.*rejected"; then
+            echo "Test 6 PASSED - Omni-Auth token correctly rejected (TRUST_ALL_ISSUERS=false)"
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+          elif echo "$NEW_LOGS" | grep -qiE "untrusted issuer|issuer not trusted|issuer.*not.*allowed"; then
             echo "Test 6 PASSED - Omni-Auth token correctly rejected (untrusted issuer)"
             TESTS_PASSED=$((TESTS_PASSED + 1))
-          elif echo "$NEW_LOGS" | grep -qiE "Disconnect|rejected|error|invalid"; then
-            echo "Test 6 PASSED - Token rejected in strict mode (issuer not in trusted list)"
+          elif echo "$NEW_LOGS" | grep -qiE "Identity token validation failed|Invalid.*identity.*token"; then
+            echo "Test 6 PASSED - Token rejected in strict mode"
             TESTS_PASSED=$((TESTS_PASSED + 1))
           elif echo "$NEW_LOGS" | grep -qiE "Successfully obtained authorization grant|Sending AuthGrant"; then
             echo "::error::Test 6 FAILED - Token should be REJECTED in strict mode but was accepted"
@@ -760,7 +763,7 @@ jobs:
           else
             echo "::warning::Test 6 INCONCLUSIVE - Could not determine if token was rejected"
             echo "Logs:"
-            echo "$NEW_LOGS" | tail -10
+            echo "$NEW_LOGS" | tail -15
             TESTS_PASSED=$((TESTS_PASSED + 1))
           fi
 
@@ -871,19 +874,24 @@ jobs:
 
           NEW_LOGS=$(tail -n +"$LOG_LINES_BEFORE" server/server_trusted.log)
           # In strict mode with matching trusted issuer, token should be ACCEPTED
-          if echo "$NEW_LOGS" | grep -qiE "Successfully obtained authorization grant|Sending AuthGrant"; then
+          # Check for explicit rejection first (this is a FAILURE case)
+          if echo "$NEW_LOGS" | grep -qiE "Omni-Auth rejected|TRUST_ALL_ISSUERS=false.*rejected"; then
+            echo "::error::Test 7 FAILED - Omni-Auth rejected even though issuer IS in TRUSTED_ISSUERS list"
+            echo "This indicates TRUSTED_ISSUERS is not being checked for Omni-Auth tokens"
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+          elif echo "$NEW_LOGS" | grep -qiE "Successfully obtained authorization grant|Sending AuthGrant"; then
             echo "Test 7 PASSED - Omni-Auth token accepted (issuer in allowlist)"
             TESTS_PASSED=$((TESTS_PASSED + 1))
-          elif echo "$NEW_LOGS" | grep -qiE "embedded.*JWK|transient.*key|Omni-Auth"; then
-            echo "Test 7 PASSED - Omni-Auth processing detected (trusted issuer mode)"
-            TESTS_PASSED=$((TESTS_PASSED + 1))
-          elif echo "$NEW_LOGS" | grep -qiE "untrusted issuer|issuer not trusted|rejected"; then
-            echo "::error::Test 7 FAILED - Token rejected but issuer IS in trusted list"
+          elif echo "$NEW_LOGS" | grep -qiE "untrusted issuer|issuer not trusted"; then
+            echo "::error::Test 7 FAILED - Token rejected as untrusted but issuer IS in trusted list"
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+          elif echo "$NEW_LOGS" | grep -qiE "Identity token validation failed|Invalid.*identity.*token"; then
+            echo "::error::Test 7 FAILED - Token validation failed (issuer should have been trusted)"
             TESTS_FAILED=$((TESTS_FAILED + 1))
           else
             echo "::warning::Test 7 INCONCLUSIVE - Could not verify token acceptance"
             echo "Logs:"
-            echo "$NEW_LOGS" | tail -10
+            echo "$NEW_LOGS" | tail -15
             TESTS_PASSED=$((TESTS_PASSED + 1))
           fi
 
