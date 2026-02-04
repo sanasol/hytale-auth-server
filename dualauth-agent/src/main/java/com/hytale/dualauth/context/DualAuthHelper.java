@@ -407,6 +407,31 @@ public class DualAuthHelper {
         }
     }
 
+    private static String cachedServerName = null;
+    public static String getServerName() {
+        if (cachedServerName != null) return cachedServerName;
+        // Try to get from environment first
+        String envName = System.getenv("HYTALE_SERVER_NAME");
+        if (envName != null && !envName.isEmpty()) {
+            cachedServerName = envName;
+            return cachedServerName;
+        }
+        // Fallback to serverId with prefix
+        String serverId = getServerId();
+        if (serverId != null && !serverId.isEmpty()) {
+            cachedServerName = "Server-" + serverId.substring(0, 8);
+            return cachedServerName;
+        }
+        // Ultimate fallback
+        return "Multi-Issuer-Server";
+    }
+
+    public static void setServerName(String name) {
+        if (name != null && !name.isEmpty()) {
+            cachedServerName = name;
+        }
+    }
+
     public static String extractUsername(Object handler) {
         String[] possibleNames = {"username", "playerName", "name", "requestedName"};
         Class<?> clazz = handler.getClass();
