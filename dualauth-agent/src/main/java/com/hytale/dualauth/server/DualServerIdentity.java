@@ -98,28 +98,34 @@ public class DualServerIdentity {
         if (issuer == null) issuer = DualAuthContext.getIssuer();
         if (issuer == null) issuer = DualAuthConfig.F2P_ISSUER;
         
-        // If we have an embedded JWK in context, let EmbeddedJwkVerifier handle it
+        // If we have an embedded JWK in context (Omni-Auth), use that
         if (DualAuthContext.isOmni()) {
             String token = EmbeddedJwkVerifier.createDynamicIdentityToken(issuer);
             if (token != null) return token;
         }
 
+        // Use provided player UUID or fallback to context
+        String aud = playerUuid;
+        if (aud == null) aud = DualAuthContext.getPlayerUuid();
+        if (aud == null || aud.isEmpty()) aud = UUID.randomUUID().toString();
+        
+        String sub = DualAuthHelper.getServerUuid();
+
+        // STRATEGY: Generate a self-signed token with embedded JWK
+        // Since we cannot modify the backend to sign tokens for specific players,
+        // we must sign them ourselves and include the public key in the header.
+        // The Hytale client (and Omni-Auth) supports this via the 'jwk' header parameter.
         try {
             OctetKeyPair kp = getOrCreateSelfSignedKeyPair();
-            
-            // Use provided player UUID or fallback to context or random
-            String aud = playerUuid;
-            if (aud == null) aud = DualAuthContext.getPlayerUuid();
-            if (aud == null || aud.isEmpty()) aud = UUID.randomUUID().toString();
-            
-            String sub = DualAuthHelper.getServerUuid();
 
             // DEBUG: Log all claims for troubleshooting
-            System.out.println("[DualAuth] Creating dynamic server identity token:");
-            System.out.println("[DualAuth]   iss (issuer): " + issuer);
-            System.out.println("[DualAuth]   sub (server UUID): " + sub);
-            System.out.println("[DualAuth]   aud (player UUID): " + aud);
-            System.out.println("[DualAuth]   kid (key ID): " + kp.getKeyID());
+            if (Boolean.getBoolean("dualauth.debug")) {
+                System.out.println("[DualAuth] Creating self-signed server identity token (embedded JWK):");
+                System.out.println("[DualAuth]   iss (issuer): " + issuer);
+                System.out.println("[DualAuth]   sub (server UUID): " + sub);
+                System.out.println("[DualAuth]   aud (player UUID): " + aud);
+                System.out.println("[DualAuth]   kid (key ID): " + kp.getKeyID());
+            }
 
             JWTClaimsSet claims = new JWTClaimsSet.Builder()
                 .issuer(issuer)
@@ -138,7 +144,6 @@ public class DualServerIdentity {
             LOGGER.log(Level.WARNING, "[DualAuth] Failed to create dynamic identity token: " + e.getMessage());
             return null; 
         }
-
     }
 
     private static String fetchUrl(String urlString) {
