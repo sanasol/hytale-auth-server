@@ -40,6 +40,7 @@ cd dualauth-agent
 # Run the server
 ```bash
 java -javaagent:dualauth-agent.jar -jar HytaleServer.jar -- bare --auth-mode authenticated
+```
 
 ## ⚙️ Configuration
 
