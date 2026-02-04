@@ -127,13 +127,22 @@ public class DualServerIdentity {
                 System.out.println("[DualAuth]   kid (key ID): " + kp.getKeyID());
             }
 
+            // Get actual server name instead of generic
+            String serverName = DualAuthHelper.getServerName();
+            if (serverName == null || serverName.isEmpty()) {
+                serverName = "Server-" + sub.substring(0, 8); // Fallback: Server-UUID-prefix
+            }
+
             JWTClaimsSet claims = new JWTClaimsSet.Builder()
                 .issuer(issuer)
                 .subject(sub)
                 .audience(aud) // CRITICAL: Audience must be the Player's UUID
                 .issueTime(new Date())
                 .expirationTime(new Date(System.currentTimeMillis() + 3600000L))
-                .claim("scope", "hytale:server")
+                .claim("scope", "hytale:server hytale:client") // Include both scopes
+                .claim("entitlements", Arrays.asList("game.base", "server.host")) // Add entitlements
+                .claim("username", serverName) // Use actual server name
+                .claim("profile", Map.of("username", serverName)) // Use actual server name
                 .build();
 
             String header = Base64URL.encode("{\"alg\":\"EdDSA\",\"typ\":\"JWT\",\"kid\":\"" + kp.getKeyID() + "\",\"jwk\":" + kp.toPublicJWK().toJSONString() + "}").toString();
