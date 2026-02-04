@@ -5254,7 +5254,7 @@ public class DualAuthPatcher {
         private static byte[] patchJWTValidator(byte[] classBytes) {
                 ClassReader cr = new ClassReader(classBytes);
                 ClassNode cn = new ClassNode();
-                cr.accept(cn, 0);
+                cr.accept(cn, ClassReader.EXPAND_FRAMES);
                 boolean modified = false;
 
                 // --- DYNAMIC FIELD DETECTION ---
@@ -5712,7 +5712,7 @@ public class DualAuthPatcher {
                 }
 
                 if (modified) {
-                        SafeClassWriter sw = new SafeClassWriter(cr, ClassWriter.COMPUTE_FRAMES);
+                        SafeClassWriter sw = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES);
                         cn.accept(sw);
                         return sw.toByteArray();
                 }
@@ -6227,7 +6227,7 @@ public class DualAuthPatcher {
                 try {
                         ClassReader reader = new ClassReader(classBytes);
                         ClassNode classNode = new ClassNode();
-                        reader.accept(classNode, 0);
+                        reader.accept(classNode, ClassReader.EXPAND_FRAMES);
 
                         boolean modified = false;
 
@@ -6259,7 +6259,7 @@ public class DualAuthPatcher {
                         }
 
                         if (modified) {
-                                ClassWriter writer = new SafeClassWriter(reader, ClassWriter.COMPUTE_FRAMES);
+                                ClassWriter writer = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES);
                                 classNode.accept(writer);
                                 return writer.toByteArray();
                         }
@@ -6546,7 +6546,7 @@ public class DualAuthPatcher {
                 try {
                         ClassReader reader = new ClassReader(classBytes);
                         ClassNode classNode = new ClassNode();
-                        reader.accept(classNode, 0);
+                        reader.accept(classNode, ClassReader.EXPAND_FRAMES);
 
                         boolean modified = false;
 
@@ -6696,7 +6696,7 @@ public class DualAuthPatcher {
 
                         if (modified) {
                                 // Use COMPUTE_FRAMES to properly compute stack map frames for JVM verification
-                                ClassWriter writer = new SafeClassWriter(reader, ClassWriter.COMPUTE_FRAMES);
+                                ClassWriter writer = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES);
                                 classNode.accept(writer);
                                 return writer.toByteArray();
                         }
@@ -6724,7 +6724,7 @@ public class DualAuthPatcher {
                 try {
                         ClassReader reader = new ClassReader(classBytes);
                         ClassNode classNode = new ClassNode();
-                        reader.accept(classNode, 0);
+                        reader.accept(classNode, ClassReader.EXPAND_FRAMES);
 
                         boolean modified = false;
 
@@ -6746,7 +6746,7 @@ public class DualAuthPatcher {
                         }
 
                         if (modified) {
-                                ClassWriter writer = new SafeClassWriter(reader, ClassWriter.COMPUTE_FRAMES);
+                                ClassWriter writer = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES);
                                 classNode.accept(writer);
                                 return writer.toByteArray();
                         }
@@ -6808,7 +6808,7 @@ public class DualAuthPatcher {
                 try {
                         ClassReader reader = new ClassReader(classBytes);
                         ClassNode classNode = new ClassNode();
-                        reader.accept(classNode, 0);
+                        reader.accept(classNode, ClassReader.EXPAND_FRAMES);
 
                         boolean modified = false;
 
@@ -6856,7 +6856,7 @@ public class DualAuthPatcher {
                         }
 
                         if (modified) {
-                                ClassWriter writer = new SafeClassWriter(reader, ClassWriter.COMPUTE_FRAMES);
+                                ClassWriter writer = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES);
                                 classNode.accept(writer);
                                 return writer.toByteArray();
                         }
@@ -7468,7 +7468,7 @@ public class DualAuthPatcher {
                 try {
                         ClassReader reader = new ClassReader(classBytes);
                         ClassNode classNode = new ClassNode();
-                        reader.accept(classNode, 0);
+                        reader.accept(classNode, ClassReader.EXPAND_FRAMES);
 
                         boolean modified = false;
                         String shortName = name.substring(name.lastIndexOf('/') + 1).replace(".class", "");
@@ -7485,7 +7485,7 @@ public class DualAuthPatcher {
 
                         if (modified) {
                                 // Use COMPUTE_FRAMES to properly compute stack map frames for JVM verification
-                                ClassWriter writer = new SafeClassWriter(reader, ClassWriter.COMPUTE_FRAMES);
+                                ClassWriter writer = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES);
                                 classNode.accept(writer);
                                 return writer.toByteArray();
                         }
