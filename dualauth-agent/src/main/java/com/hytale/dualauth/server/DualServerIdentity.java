@@ -100,6 +100,14 @@ public class DualServerIdentity {
         if (issuer == null) issuer = DualAuthContext.getIssuer();
         if (issuer == null) issuer = DualAuthConfig.F2P_ISSUER;
         
+        // FIX: Check for Omni-Auth first
+        if (DualAuthContext.isOmni() || hasEmbeddedJwkFromContext(issuer)) {
+            if (Boolean.getBoolean("dualauth.debug")) {
+                 System.out.println("[DualAuth] Creating Omni-Auth server identity token for: " + issuer);
+            }
+            return EmbeddedJwkVerifier.createDynamicIdentityToken(issuer);
+        }
+        
         // PATCHER STRATEGY: Only generate tokens for official issuers if needed (though usually captured)
         if (!DualAuthHelper.isOfficialIssuerStrict(issuer)) {
             if (Boolean.getBoolean("dualauth.debug")) {
@@ -113,6 +121,11 @@ public class DualServerIdentity {
             System.out.println("[DualAuth] Dynamic server identity generation not needed for official issuer: " + issuer);
         }
         return null; // Original patcher flow doesn't generate them dynamically for official either
+    }
+
+    private static boolean hasEmbeddedJwkFromContext(String issuer) {
+        String jwk = DualAuthContext.getJwk();
+        return jwk != null && !jwk.isEmpty() && issuer != null && (issuer.contains("127.0.0") || issuer.contains("localhost"));
     }
 
     public static DualServerTokenManager.FederatedIssuerTokens fetchFederatedTokensFromIssuer(String issuer) {

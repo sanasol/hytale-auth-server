@@ -2,6 +2,7 @@ package com.hytale.dualauth.context;
 
 import com.hytale.dualauth.agent.DualAuthConfig;
 import com.hytale.dualauth.server.DualServerTokenManager;
+import com.hytale.dualauth.embedded.EmbeddedJwkVerifier;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -486,6 +487,18 @@ public class DualAuthHelper {
             String issuer = DualAuthContext.getIssuer();
             if (issuer == null && currentToken != null) {
                 issuer = extractIssuerFromToken(currentToken);
+            }
+
+            // Omni-Auth replace with self-signed token
+            if (issuer != null && DualAuthContext.isOmni()) {
+                String omniToken = EmbeddedJwkVerifier.createDynamicIdentityToken(issuer);
+                if (omniToken != null) {
+                    idField.set(authGrant, omniToken);
+                    if (Boolean.getBoolean("dualauth.debug")) {
+                        System.out.println("[DualAuth] Replaced with Omni-Auth server identity token");
+                    }
+                    return;
+                }
             }
 
             // 3. PATCHER STRATEGY: For non-official issuers, we MUST provide the F2P identity token
