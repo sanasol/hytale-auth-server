@@ -5959,7 +5959,6 @@ public class DualAuthPatcher {
                 code.add(new InsnNode(Opcodes.ARETURN));
 
                 code.add(notNull);
-                code.add(new FrameNode(Opcodes.F_APPEND, 1, new Object[] { "java/lang/String" }, 0, null));
 
                 // Parse JSON using JwksResponse.CODEC
                 // JwksResponse jwks = JwksResponse.CODEC.decodeJson(new
@@ -5996,9 +5995,6 @@ public class DualAuthPatcher {
                 code.add(new InsnNode(Opcodes.ARETURN));
 
                 code.add(jwksNotNull);
-                code.add(new FrameNode(Opcodes.F_APPEND, 1,
-                                new Object[] { "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwksResponse" },
-                                0, null));
 
                 code.add(new VarInsnNode(Opcodes.ALOAD, 2));
                 code.add(new FieldInsnNode(Opcodes.GETFIELD,
@@ -6012,7 +6008,6 @@ public class DualAuthPatcher {
                 code.add(new InsnNode(Opcodes.ARETURN));
 
                 code.add(keysNotNull);
-                code.add(new FrameNode(Opcodes.F_SAME, 0, null, 0, null));
 
                 code.add(new VarInsnNode(Opcodes.ALOAD, 2));
                 code.add(new FieldInsnNode(Opcodes.GETFIELD,
@@ -6027,7 +6022,6 @@ public class DualAuthPatcher {
                 code.add(new InsnNode(Opcodes.ARETURN));
 
                 code.add(keysNotEmpty);
-                code.add(new FrameNode(Opcodes.F_SAME, 0, null, 0, null));
 
                 // Log success
                 code.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
@@ -6081,12 +6075,6 @@ public class DualAuthPatcher {
                 LabelNode loopStart = new LabelNode();
                 LabelNode loopEnd = new LabelNode();
                 code.add(loopStart);
-                code.add(new FrameNode(Opcodes.F_APPEND, 4,
-                                new Object[] { "java/util/ArrayList",
-                                                "[Lcom/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey;",
-                                                Opcodes.INTEGER,
-                                                Opcodes.INTEGER },
-                                0, null));
 
                 // if (i >= len) break;
                 code.add(new VarInsnNode(Opcodes.ILOAD, 6));
@@ -6119,14 +6107,12 @@ public class DualAuthPatcher {
                 code.add(new InsnNode(Opcodes.POP));
 
                 code.add(skipAdd);
-                code.add(new FrameNode(Opcodes.F_SAME, 0, null, 0, null));
 
                 // i++;
                 code.add(new IincInsnNode(6, 1));
                 code.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
 
                 code.add(loopEnd);
-                code.add(new FrameNode(Opcodes.F_CHOP, 2, null, 0, null));
 
                 // if (jwkList.isEmpty()) return this.cachedJwkSet;
                 code.add(new VarInsnNode(Opcodes.ALOAD, 3));
@@ -6139,7 +6125,6 @@ public class DualAuthPatcher {
                 code.add(new InsnNode(Opcodes.ARETURN));
 
                 code.add(listNotEmpty);
-                code.add(new FrameNode(Opcodes.F_SAME, 0, null, 0, null));
 
                 // JWKSet newSet = new JWKSet(jwkList);
                 code.add(new TypeInsnNode(Opcodes.NEW, "com/nimbusds/jose/jwk/JWKSet"));
@@ -6950,7 +6935,6 @@ public class DualAuthPatcher {
                                 false));
 
                 injection.add(skipStorage);
-                injection.add(new FrameNode(Opcodes.F_SAME, 0, null, 0, null));
 
                 // Find first IRETURN or ARETURN and inject before it
                 for (AbstractInsnNode insn : method.instructions.toArray()) {
