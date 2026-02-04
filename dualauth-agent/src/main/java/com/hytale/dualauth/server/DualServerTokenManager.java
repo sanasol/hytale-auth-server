@@ -175,8 +175,9 @@ public class DualServerTokenManager {
      * Gets the identity token for the given issuer.
      * Prioritizes: Official → Omni-Auth Dynamic → F2P → Federated Cache
      */
-    public static String getIdentityTokenForIssuer(String issuer) {
+    public static String getIdentityTokenForIssuer(String issuer, String playerUuid) {
         if (issuer == null) issuer = DualAuthContext.getIssuer();
+        if (playerUuid == null) playerUuid = DualAuthContext.getPlayerUuid();
         
         // Safeguard: Use F2P or Official if no issuer context
         if (issuer == null) {
@@ -188,16 +189,15 @@ public class DualServerTokenManager {
             return officialIdentityToken;
         }
 
-        // 2. Omni-Auth Dynamic Generation
-        if (DualAuthContext.isOmni()) {
-            String dynamicToken = EmbeddedJwkVerifier.createDynamicIdentityToken(issuer);
-            if (dynamicToken != null) {
-                LOGGER.info("[DualAuth] Generated dynamic identity token for Omni-Auth issuer: " + issuer);
-                return dynamicToken;
-            }
+        // 2. Omni-Auth or Federated Dynamic Generation (PRIORITY)
+        // We ALWAYS generate a dynamic token for non-official issuers to ensure 
+        // the 'audience' claim matches the player's UUID. This is required by Hytale client.
+        String dynamicToken = DualServerIdentity.createDynamicIdentityToken(issuer, playerUuid);
+        if (dynamicToken != null) {
+            return dynamicToken;
         }
 
-        // 3. F2P Promiscuous Fallback
+        // 3. F2P Fallback (last resort, might cause 'invalid payload' if audience mismatch)
         if (f2pIdentityToken != null) {
             return f2pIdentityToken;
         }

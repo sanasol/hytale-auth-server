@@ -330,11 +330,15 @@ public class DualAuthHelper {
             if (issuer != null && !isOfficialIssuer(issuer)) {
                 Field idField = authGrant.getClass().getDeclaredField("serverIdentityToken");
                 idField.setAccessible(true);
-                String rep = DualServerTokenManager.getIdentityTokenForIssuer(issuer);
+                
+                // Try to get player UUID from context
+                String playerUuid = DualAuthContext.getPlayerUuid();
+                
+                String rep = DualServerTokenManager.getIdentityTokenForIssuer(issuer, playerUuid);
                 if (rep != null) {
                     idField.set(authGrant, rep);
-                    if (Boolean.getBoolean("dualauth.debug.omni")) {
-                        System.out.println("[DualAuth] AuthGrant: Replaced server identity token for " + issuer);
+                    if (Boolean.getBoolean("dualauth.debug")) {
+                        System.out.println("[DualAuth] AuthGrant: Replaced server identity token for " + issuer + (playerUuid != null ? " (Player: " + playerUuid + ")" : ""));
                     }
                 }
             }
@@ -382,11 +386,28 @@ public class DualAuthHelper {
         if (token == null || !token.contains(".")) return null;
         try {
             String payload = new String(Base64.getUrlDecoder().decode(token.split("\\.")[1]));
-            int issIdx = payload.indexOf("\"iss\":");
-            if (issIdx < 0) return null;
-            int start = payload.indexOf('"', issIdx + 6) + 1;
-            int end = payload.indexOf('"', start);
-            return payload.substring(start, end);
+            return extractJsonField(payload, "iss");
+        } catch (Exception e) { return null; }
+    }
+
+    private static String extractJsonField(String json, String fieldName) {
+        if (json == null) return null;
+        try {
+            // More lenient parsing for whitespaces: "key" : "value"
+            String pattern = "\"" + fieldName + "\"";
+            int keyStart = json.indexOf(pattern);
+            if (keyStart < 0) return null;
+            
+            int colonPos = json.indexOf(":", keyStart + pattern.length());
+            if (colonPos < 0) return null;
+            
+            int quoteStart = json.indexOf("\"", colonPos + 1);
+            if (quoteStart < 0) return null;
+            
+            int quoteEnd = json.indexOf("\"", quoteStart + 1);
+            if (quoteEnd < 0) return null;
+            
+            return json.substring(quoteStart + 1, quoteEnd);
         } catch (Exception e) { return null; }
     }
 

@@ -90,15 +90,40 @@ public class DualServerIdentity {
         return (env != null && !env.isEmpty()) ? env : UUID.randomUUID().toString();
     }
 
-    public static String createDynamicIdentityToken() {
-        String issuer = DualAuthContext.getIssuer() != null ? DualAuthContext.getIssuer() : DualAuthConfig.F2P_ISSUER;
-        String token = EmbeddedJwkVerifier.createDynamicIdentityToken(issuer);
-        if (token != null) return token;
+    public static String createDynamicIdentityToken(String issuer, String playerUuid) {
+        if (issuer == null) issuer = DualAuthContext.getIssuer();
+        if (issuer == null) issuer = DualAuthConfig.F2P_ISSUER;
+        
+        // If we have an embedded JWK in context, let EmbeddedJwkVerifier handle it
+        if (DualAuthContext.isOmni()) {
+            String token = EmbeddedJwkVerifier.createDynamicIdentityToken(issuer);
+            if (token != null) return token;
+        }
+
         try {
             OctetKeyPair kp = getOrCreateSelfSignedKeyPair();
-            JWTClaimsSet claims = new JWTClaimsSet.Builder().issuer(issuer).subject(DualAuthContext.getPlayerUuid() != null ? DualAuthContext.getPlayerUuid() : UUID.randomUUID().toString()).audience("hytale:client").issueTime(new Date()).expirationTime(new Date(System.currentTimeMillis() + 3600_000L)).claim("scope", "hytale:server").build();
-            return signNative(Base64URL.encode("{\"alg\":\"EdDSA\",\"typ\":\"JWT\",\"jwk\":" + kp.toPublicJWK().toJSONString() + "}") + "." + Base64URL.encode(claims.toJSONObject().toString()), kp);
-        } catch (Exception e) { return null; }
+            
+            // Use provided player UUID or fallback to context or random
+            String aud = playerUuid;
+            if (aud == null) aud = DualAuthContext.getPlayerUuid();
+            if (aud == null || aud.isEmpty()) aud = UUID.randomUUID().toString();
+
+            JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issuer(issuer)
+                .subject(getServerUuid())
+                .audience(aud) // CRITICAL: Audience must be the Player's UUID
+                .issueTime(new Date())
+                .expirationTime(new Date(System.currentTimeMillis() + 3600000L))
+                .claim("scope", "hytale:server")
+                .build();
+
+            String header = Base64URL.encode("{\"alg\":\"EdDSA\",\"typ\":\"JWT\",\"jwk\":" + kp.toPublicJWK().toJSONString() + "}").toString();
+            String payload = Base64URL.encode(claims.toJSONObject().toString()).toString();
+            
+            return signNative(header + "." + payload, kp);
+        } catch (Exception e) { 
+            return null; 
+        }
     }
 
     private static String fetchUrl(String urlString) {
@@ -120,11 +145,23 @@ public class DualServerIdentity {
     }
 
     private static String extractJsonField(String json, String fieldName) {
+        if (json == null) return null;
         try {
-            String p = "\"" + fieldName + "\":\"";
-            int s = json.indexOf(p); if (s < 0) return null;
-            s += p.length(); int e = json.indexOf("\"", s); if (e < 0) return null;
-            return json.substring(s, e);
+            // More lenient parsing for whitespaces: "key" : "value"
+            String pattern = "\"" + fieldName + "\"";
+            int keyStart = json.indexOf(pattern);
+            if (keyStart < 0) return null;
+            
+            int colonPos = json.indexOf(":", keyStart + pattern.length());
+            if (colonPos < 0) return null;
+            
+            int quoteStart = json.indexOf("\"", colonPos + 1);
+            if (quoteStart < 0) return null;
+            
+            int quoteEnd = json.indexOf("\"", quoteStart + 1);
+            if (quoteEnd < 0) return null;
+            
+            return json.substring(quoteStart + 1, quoteEnd);
         } catch (Exception e) { return null; }
     }
 }
