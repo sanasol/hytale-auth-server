@@ -39,17 +39,151 @@ cd dualauth-agent
 
 # Run the server
 ```bash
-java -javaagent:dualauth-agent.jar -jar HytaleServer.jar -- bare --auth-mode authenticated
+java -javaagent:dualauth-agent.jar -jar HytaleServer.jar --auth-mode authenticated
 ```
 
 ## ⚙️ Configuration
 
 The agent is configured via environment variables, allowing for easy deployment in Docker or CI/CD environments:
 
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `HYTALE_AUTH_DOMAIN` | Your custom F2P authentication domain. | `auth.sanasol.ws` |
-| `HYTALE_TRUST_ALL_ISSUERS` | If `true`, enables Omni-Auth (accepts self-signed tokens). | `true` |
-| `HYTALE_TRUSTED_ISSUERS` | Comma-separated list of secondary trusted issuers. | (Empty) |
-| `dualauth.debug` | Set to `true` (system property) for verbose transformation logs. | `false` |
+### **Core Authentication Settings**
+
+| Variable | Description | Default | Use Cases |
+| :--- | :--- | :--- | :--- |
+| `HYTALE_AUTH_DOMAIN` | Your custom F2P authentication domain (alternative: `HYTALE_AUTH_SERVER`) | `auth.sanasol.ws` | **Community servers**: Set to your auth domain<br>**Development**: Use `localhost` for local testing<br>**Private networks**: Point to internal auth server |
+| `HYTALE_TRUST_ALL_ISSUERS` | If `true`, enables Omni-Auth (accepts self-signed tokens) | `true` | **Public servers**: Set to `false` for security<br>**Private servers**: Set to `true` for flexibility<br>**Development**: Keep `true` for easy testing |
+| `HYTALE_TRUST_OFFICIAL` | If `true`, trusts official Hytale issuers (sessions.hytale.com) | `true` | **Mixed servers**: Keep `true` to allow both<br>**F2P-only**: Set to `false` to block officials<br>**Testing**: Disable to force F2P authentication |
+| `HYTALE_TRUSTED_ISSUERS` | Comma-separated list of trusted issuers (treated as public) | (Empty) | **Federated auth**: Add partner domains<br>**Multi-realm**: Trust multiple auth providers<br>**Migration**: Add legacy auth domains<br>**Performance**: Skip JWKS detection for trusted domains |
+
+### **JWKS & Cache Configuration**
+
+| Variable | Description | Default | Use Cases |
+| :--- | :--- | :--- | :--- |
+| `HYTALE_KEYS_CACHE_TTL` | JWKS cache time-to-live in seconds | `10800` (3 hours) | **High-security**: Set to `300` (5 min) for quick key rotation<br>**Stable environments**: Set to `21600` (6 hours) for performance<br>**Development**: Set to `60` for frequent key changes |
+| `HYTALE_ISSUER_DETECTION_TTL` | Issuer detection cache TTL in seconds | `3600` (1 hour) | **Dynamic environments**: Set to `60` for quick discovery<br> **Stable setups**: Set to `21600` (3 hours) for efficiency<br>**Testing**: Set to `10` for rapid re-detection |
+
+**📋 Cache Behavior Notes:**
+- **JWKS Cache:** Stores public keys per issuer
+- **Token Cache:** Stores identity tokens (federated per issuer, Omni-Auth per player-uuid)  
+- **Cleanup:** Automatic when entries expire (based on TTL)
+- **Memory Usage:** ~1KB per cached entry
+- **Fixed Timeouts:** 5 seconds for JWKS detection (not configurable)
+
+### **Issuer Detection & Security**
+
+| Variable | Description | Default | Use Cases |
+| :--- | :--- | :--- | :--- |
+| `HYTALE_ISSUER_BLACKLIST` | Comma-separated list of blacklisted issuers | (Empty) | **Security**: Block known malicious domains<br>**Compliance**: Block competitor domains<br>**Moderation**: Block problematic issuers |
+| `HYTALE_FORCE_ISSUER_DETECTION` | Force detection for all issuers (including officials) | `false` | **Debugging**: Set to `true` to detect all issuers<br>**Migration**: Force detection during transition<br>**Testing**: Verify detection logic works |
+
+### **Server Identity**
+
+| Variable | Description | Default | Use Cases |
+| :--- | :--- | :--- | :--- |
+| `HYTALE_SERVER_AUDIENCE` | Server audience UUID (alternative: `HYTALE_SERVER_ID`) | Auto-generated | **Production**: Set to your server's UUID<br>**Clustering**: Use same UUID across cluster<br>**Migration**: Preserve UUID during server moves |
+| `HYTALE_SERVER_NAME` | Custom server name for identification | (Empty) | **Logging**: Identify server in logs<br>**Monitoring**: Distinguish servers in metrics<br>**Multi-server**: Name different instances |
+
+### **Debug & Development**
+
+| Variable | Type | Description | Default | Use Cases |
+| :--- | :--- | :--- | :--- | :--- |
+| `dualauth.debug` | System Property | Enable verbose debug logging | `false` | **Troubleshooting**: `-Ddualauth.debug=true`<br>**Development**: Enable during development<br>**Production**: Disable for performance |
+| `dualauth.debug.connections` | System Property | Enable connection boundary logging only | `false` | **Connection tracking**: `-Ddualauth.debug.connections=true`<br>**Context debugging**: Monitor thread-local cleanup<br>**Multi-user**: Verify context isolation |
+
+### **Example Configuration**
+
+#### **🏠 Basic Community Server Setup**
+```bash
+# Standard community server configuration
+export HYTALE_AUTH_DOMAIN="auth.mycommunity.com"
+export HYTALE_TRUST_ALL_ISSUERS="true"
+export HYTALE_SERVER_NAME="MyCommunity Server"
+
+java -javaagent:dualauth-agent.jar -jar HytaleServer.jar --auth-mode authenticated
+```
+
+#### **🔒 High-Security Production Server**
+```bash
+# Lock down production server for maximum security
+export HYTALE_AUTH_DOMAIN="auth.production.com"
+export HYTALE_TRUST_ALL_ISSUERS="false"
+export HYTALE_TRUST_OFFICIAL="true"
+export HYTALE_TRUSTED_ISSUERS="https://partner1.com,https://partner2.com"
+export HYTALE_ISSUER_BLACKLIST="https://banned.com"
+export HYTALE_KEYS_CACHE_TTL="300"  # 5 minutes for quick key rotation
+export HYTALE_SERVER_AUDIENCE="12345678-1234-1234-1234-123456789abc"
+export HYTALE_SERVER_NAME="Production Main"
+
+java -javaagent:dualauth-agent.jar -jar HytaleServer.jar --auth-mode authenticated
+```
+
+#### **🧪 Development Environment**
+```bash
+# Local development with debugging
+export HYTALE_AUTH_DOMAIN="localhost"
+export HYTALE_TRUST_ALL_ISSUERS="true"
+export HYTALE_FORCE_ISSUER_DETECTION="true"
+export HYTALE_KEYS_CACHE_TTL="60"  # 1 minute for frequent changes
+export HYTALE_ISSUER_DETECTION_TTL="10"  # Quick re-detection
+export HYTALE_SERVER_NAME="Dev Server"
+
+java -Ddualauth.debug=true -Ddualauth.debug.connections=true \
+     -javaagent:dualauth-agent.jar -jar HytaleServer.jar --auth-mode authenticated
+```
+
+#### **🌐 Multi-Realm Federation**
+```bash
+# Server trusting multiple authentication providers
+export HYTALE_AUTH_DOMAIN="auth.realm1.com"
+export HYTALE_TRUST_ALL_ISSUERS="false"
+export HYTALE_TRUST_OFFICIAL="true"
+export HYTALE_TRUSTED_ISSUERS="https://auth.realm2.com,https://auth.realm3.com"
+export HYTALE_ISSUER_BLACKLIST="https://banned.com"
+export HYTALE_SERVER_AUDIENCE="realm1-server-uuid"
+export HYTALE_SERVER_NAME="Multi-Realm Hub"
+
+java -javaagent:dualauth-agent.jar -jar HytaleServer.jar --auth-mode authenticated
+```
+
+#### **🐛 Troubleshooting Configuration**
+```bash
+# Enable all debugging for issue diagnosis
+export HYTALE_AUTH_DOMAIN="auth.debug.com"
+export HYTALE_FORCE_ISSUER_DETECTION="true"
+export HYTALE_KEYS_CACHE_TTL="3600"  # Longer cache for debugging
+export HYTALE_SERVER_NAME="Debug Server"
+
+java -Ddualauth.debug=true -Ddualauth.debug.connections=true \
+     -javaagent:dualauth-agent.jar -jar HytaleServer.jar --auth-mode authenticated
+```
+
+#### **🐳 Docker Deployment**
+```dockerfile
+FROM eclipse-temurin:21-jdk
+
+# Environment variables
+ENV HYTALE_AUTH_DOMAIN="auth.docker.com"
+ENV HYTALE_TRUST_ALL_ISSUERS="false"
+ENV HYTALE_TRUST_OFFICIAL="true"
+ENV HYTALE_KEYS_CACHE_TTL="3600"
+ENV HYTALE_SERVER_NAME="Docker Server"
+
+COPY dualauth-agent.jar /app/
+COPY HytaleServer.jar /app/
+
+WORKDIR /app
+CMD ["java", "-javaagent:dualauth-agent.jar", "-jar", "HytaleServer.jar", "--auth-mode", "authenticated"]
+```
+
+#### **⚡ High-Performance Setup**
+```bash
+# Optimized for maximum performance
+export HYTALE_AUTH_DOMAIN="auth.fast.com"
+export HYTALE_TRUST_ALL_ISSUERS="false"
+export HYTALE_KEYS_CACHE_TTL="7200"  # 2 hours
+export HYTALE_ISSUER_DETECTION_TTL="1800"  # 30 minutes
+export HYTALE_SERVER_NAME="High-Performance Server"
+
+java -javaagent:dualauth-agent.jar -jar HytaleServer.jar --auth-mode authenticated
+```
 

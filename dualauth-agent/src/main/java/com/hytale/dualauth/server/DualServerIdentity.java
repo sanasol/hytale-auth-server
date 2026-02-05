@@ -22,6 +22,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Manages F2P server identity token fetching and self-signed token generation.
@@ -30,6 +32,36 @@ public class DualServerIdentity {
     private static final Logger LOGGER = Logger.getLogger("DualAuthAgent");
     private static volatile OctetKeyPair selfSignedKeyPair = null;
     private static final int HTTP_TIMEOUT = 5000;
+    
+    // Unified cache for server tokens by issuer (TTL from config)
+    private static final ConcurrentHashMap<String, CachedServerTokens> serverTokenCache = new ConcurrentHashMap<>();
+    private static final long SERVER_TOKEN_TTL = DualAuthConfig.KEYS_CACHE_TTL_MS;
+    
+    private static class CachedServerTokens {
+        final String identityToken;
+        final String sessionToken;
+        final String tokenType; // "federated" or "omni"
+        final long timestamp;
+        
+        CachedServerTokens(String identityToken, String sessionToken, String tokenType) {
+            this.identityToken = identityToken;
+            this.sessionToken = sessionToken;
+            this.tokenType = tokenType;
+            this.timestamp = System.currentTimeMillis();
+        }
+        
+        CachedServerTokens(String identityToken, String tokenType) {
+            this(identityToken, null, tokenType);
+        }
+        
+        boolean isExpired() {
+            return System.currentTimeMillis() - timestamp > SERVER_TOKEN_TTL;
+        }
+        
+        String getIdentityToken() {
+            return identityToken;
+        }
+    }
 
     public static void refreshF2PTokens() {
         try {
@@ -104,14 +136,56 @@ public class DualServerIdentity {
         if (DualAuthContext.isOmni() || hasEmbeddedJwkFromContext(issuer)) {
             if (Boolean.getBoolean("dualauth.debug")) {
                  System.out.println("[DualAuth] Creating Omni-Auth server identity token for: " + issuer);
+                 System.out.println("[DualAuth] DEBUG: Omni-Auth - DualAuthContext.isOmni(): " + DualAuthContext.isOmni());
+                 System.out.println("[DualAuth] DEBUG: Omni-Auth - hasEmbeddedJwkFromContext(" + issuer + "): " + hasEmbeddedJwkFromContext(issuer));
+                 System.out.println("[DualAuth] DEBUG: Omni-Auth - Current context issuer: " + DualAuthContext.getIssuer());
             }
-            return EmbeddedJwkVerifier.createDynamicIdentityToken(issuer);
+            
+            // Check Omni-Auth cache by player-uuid (NOT issuer)
+            String playerUuidFromContext = DualAuthContext.getPlayerUuid();
+            if (playerUuidFromContext != null) {
+                String cacheKey = playerUuidFromContext + ":" + issuer;
+                CachedServerTokens cached = serverTokenCache.get(cacheKey);
+                if (cached != null && !cached.isExpired() && "omni".equals(cached.tokenType)) {
+                    if (Boolean.getBoolean("dualauth.debug")) {
+                        System.out.println("[DualAuth] DEBUG: Using cached Omni-Auth token for player: " + playerUuidFromContext + " (issuer: " + issuer + ")");
+                    }
+                    return cached.getIdentityToken();
+                }
+            }
+            
+            // Generate new Omni-Auth token
+            String token = EmbeddedJwkVerifier.createDynamicIdentityToken(issuer);
+            
+            // Cache the token by player-uuid
+            if (token != null && playerUuidFromContext != null) {
+                String cacheKey = playerUuidFromContext + ":" + issuer;
+                serverTokenCache.put(cacheKey, new CachedServerTokens(token, "omni"));
+                if (Boolean.getBoolean("dualauth.debug")) {
+                    System.out.println("[DualAuth] DEBUG: Cached Omni-Auth token for player: " + playerUuidFromContext + " (issuer: " + issuer + ")");
+                }
+            }
+            
+            return token;
         }
         
         // PATCHER STRATEGY: Only generate tokens for official issuers if needed (though usually captured)
         if (!DualAuthHelper.isOfficialIssuerStrict(issuer)) {
             if (Boolean.getBoolean("dualauth.debug")) {
-                System.out.println("[DualAuth] Skipping dynamic server identity token for non-official issuer: " + issuer);
+                System.out.println("[DualAuth] DEBUG: Non-official issuer, attempting federated token from: " + issuer);
+            }
+            
+            // NEW: Try to fetch federated token from the issuer's /auto-auth endpoint
+            DualServerTokenManager.FederatedIssuerTokens fedTokens = fetchFederatedTokensFromIssuer(issuer);
+            if (fedTokens != null && fedTokens.getIdentityToken() != null) {
+                if (Boolean.getBoolean("dualauth.debug")) {
+                    System.out.println("[DualAuth] DEBUG: Successfully fetched federated identity token from: " + issuer);
+                }
+                return fedTokens.getIdentityToken();
+            }
+            
+            if (Boolean.getBoolean("dualauth.debug")) {
+                System.out.println("[DualAuth] DEBUG: Failed to fetch federated token from: " + issuer);
             }
             return null;
         }
@@ -129,6 +203,20 @@ public class DualServerIdentity {
     }
 
     public static DualServerTokenManager.FederatedIssuerTokens fetchFederatedTokensFromIssuer(String issuer) {
+        // Check unified cache first
+        CachedServerTokens cached = serverTokenCache.get(issuer);
+        if (cached != null && !cached.isExpired() && "federated".equals(cached.tokenType)) {
+            if (Boolean.getBoolean("dualauth.debug")) {
+                System.out.println("[DualAuth] DEBUG: Using cached federated tokens for issuer: " + issuer);
+            }
+            return new DualServerTokenManager.FederatedIssuerTokens(cached.identityToken, cached.sessionToken, SERVER_TOKEN_TTL);
+        }
+        
+        // Cache miss or expired - fetch from issuer
+        if (Boolean.getBoolean("dualauth.debug")) {
+            System.out.println("[DualAuth] DEBUG: Cache miss for issuer: " + issuer + " - fetching from /auto-auth");
+        }
+        
         try {
             // 1. Build issuer endpoint
             String baseUrl = issuer.endsWith("/") ? issuer.substring(0, issuer.length() - 1) : issuer;
@@ -148,47 +236,65 @@ public class DualServerIdentity {
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
-            conn.setRequestProperty("User-Agent", "Hytale-Server/1.0");
-            conn.setConnectTimeout(10000);
-            conn.setReadTimeout(10000);
+            conn.setRequestProperty("User-Agent", "DualAuthAgent/1.0");
+            conn.setConnectTimeout(HTTP_TIMEOUT);
+            conn.setReadTimeout(HTTP_TIMEOUT);
             conn.setDoOutput(true);
             
             // 4. Send request
-            try (java.io.OutputStream os = conn.getOutputStream()) {
-                os.write(jsonBody.getBytes(StandardCharsets.UTF_8));
+            try (OutputStream os = conn.getOutputStream()) {
+                byte[] input = jsonBody.getBytes(StandardCharsets.UTF_8);
+                os.write(input, 0, input.length);
             }
             
             // 5. Process response
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
-                String responseBody = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-                
-                // 6. Extract tokens
-                String identityToken = extractJsonField(responseBody, "identityToken");
-                String sessionToken = extractJsonField(responseBody, "sessionToken");
-                
-                if (identityToken != null && !identityToken.isEmpty()) {
-                    if (Boolean.getBoolean("dualauth.debug")) {
-                        System.out.println("[DualAuth] Successfully fetched federated tokens from: " + issuer);
-                    }
+                String response = fetchUrl(conn.getURL().toString());
+                if (response != null && !response.isEmpty()) {
+                    String identityToken = extractJsonField(response, "identityToken");
+                    String sessionToken = extractJsonField(response, "sessionToken");
                     
-                    // TTL of 1 hour for federated tokens
-                    long ttl = 3600000L; 
-                    return new DualServerTokenManager.FederatedIssuerTokens(identityToken, sessionToken, ttl);
+                    if (identityToken != null) {
+                        // Cache the tokens
+                        serverTokenCache.put(issuer, new CachedServerTokens(identityToken, sessionToken, "federated"));
+                        
+                        if (Boolean.getBoolean("dualauth.debug")) {
+                            System.out.println("[DualAuth] DEBUG: Cached federated tokens for issuer: " + issuer + " (TTL: 1 hour)");
+                        }
+                        
+                        return new DualServerTokenManager.FederatedIssuerTokens(identityToken, sessionToken, SERVER_TOKEN_TTL);
+                    }
                 }
             } else {
                 if (Boolean.getBoolean("dualauth.debug")) {
-                    System.out.println("[DualAuth] HTTP error from issuer: " + issuer + " - Code: " + responseCode);
+                    System.out.println("[DualAuth] DEBUG: Failed to fetch federated tokens from " + issuer + " - HTTP " + responseCode);
                 }
             }
             
         } catch (Exception e) {
             if (Boolean.getBoolean("dualauth.debug")) {
-                System.out.println("[DualAuth] Exception fetching federated tokens: " + e.getMessage());
+                System.out.println("[DualAuth] DEBUG: Exception fetching federated tokens from " + issuer + ": " + e.getMessage());
             }
         }
         
         return null;
+    }
+    
+    public static void cleanupExpiredTokens() {
+        int cleaned = 0;
+        
+        // Clean expired server tokens
+        for (Map.Entry<String, CachedServerTokens> entry : serverTokenCache.entrySet()) {
+            if (entry.getValue().isExpired()) {
+                serverTokenCache.remove(entry.getKey());
+                cleaned++;
+            }
+        }
+        
+        if (Boolean.getBoolean("dualauth.debug") && cleaned > 0) {
+            System.out.println("[DualAuth] Cleaned up " + cleaned + " expired server token entries");
+        }
     }
 
 

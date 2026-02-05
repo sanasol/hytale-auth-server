@@ -246,28 +246,60 @@ public class DualServerTokenManager {
             return cached.getIdentityToken();
         }
         
-        // 2. If missing or expired, fetch from issuer
+        // 2. Start background fetch if not already in progress
+        startBackgroundFederatedFetch(issuer);
+        
         if (Boolean.getBoolean("dualauth.debug")) {
-            System.out.println("[DualAuth] Fetching federated tokens from issuer: " + issuer);
+            System.out.println("[DualAuth] Starting background federated fetch for issuer: " + issuer + " (returning null for now)");
         }
         
-        // Avoid blocking critical threads blindly, though this is likely called from serialize() which is sync.
-        // In refined future versions, this should be pre-fetched or async.
-        FederatedIssuerTokens freshTokens = DualServerIdentity.fetchFederatedTokensFromIssuer(issuer);
-        if (freshTokens != null) {
-            // 3. Cache it
-            federatedIssuerCache.put(issuer, freshTokens);
-            if (Boolean.getBoolean("dualauth.debug")) {
-                System.out.println("[DualAuth] Cached federated tokens for issuer: " + issuer);
-            }
-            return freshTokens.getIdentityToken();
-        }
-        
-        // 4. Fail
-        if (Boolean.getBoolean("dualauth.debug")) {
-            System.out.println("[DualAuth] Failed to fetch federated tokens for issuer: " + issuer);
-        }
+        // 3. Return null for now - will be available on next request
         return null;
+    }
+
+    /**
+     * Starts federated token fetch in background without blocking the current thread.
+     * Results will be cached for future requests.
+     */
+    private static void startBackgroundFederatedFetch(String issuer) {
+        // Avoid duplicate background fetches
+        if (federatedIssuerCache.containsKey(issuer)) {
+            return; // Already being fetched or cached
+        }
+        
+        // Mark as being fetched to avoid duplicates
+        federatedIssuerCache.put(issuer, new FederatedIssuerTokens(null, null, 0));
+        
+        java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try {
+                if (Boolean.getBoolean("dualauth.debug")) {
+                    System.out.println("[DualAuth] Background federated fetch started for: " + issuer);
+                }
+                
+                // Avoid blocking critical threads blindly, though this is likely called from serialize() which is sync.
+                // In refined future versions, this should be pre-fetched or async.
+                FederatedIssuerTokens freshTokens = DualServerIdentity.fetchFederatedTokensFromIssuer(issuer);
+                if (freshTokens != null) {
+                    // 3. Cache it
+                    federatedIssuerCache.put(issuer, freshTokens);
+                    if (Boolean.getBoolean("dualauth.debug")) {
+                        System.out.println("[DualAuth] Cached federated tokens for issuer: " + issuer);
+                    }
+                } else {
+                    // Cache failure result
+                    federatedIssuerCache.remove(issuer); // Remove placeholder
+                    if (Boolean.getBoolean("dualauth.debug")) {
+                        System.out.println("[DualAuth] Failed to fetch federated tokens for issuer: " + issuer);
+                    }
+                }
+            } catch (Exception e) {
+                // Cache failure result
+                federatedIssuerCache.remove(issuer); // Remove placeholder
+                if (Boolean.getBoolean("dualauth.debug")) {
+                    System.out.println("[DualAuth] Exception in background federated fetch for issuer: " + issuer + " -> " + e.getMessage());
+                }
+            }
+        });
     }
 
     public static void cleanupExpiredFederatedCache() {
@@ -334,31 +366,51 @@ public class DualServerTokenManager {
      * Prioritizes: Official → Omni-Auth Dynamic → Federated Cache → F2P Fallback
      */
     public static String getIdentityTokenForIssuer(String issuer, String playerUuid) {
-        if (issuer == null) issuer = DualAuthContext.getIssuer();
+        return getIdentityTokenForIssuer(issuer, playerUuid, null);
+    }
+
+    /**
+     * Gets the identity token for the given issuer with optional custom issuer override.
+     * Prioritizes: Official → Omni-Auth Dynamic → Federated Cache → F2P Fallback
+     * If customIssuer is provided, it will be used instead of the original issuer for token generation.
+     */
+    public static String getIdentityTokenForIssuer(String issuer, String playerUuid, String customIssuer) {
+        String effectiveIssuer = (customIssuer != null) ? customIssuer : issuer;
+        
+        if (effectiveIssuer == null) effectiveIssuer = DualAuthContext.getIssuer();
         if (playerUuid == null) playerUuid = DualAuthContext.getPlayerUuid();
         
         // Safeguard: Use F2P or Official if no issuer context
-        if (issuer == null) {
+        if (effectiveIssuer == null) {
             return f2pIdentityToken != null ? f2pIdentityToken : officialIdentityToken;
         }
 
         // 1. Official issuers use official tokens
-        if (DualAuthHelper.isOfficialIssuerStrict(issuer)) {
+        if (DualAuthHelper.isOfficialIssuerStrict(effectiveIssuer)) {
             return officialIdentityToken;
         }
 
         // 2. Omni-Auth uses per-player cache (or dynamic generation)
         if (DualAuthContext.isOmni()) {
-            return DualServerIdentity.createDynamicIdentityToken(issuer, playerUuid); 
+            return DualServerIdentity.createDynamicIdentityToken(effectiveIssuer, playerUuid); 
         }
 
         // 3. Public issuers use federated cache
-        if (DualAuthHelper.isPublicIssuer(issuer)) {
-             String fedToken = getOrFetchFederatedServerIdentity(issuer);
+        if (DualAuthHelper.isPublicIssuer(effectiveIssuer)) {
+             String fedToken = getOrFetchFederatedServerIdentity(effectiveIssuer);
              if (fedToken != null) return fedToken;
         }
 
-        // 4. Fallback (F2P promiscuous)
+        // 4. Custom issuer generation (NEW: Force generation for customIssuer)
+        if (customIssuer != null) {
+            // Force generation with the custom issuer from the client
+            if (Boolean.getBoolean("dualauth.debug")) {
+                System.out.println("[DualAuth] DEBUG: Forcing token generation with custom issuer: " + customIssuer + " (original: " + issuer + ")");
+            }
+            return DualServerIdentity.createDynamicIdentityToken(customIssuer, playerUuid);
+        }
+
+        // 5. Fallback (F2P promiscuous)
         // PATCHER STRATEGY: For non-official issuers, we use the F2P identity token.
         // This token is signed by the backend and validatable by the F2P client.
         if (f2pIdentityToken != null) {
@@ -367,7 +419,7 @@ public class DualServerTokenManager {
 
         // Only return null if we honestly don't have ANY token to give
         if (Boolean.getBoolean("dualauth.debug")) {
-            System.out.println("[DualAuth] partial failure: requested identity for " + issuer + " but no F2P token available");
+            System.out.println("[DualAuth] partial failure: requested identity for " + effectiveIssuer + " but no F2P token available");
         }
         return null;
     }

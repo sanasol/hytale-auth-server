@@ -96,6 +96,11 @@ public class EmbeddedJwkVerifier {
     }
 
     public static String createSignedToken(String issuer, String tokenType) {
+        if (Boolean.getBoolean("dualauth.debug")) {
+            System.out.println("[DualAuth] DEBUG: createSignedToken called with issuer: " + issuer);
+            System.out.println("[DualAuth] DEBUG: createSignedToken - Current DualAuthContext issuer: " + DualAuthContext.getIssuer());
+        }
+        
         try {
             String jwkJson = DualAuthContext.getJwk();
             if (jwkJson == null) return null;
@@ -114,6 +119,10 @@ public class EmbeddedJwkVerifier {
                     .issuer(issuer)
                     .issueTime(new Date())
                     .expirationTime(new Date(System.currentTimeMillis() + 3600_000L));
+            
+            if (Boolean.getBoolean("dualauth.debug")) {
+                System.out.println("[DualAuth] DEBUG: createSignedToken - Setting issuer in JWT claims: " + issuer);
+            }
 
             // Subject = Server UUID
             String serverUuid = DualAuthHelper.getServerUuid();

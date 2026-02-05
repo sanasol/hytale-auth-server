@@ -44,6 +44,15 @@ public class SessionServiceClientTransformer implements net.bytebuddy.agent.buil
         @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class)
         public static Object enter(@Advice.This Object thiz) {
             try {
+                // CRITICAL FIX: Skip JWKS merging for official issuers to prevent lag
+                String currentIssuer = DualAuthContext.getIssuer();
+                if (currentIssuer != null && DualAuthHelper.isOfficialIssuer(currentIssuer)) {
+                    if (Boolean.getBoolean("dualauth.debug")) {
+                        System.out.println("[DualAuth] JwksFetchAdvice: Using original JWKS flow for official issuer: " + currentIssuer);
+                    }
+                    return null; // Let original flow handle official issuers
+                }
+                
                 String fullJson = DualJwksFetcher.fetchMergedJwksJson();
                 if (fullJson == null) return null;
 

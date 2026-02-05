@@ -37,6 +37,11 @@ public class JWTValidatorTransformer implements net.bytebuddy.agent.builder.Agen
                 .or(named("loadJwks"))
                 .or(named("getJwkSet"))
                 .or(named("refreshJwks"))
+            ))
+            .visit(Advice.to(CacheProtectionAdvice.class).on(
+                named("invalidateJwksCache")
+                .or(named("clearCache"))
+                .or(named("invalidateCache"))
             ));
     }
 
@@ -94,14 +99,24 @@ public class JWTValidatorTransformer implements net.bytebuddy.agent.builder.Agen
     }
 
     /**
-     * Advice for fetchJwksFromService method.
+     * Advice for fetchJwks* methods.
+     * Returns merged JWKS for non-official issuers, lets original handle officials.
      */
     public static class FetchJwksAdvice {
         @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class)
         public static Object enter(@Advice.This Object thiz) {
             try {
-                String fullJson = DualJwksFetcher.fetchMergedJwksJson();
-                if (fullJson == null || fullJson.isEmpty()) return null;
+                // CRITICAL FIX: Skip JWKS merging for official issuers to prevent lag
+                String currentIssuer = DualAuthContext.getIssuer();
+                if (currentIssuer != null && DualAuthHelper.isOfficialIssuer(currentIssuer)) {
+                    if (Boolean.getBoolean("dualauth.debug")) {
+                        System.out.println("[DualAuth] FetchJwksAdvice: Using original JWKS flow for official issuer: " + currentIssuer);
+                    }
+                    return null; // Let original flow handle official issuers
+                }
+                
+                String mergedJson = DualJwksFetcher.fetchMergedJwksJson();
+                if (mergedJson == null || mergedJson.isEmpty()) return null;
 
                 ClassLoader cl = thiz.getClass().getClassLoader();
                 
@@ -112,7 +127,7 @@ public class JWTValidatorTransformer implements net.bytebuddy.agent.builder.Agen
                 Object codec = codecField.get(null);
 
                 Class<?> rawJsonReaderClass = cl.loadClass("com.hypixel.hytale.codec.util.RawJsonReader");
-                Object reader = rawJsonReaderClass.getDeclaredConstructor(char[].class).newInstance((Object) fullJson.toCharArray());
+                Object reader = rawJsonReaderClass.getDeclaredConstructor(char[].class).newInstance((Object) mergedJson.toCharArray());
                 
                 Class<?> extraInfoClass = cl.loadClass("com.hypixel.hytale.codec.ExtraInfo");
                 Class<?> emptyExtraInfoClass = cl.loadClass("com.hypixel.hytale.codec.EmptyExtraInfo");
@@ -159,6 +174,26 @@ public class JWTValidatorTransformer implements net.bytebuddy.agent.builder.Agen
             if (entered != null) {
                 returned = entered;
             }
+        }
+    }
+
+    /**
+     * Cache Protection Advice - Prevents cache invalidation for official issuers
+     * Ensures official JWKS cache remains intact and functional
+     */
+    public static class CacheProtectionAdvice {
+        @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class)
+        public static boolean enter(@Advice.This Object thiz) {
+            try {
+                String currentIssuer = DualAuthContext.getIssuer();
+                if (currentIssuer != null && DualAuthHelper.isOfficialIssuer(currentIssuer)) {
+                    if (Boolean.getBoolean("dualauth.debug")) {
+                        System.out.println("[DualAuth] CacheProtection: Blocking cache invalidation for official issuer: " + currentIssuer);
+                    }
+                    return true; // Skip cache invalidation for officials
+                }
+            } catch (Exception ignored) {}
+            return false; // Allow normal cache invalidation for non-officials
         }
     }
 }

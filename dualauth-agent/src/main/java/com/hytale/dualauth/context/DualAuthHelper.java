@@ -71,20 +71,29 @@ public class DualAuthHelper {
             return false;
         }
 
-        // 2. Check Whitelist
-        if (DualAuthConfig.ISSUER_WHITELIST.contains(issuer)) {
+        // 2. Omni-Auth: Check if CURRENT TOKEN has embedded JWK (not issuer-based)
+        String currentTokenJwk = DualAuthContext.getJwk();
+        if (currentTokenJwk != null && !currentTokenJwk.isEmpty()) {
             if (Boolean.getBoolean("dualauth.debug")) {
-                System.out.println("[DualAuth] Issuer is whitelisted: " + issuer);
+                System.out.println("[DualAuth] Current token has embedded JWK: not treating issuer as public: " + issuer);
+            }
+            return false; // This specific token is Omni-Auth, don't treat issuer as public
+        }
+
+        // 3. TRUSTED_ISSUERS: Treat as public (no detection needed)
+        if (DualAuthConfig.TRUSTED_ISSUERS.contains(issuer)) {
+            if (Boolean.getBoolean("dualauth.debug")) {
+                System.out.println("[DualAuth] Trusted issuer: treating as public (no detection): " + issuer);
             }
             return true;
         }
-        
-        // 3. Official issuers: detection only if forced
+
+        // 4. Official issuers: detection only if forced
         if (isOfficialIssuer(issuer) && !DualAuthConfig.FORCE_DETECTION_FOR_ALL) {
             return false;
         }
 
-        // 4. Check Cache
+        // 5. Check Cache (FAST PATH - no blocking)
         DualServerTokenManager.IssuerDetectionResult cached = DualServerTokenManager.getIssuerDetectionCache().get(issuer);
         if (cached != null && !cached.isExpired()) {
              if (Boolean.getBoolean("dualauth.debug")) {
@@ -93,15 +102,53 @@ public class DualAuthHelper {
             return cached.isPublic();
         }
 
-        // 5. Async Detection (Blocking with timeout since we need result now)
-        return detectIssuerPublicAsync(issuer);
+        // 6. NEW: Background Detection (NON-BLOCKING for server)
+        // Start detection in background and return conservative default
+        startBackgroundDetection(issuer);
+        
+        if (Boolean.getBoolean("dualauth.debug")) {
+            System.out.println("[DualAuth] Starting background detection for issuer: " + issuer + " (returning conservative default)");
+        }
+        
+        // Conservative default: assume not public until detection completes
+        return false;
+    }
+
+    /**
+     * Starts issuer detection in background without blocking the current thread.
+     * Results will be cached for future requests.
+     */
+    private static void startBackgroundDetection(String issuer) {
+        java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try {
+                if (Boolean.getBoolean("dualauth.debug")) {
+                    System.out.println("[DualAuth] Background detection started for: " + issuer);
+                }
+                
+                boolean isPublic = performJwksDetection(issuer);
+                
+                // Cache the result for future requests
+                cacheDetectionResult(issuer, isPublic, null);
+                
+                if (Boolean.getBoolean("dualauth.debug")) {
+                    System.out.println("[DualAuth] Background detection completed for: " + issuer + " -> public: " + isPublic);
+                }
+            } catch (Exception e) {
+                // Cache failure result
+                cacheDetectionResult(issuer, false, e);
+                if (Boolean.getBoolean("dualauth.debug")) {
+                    System.out.println("[DualAuth] Background detection failed for: " + issuer + " -> " + e.getMessage());
+                }
+            }
+        });
     }
 
     private static boolean detectIssuerPublicAsync(String issuer) {
         java.util.concurrent.CompletableFuture<Boolean> detectionFuture = java.util.concurrent.CompletableFuture.supplyAsync(() -> performJwksDetection(issuer));
         
         try {
-            boolean isPublic = detectionFuture.get(DualAuthConfig.JWKS_DETECTION_TIMEOUT, java.util.concurrent.TimeUnit.MILLISECONDS);
+            // Fixed timeout for JWKS detection (5 seconds)
+            boolean isPublic = detectionFuture.get(5000, java.util.concurrent.TimeUnit.MILLISECONDS);
             
             // Cache result from future
             cacheDetectionResult(issuer, isPublic, null);
@@ -149,8 +196,8 @@ public class DualAuthHelper {
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(jwksUrl).openConnection();
             conn.setRequestMethod("GET");
             conn.setRequestProperty("User-Agent", "Hytale-Server/1.0");
-            conn.setConnectTimeout(DualAuthConfig.JWKS_DETECTION_TIMEOUT);
-            conn.setReadTimeout(DualAuthConfig.JWKS_DETECTION_TIMEOUT);
+            conn.setConnectTimeout(5000);  // Fixed 5-second timeout
+            conn.setReadTimeout(5000);     // Fixed 5-second timeout
             conn.setInstanceFollowRedirects(true);
             
             int responseCode = conn.getResponseCode();
@@ -381,12 +428,28 @@ public class DualAuthHelper {
             while (clazz != null && clazz != Object.class) {
                 for (Field f : clazz.getDeclaredFields()) {
                     String name = f.getName().toLowerCase();
-                    // Update Issuer
+                    // Update Issuer - use base domain matching for flexibility
                     if (issuer != null && (name.contains("expectedissuer") || name.equals("issuer"))) {
                         f.setAccessible(true);
-                        f.set(validator, issuer);
+                        
+                        // Check if we should use base domain matching
+                        String serverBaseDomain = DualAuthConfig.F2P_BASE_DOMAIN;
+                        String issuerBaseDomain = extractBaseDomain(issuer);
+                        
+                        String finalIssuer = issuer;
+                        // Only apply base domain matching if neither is an IP address
+                        if (issuerBaseDomain != null && issuerBaseDomain.equals(serverBaseDomain) && 
+                            !isIpAddress(issuer) && !isIpAddress(DualAuthConfig.F2P_ISSUER)) {
+                            // Use the server's expected issuer format for compatibility
+                            finalIssuer = DualAuthConfig.F2P_ISSUER;
+                            if (Boolean.getBoolean("dualauth.debug")) {
+                                System.out.println("[DualAuth] Using base domain matching: " + issuer + " -> " + finalIssuer + " (base domain: " + issuerBaseDomain + ")");
+                            }
+                        }
+                        
+                        f.set(validator, finalIssuer);
                         if (Boolean.getBoolean("dualauth.debug")) {
-                            System.out.println("[DualAuth] Updated expectedIssuer to: " + issuer + " in " + clazz.getSimpleName());
+                            System.out.println("[DualAuth] Updated expectedIssuer to: " + finalIssuer + " in " + clazz.getSimpleName());
                         }
                     }
                     // Update Audience
@@ -505,17 +568,63 @@ public class DualAuthHelper {
             // so the client can validate mutual auth against the F2P JWKS.
             // Sending null causes "Server did not provide identity token" error on client.
             if (issuer != null && !isOfficialIssuerStrict(issuer)) {
-                String rep = DualServerTokenManager.getIdentityTokenForIssuer(issuer, DualAuthContext.getPlayerUuid());
-                if (rep != null) {
-                    idField.set(authGrant, rep);
+                // CRITICAL FIX: Use the exact issuer from the client's token for compatibility
+                // The client expects the server identity token to have the same issuer as their user token
+                String clientIssuer = issuer; // Keep the exact issuer the client used
+                
+                // Verify base domain matching for security
+                String serverBaseDomain = DualAuthConfig.F2P_BASE_DOMAIN;
+                String clientBaseDomain = extractBaseDomain(clientIssuer);
+                
+                // Only apply client issuer if they belong to the same base domain (and not IPs)
+                if (clientBaseDomain != null && clientBaseDomain.equals(serverBaseDomain) && 
+                    !isIpAddress(clientIssuer) && !isIpAddress(DualAuthConfig.F2P_ISSUER)) {
+                    
                     if (Boolean.getBoolean("dualauth.debug")) {
-                        System.out.println("[DualAuth] AuthGrant: Replaced serverIdentityToken for non-official issuer: " + issuer + " (len=" + rep.length() + ")");
+                        System.out.println("[DualAuth] Server Identity: Using client issuer for compatibility: " + clientIssuer + " (base domain: " + clientBaseDomain + ")");
+                    }
+                    
+                    // Get token with client's issuer directly from TokenManager
+                    String correctedToken = DualServerTokenManager.getIdentityTokenForIssuer(issuer, DualAuthContext.getPlayerUuid(), clientIssuer);
+                    if (correctedToken != null) {
+                        if (Boolean.getBoolean("dualauth.debug")) {
+                            System.out.println("[DualAuth] Server Identity: Generated token with client issuer: " + clientIssuer);
+                            
+                            // DEBUG: Extract and verify the issuer from the generated token
+                            String tokenIssuer = extractIssuerFromToken(correctedToken);
+                            System.out.println("[DualAuth] DEBUG: Generated token issuer: " + tokenIssuer);
+                            System.out.println("[DualAuth] DEBUG: Expected client issuer: " + clientIssuer);
+                            System.out.println("[DualAuth] DEBUG: Token issuer match: " + clientIssuer.equals(tokenIssuer));
+                        }
+                        
+                        idField.set(authGrant, correctedToken);
+                        if (Boolean.getBoolean("dualauth.debug")) {
+                            System.out.println("[DualAuth] AuthGrant: Replaced serverIdentityToken for issuer: " + issuer + " -> " + clientIssuer + " (len=" + correctedToken.length() + ")");
+                            
+                            // DEBUG: Verify the token was actually set
+                            try {
+                                String verifyToken = (String) idField.get(authGrant);
+                                String verifyIssuer = extractIssuerFromToken(verifyToken);
+                                System.out.println("[DualAuth] DEBUG: Final token in AuthGrant: " + verifyIssuer);
+                            } catch (Exception e) {
+                                System.out.println("[DualAuth] DEBUG: Error verifying final token: " + e.getMessage());
+                            }
+                        }
+                    } else {
+                        // Only suppress if we truly have no token to give (fallback behavior)
+                        idField.set(authGrant, null);
+                        if (Boolean.getBoolean("dualauth.debug")) {
+                            System.out.println("[DualAuth] AuthGrant: Suppressed serverIdentityToken (no replacement found) for issuer: " + issuer);
+                        }
                     }
                 } else {
-                    // Only suppress if we truly have no token to give (fallback behavior)
-                    idField.set(authGrant, null);
-                    if (Boolean.getBoolean("dualauth.debug")) {
-                        System.out.println("[DualAuth] AuthGrant: Suppressed serverIdentityToken (no replacement found) for issuer: " + issuer);
+                    // Different base domain - use normal server token
+                    String normalToken = DualServerTokenManager.getIdentityTokenForIssuer(issuer, DualAuthContext.getPlayerUuid());
+                    if (normalToken != null) {
+                        idField.set(authGrant, normalToken);
+                        if (Boolean.getBoolean("dualauth.debug")) {
+                            System.out.println("[DualAuth] Server Identity: Using normal server token (different base domain): " + issuer);
+                        }
                     }
                 }
                 return;
@@ -677,6 +786,138 @@ public class DualAuthHelper {
 
     public static boolean hasEmbeddedJwk(String token) {
         return extractJwkFromToken(token) != null;
+    }
+
+    /**
+     * Modifies the issuer claim in an existing JWT token to match the client's issuer.
+     * This allows the server to use the normal /auto-auth token but with client-compatible issuer.
+     */
+    private static String modifyTokenIssuer(String originalToken, String newIssuer) {
+        try {
+            if (originalToken == null || originalToken.isEmpty()) return null;
+            
+            // Split token into parts
+            String[] parts = originalToken.split("\\.");
+            if (parts.length != 3) return null;
+            
+            // Decode the payload (middle part)
+            String payload = new String(Base64.getUrlDecoder().decode(parts[1]));
+            
+            // Parse the JSON payload
+            // Simple string replacement for issuer claim
+            String modifiedPayload = payload;
+            
+            // Find and replace the issuer claim
+            String issuerPattern = "\"iss\":\"";
+            int issuerIndex = modifiedPayload.indexOf(issuerPattern);
+            if (issuerIndex >= 0) {
+                int valueStart = issuerIndex + issuerPattern.length();
+                int valueEnd = modifiedPayload.indexOf("\"", valueStart);
+                if (valueEnd > valueStart) {
+                    // Replace the issuer value
+                    String before = modifiedPayload.substring(0, valueStart);
+                    String after = modifiedPayload.substring(valueEnd);
+                    modifiedPayload = before + newIssuer + after;
+                }
+            }
+            
+            // Re-encode the payload
+            String modifiedPayloadBase64 = Base64.getUrlEncoder().withoutPadding().encodeToString(modifiedPayload.getBytes());
+            
+            // Reconstruct the token
+            return parts[0] + "." + modifiedPayloadBase64 + "." + parts[2];
+            
+        } catch (Exception e) {
+            if (Boolean.getBoolean("dualauth.debug")) {
+                System.out.println("[DualAuth] Failed to modify token issuer: " + e.getMessage());
+            }
+            return null;
+        }
+    }
+
+    public static boolean hasEmbeddedJwkForIssuer(String issuer) {
+        // Check if current context has embedded JWK for this issuer
+        String currentIssuer = DualAuthContext.getIssuer();
+        String currentJwk = DualAuthContext.getJwk();
+        return currentJwk != null && !currentJwk.isEmpty() && 
+               issuer != null && issuer.equals(currentIssuer);
+    }
+
+    /**
+     * Extracts the base domain from an issuer URL (e.g., "https://auth.sanasol.ws" -> "sanasol.ws")
+     * This is used for flexible domain matching. NOT APPLIED to IP addresses.
+     */
+    private static String extractBaseDomain(String domain) {
+        if (domain == null || domain.isEmpty()) {
+            return domain;
+        }
+        
+        // Don't extract base domain from IP addresses
+        if (isIpAddress(domain)) {
+            return domain;
+        }
+        
+        // Handle URLs: extract hostname from "https://host:port/path"
+        String hostname = domain;
+        if (domain.startsWith("http://") || domain.startsWith("https://")) {
+            hostname = domain.substring(domain.indexOf("://") + 3);
+            int slashIndex = hostname.indexOf('/');
+            if (slashIndex > 0) {
+                hostname = hostname.substring(0, slashIndex);
+            }
+            int colonIndex = hostname.indexOf(':');
+            if (colonIndex > 0) {
+                hostname = hostname.substring(0, colonIndex);
+            }
+        }
+        
+        // Extract base domain from hostname
+        int firstDot = hostname.indexOf('.');
+        if (firstDot > 0 && !Character.isDigit(hostname.charAt(0))) {
+            String afterFirstDot = hostname.substring(firstDot + 1);
+            if (afterFirstDot.indexOf('.') > 0) {
+                return afterFirstDot;
+            }
+        }
+        return hostname;
+    }
+    
+    /**
+     * Checks if the given string is an IP address (IPv4 or IPv6).
+     */
+    private static boolean isIpAddress(String address) {
+        if (address == null || address.isEmpty()) return false;
+        
+        // Remove protocol if present
+        String host = address;
+        if (address.startsWith("http://") || address.startsWith("https://")) {
+            host = address.substring(address.indexOf("://") + 3);
+            int slashIndex = host.indexOf('/');
+            if (slashIndex > 0) {
+                host = host.substring(0, slashIndex);
+            }
+            int colonIndex = host.indexOf(':');
+            if (colonIndex > 0) {
+                host = host.substring(0, colonIndex);
+            }
+        }
+        
+        // IPv4 check
+        String[] ipv4Parts = host.split("\\.");
+        if (ipv4Parts.length == 4) {
+            try {
+                for (String part : ipv4Parts) {
+                    int num = Integer.parseInt(part);
+                    if (num < 0 || num > 255) return false;
+                }
+                return true;
+            } catch (NumberFormatException e) {
+                return false;
+            }
+        }
+        
+        // IPv6 check (basic)
+        return host.contains(":");
     }
 
     public static boolean isOmniIssuerTrusted(String issuer) {
