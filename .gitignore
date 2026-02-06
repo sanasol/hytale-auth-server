@@ -39,3 +39,4 @@ ref/
 # Useless dirs
 .playwright-mcp
 .agent
+dualauth-agent/start-server.sh

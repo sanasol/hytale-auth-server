@@ -35,22 +35,17 @@ public class LoggingTransformer implements net.bytebuddy.agent.builder.AgentBuil
         return builder
                 .visit(Advice.to(LoggingAdvice.class).on(
                         named("format")
-                                .and(takesArguments(1))
-                                .and(takesArgument(0, LogRecord.class))
-                                .and(isMethod())
-                                .and(not(isStatic()))));
+                                .and(takesArguments(LogRecord.class))
+                                .and(returns(String.class))
+                ));
     }
 
-    /**
-     * Advice to intercept completely the logging system
-     */
     public static class LoggingAdvice {
-
         @Advice.OnMethodEnter
         public static void enter(@Advice.Argument(0) LogRecord record,
-                @Advice.Local("loggerName") String loggerName,
                 @Advice.Local("originalMessage") String originalMessage,
                 @Advice.Local("level") String level,
+                @Advice.Local("loggerName") String loggerName,
                 @Advice.Local("formattedOutput") String formattedOutput) {
             if (!LoggingTransformer.LOGGING_ENABLED) {
                 return; // Don't do anything if disabled
