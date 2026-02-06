@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
@@ -203,7 +204,7 @@ public class DualServerIdentity {
     }
 
     public static DualServerTokenManager.FederatedIssuerTokens fetchFederatedTokensFromIssuer(String issuer) {
-        // Check unified cache first
+        // 1. Check unified cache first (fast path)
         CachedServerTokens cached = serverTokenCache.get(issuer);
         if (cached != null && !cached.isExpired() && "federated".equals(cached.tokenType)) {
             if (Boolean.getBoolean("dualauth.debug")) {
@@ -212,73 +213,106 @@ public class DualServerIdentity {
             return new DualServerTokenManager.FederatedIssuerTokens(cached.identityToken, cached.sessionToken, SERVER_TOKEN_TTL);
         }
         
-        // Cache miss or expired - fetch from issuer
-        if (Boolean.getBoolean("dualauth.debug")) {
-            System.out.println("[DualAuth] DEBUG: Cache miss for issuer: " + issuer + " - fetching from /auto-auth");
-        }
-        
-        try {
-            // 1. Build issuer endpoint
-            String baseUrl = issuer.endsWith("/") ? issuer.substring(0, issuer.length() - 1) : issuer;
-            String autoAuthEndpoint = baseUrl + "/server/auto-auth";
-            
-            // 2. Prepare request with server data
-            String serverUuid = DualAuthHelper.getServerUuid();
-            String serverName = DualAuthHelper.getServerName();
-            
-            String jsonBody = String.format(
-                "{\"uuid\":\"%s\",\"name\":\"%s\"}", 
-                serverUuid, serverName
-            );
-            
-            // 3. Execute HTTP request
-            URL url = new URL(autoAuthEndpoint);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("Content-Type", "application/json");
-            conn.setRequestProperty("User-Agent", "DualAuthAgent/1.0");
-            conn.setConnectTimeout(HTTP_TIMEOUT);
-            conn.setReadTimeout(HTTP_TIMEOUT);
-            conn.setDoOutput(true);
-            
-            // 4. Send request
-            try (OutputStream os = conn.getOutputStream()) {
-                byte[] input = jsonBody.getBytes(StandardCharsets.UTF_8);
-                os.write(input, 0, input.length);
-            }
-            
-            // 5. Process response
-            int responseCode = conn.getResponseCode();
-            if (responseCode == 200) {
-                String response = fetchUrl(conn.getURL().toString());
-                if (response != null && !response.isEmpty()) {
-                    String identityToken = extractJsonField(response, "identityToken");
-                    String sessionToken = extractJsonField(response, "sessionToken");
-                    
-                    if (identityToken != null) {
-                        // Cache the tokens
-                        serverTokenCache.put(issuer, new CachedServerTokens(identityToken, sessionToken, "federated"));
-                        
-                        if (Boolean.getBoolean("dualauth.debug")) {
-                            System.out.println("[DualAuth] DEBUG: Cached federated tokens for issuer: " + issuer + " (TTL: 1 hour)");
-                        }
-                        
-                        return new DualServerTokenManager.FederatedIssuerTokens(identityToken, sessionToken, SERVER_TOKEN_TTL);
-                    }
-                }
-            } else {
+        // 2. Cache miss - initiate async fetch and wait for this specific request
+        CompletableFuture<DualServerTokenManager.FederatedIssuerTokens> future = CompletableFuture.supplyAsync(() -> {
+            try {
+                // Perform the actual HTTP fetch operation
                 if (Boolean.getBoolean("dualauth.debug")) {
-                    System.out.println("[DualAuth] DEBUG: Failed to fetch federated tokens from " + issuer + " - HTTP " + responseCode);
+                    System.out.println("[DualAuth] DEBUG: Cache miss for issuer: " + issuer + " - fetching from /auto-auth");
                 }
+                
+                // 1. Build issuer endpoint
+                String baseUrl = issuer.endsWith("/") ? issuer.substring(0, issuer.length() - 1) : issuer;
+                String autoAuthEndpoint = baseUrl + "/server/auto-auth";
+                
+                // 2. Prepare request with server data
+                String serverUuid = DualAuthHelper.getServerUuid();
+                String serverName = DualAuthHelper.getServerName();
+                
+                Map<String, Object> requestData = Map.of(
+                    "serverUuid", serverUuid,
+                    "serverName", serverName
+                );
+                
+                String jsonBody = new com.google.gson.Gson().toJson(requestData);
+                
+                // 3. Execute HTTP request
+                URL url = new URL(autoAuthEndpoint);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setRequestProperty("User-Agent", "DualAuthAgent/1.0");
+                conn.setConnectTimeout(HTTP_TIMEOUT);
+                conn.setReadTimeout(HTTP_TIMEOUT);
+                conn.setDoOutput(true);
+                
+                // 4. Send request
+                try (OutputStream os = conn.getOutputStream()) {
+                    byte[] input = jsonBody.getBytes(StandardCharsets.UTF_8);
+                    os.write(input, 0, input.length);
+                }
+                
+                // 5. Read response
+                int responseCode = conn.getResponseCode();
+                String responseBody;
+                try (BufferedReader br = new BufferedReader(
+                        new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                    StringBuilder sb = new StringBuilder();
+                    String responseLine;
+                    while ((responseLine = br.readLine()) != null) {
+                        sb.append(responseLine).append(" ");
+                    }
+                    responseBody = sb.toString().trim();
+                }
+                
+                if (responseCode != 200) {
+                    if (Boolean.getBoolean("dualauth.debug")) {
+                        System.out.println("[DualAuth] DEBUG: Failed to fetch federated tokens, HTTP " + responseCode + " for: " + issuer);
+                    }
+                    return null;
+                }
+                
+                // 6. Parse response
+                @SuppressWarnings("unchecked")
+                Map<String, Object> response = new com.google.gson.Gson().fromJson(responseBody, Map.class);
+                
+                String identityToken = (String) response.get("identityToken");
+                String sessionToken = (String) response.get("sessionToken");
+                
+                if (identityToken == null) {
+                    if (Boolean.getBoolean("dualauth.debug")) {
+                        System.out.println("[DualAuth] DEBUG: No identityToken in federated response for: " + issuer);
+                    }
+                    return null;
+                }
+                
+                // 7. Cache the result
+                CachedServerTokens newCached = new CachedServerTokens(identityToken, sessionToken, "federated", SERVER_TOKEN_TTL);
+                serverTokenCache.put(issuer, newCached);
+                
+                if (Boolean.getBoolean("dualauth.debug")) {
+                    System.out.println("[DualAuth] DEBUG: Successfully fetched and cached federated tokens for: " + issuer);
+                }
+                
+                return new DualServerTokenManager.FederatedIssuerTokens(identityToken, sessionToken, SERVER_TOKEN_TTL);
+                
+            } catch (Exception e) {
+                if (Boolean.getBoolean("dualauth.debug")) {
+                    System.out.println("[DualAuth] DEBUG: Exception fetching federated tokens for " + issuer + ": " + e.getMessage());
+                }
+                return null;
             }
-            
+        });
+        
+        // 3. Wait for the result (but this is only for THIS caller, others get served from cache)
+        try {
+            return future.get(8, TimeUnit.SECONDS); // Reasonable timeout for client connection
         } catch (Exception e) {
             if (Boolean.getBoolean("dualauth.debug")) {
-                System.out.println("[DualAuth] DEBUG: Exception fetching federated tokens from " + issuer + ": " + e.getMessage());
+                System.out.println("[DualAuth] DEBUG: Timeout or error waiting for federated tokens for: " + issuer);
             }
+            return null;
         }
-        
-        return null;
     }
     
     public static void cleanupExpiredTokens() {
