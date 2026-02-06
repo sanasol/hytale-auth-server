@@ -29,7 +29,6 @@ import java.util.logging.Logger;
  * Bypasses Nimbus strictness regarding private keys in 'jwk' header parameter.
  */
 public class EmbeddedJwkVerifier {
-    private static final Logger LOGGER = Logger.getLogger("DualAuthAgent");
 
     public static JWTClaimsSet verifyAndGetClaims(String token) {
         try {
@@ -58,21 +57,21 @@ public class EmbeddedJwkVerifier {
             String issuer = claims.getIssuer();
 
             if (!DualAuthHelper.isOmniIssuerTrusted(issuer)) {
-                LOGGER.warning("[DualAuth] Issuer untrusted for Omni-Auth: " + issuer);
+                System.out.println("[DualAuth] Issuer untrusted for Omni-Auth: " + issuer);
                 return null;
             } else if (Boolean.getBoolean("dualauth.debug.omni")) {
-                LOGGER.info("[DualAuth] Omni-Auth issuer TRUSTED: " + issuer);
+                System.out.println("[DualAuth] Omni-Auth issuer TRUSTED: " + issuer);
             }
 
             // 3. Verify signature using Native EdDSA (Bypasses all Nimbus verification logic)
-            LOGGER.info("[DualAuth] Verifying Omni-Auth token via Native JCE (Lenient)...");
+            System.out.println("[DualAuth] Verifying Omni-Auth token via Native JCE (Lenient)...");
             PublicKey publicKey = DualAuthHelper.toNativePublic(kp);
             Signature sig = Signature.getInstance("Ed25519");
             sig.initVerify(publicKey);
             sig.update(token.substring(0, dot2).getBytes(StandardCharsets.UTF_8));
 
             if (!sig.verify(Base64URL.from(signaturePart).decode())) {
-                LOGGER.warning("[DualAuth] Omni-Auth: Signature mismatch");
+                System.out.println("[DualAuth] Omni-Auth: Signature mismatch");
                 return null;
             }
 
@@ -89,8 +88,12 @@ public class EmbeddedJwkVerifier {
             if (name != null) DualAuthContext.setUsername(name);
             
             return claims;
-        } catch (Throwable e) {
-            LOGGER.log(Level.SEVERE, "[DualAuth] Omni-Auth Verification Error: " + e.getMessage());
+        } catch (Exception e) {
+            // Only catch Exception, not Throwable, to avoid hiding critical errors
+            System.out.println("[DualAuth] Omni-Auth Verification Error: " + e.getMessage());
+            if (Boolean.getBoolean("dualauth.debug")) {
+                e.printStackTrace();
+            }
             return null;
         }
     }
@@ -107,7 +110,7 @@ public class EmbeddedJwkVerifier {
             OctetKeyPair kp = OctetKeyPair.parse(jwkJson);
             
             if (!kp.isPrivate()) {
-                LOGGER.warning("[DualAuth] Cannot sign Omni-Auth token: Private key 'd' missing in captured JWK");
+                System.out.println("[DualAuth] Cannot sign Omni-Auth token: Private key 'd' missing in captured JWK");
                 return null;
             }
 
@@ -162,7 +165,7 @@ public class EmbeddedJwkVerifier {
             
             return token;
         } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "[DualAuth] Token Sign Failure: " + e.getMessage());
+            System.out.println("[DualAuth] Token Sign Failure: " + e.getMessage());
             return null;
         }
     }

@@ -14,7 +14,7 @@ import static net.bytebuddy.matcher.ElementMatchers.*;
  * 2. Ensure context is routed correctly
  */
 public class HandshakeHandlerTransformer implements net.bytebuddy.agent.builder.AgentBuilder.Transformer {
-
+    
     @Override
     public DynamicType.Builder<?> transform(DynamicType.Builder<?> builder, TypeDescription typeDescription, ClassLoader classLoader, net.bytebuddy.utility.JavaModule module, java.security.ProtectionDomain pd) {
         System.out.println("[DualAuth] HandshakeHandlerTransformer: Transforming " + typeDescription.getName());
@@ -43,11 +43,20 @@ public class HandshakeHandlerTransformer implements net.bytebuddy.agent.builder.
                 if (authUser == null) {
                     DualAuthContext.resetForNewConnection();
                     String username = DualAuthHelper.extractUsername(thiz);
-                    if (username != null) {
-                        DualAuthContext.setUsername(username);
+                    if (username != null && !username.trim().isEmpty()) {
+                        DualAuthContext.setUsername(username.trim());
                     }
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                // Log error but don't crash the handshake
+                System.out.println("[DualAuth] HandshakeEntryAdvice error: " + e.getMessage());
+                // Ensure context is reset even on error
+                try {
+                    DualAuthContext.resetForNewConnection();
+                } catch (Exception resetError) {
+                    System.out.println("[DualAuth] Failed to reset context after error: " + resetError.getMessage());
+                }
+            }
         }
     }
 
@@ -59,14 +68,18 @@ public class HandshakeHandlerTransformer implements net.bytebuddy.agent.builder.
         public static void enter(@Advice.This Object thiz) {
             try {
                 String authUser = (String) DualAuthHelper.getF(thiz, "authenticatedUsername");
-                if (authUser == null || authUser.isEmpty()) {
+                if (authUser == null || authUser.trim().isEmpty()) {
                     String handshakeUser = (String) DualAuthHelper.getF(thiz, "username");
-                    if (handshakeUser != null && !handshakeUser.isEmpty()) {
-                        DualAuthHelper.setF(thiz, "authenticatedUsername", handshakeUser);
-                        System.out.println("[DualAuth] HandshakeHandler: Fallback to handshake username: " + handshakeUser);
+                    if (handshakeUser != null && !handshakeUser.trim().isEmpty()) {
+                        String cleanUsername = handshakeUser.trim();
+                        DualAuthHelper.setF(thiz, "authenticatedUsername", cleanUsername);
+                        System.out.println("[DualAuth] HandshakeHandler: Fallback to handshake username: " + cleanUsername);
                     }
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                // Log error but don't crash the authentication
+                System.out.println("[DualAuth] UsernameFallbackAdvice error: " + e.getMessage());
+            }
         }
     }
 }

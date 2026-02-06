@@ -91,20 +91,37 @@ public class DualAuthContext {
      * This MUST be called at the start of every connection/validation entry point.
      * Without this, ThreadLocal values from a previous player can leak into another
      * player's session when threads are reused by the server's Executor.
+     * 
+     * Also performs defensive cleanup to prevent memory leaks.
      */
     public static void resetForNewConnection() {
-        // Explicitly set Omni to false BEFORE clearing (prevents race conditions)
-        isCurrentTokenOmni.set(Boolean.FALSE);
-        
-        // Clear thread-local state (but NOT global caches - they're shared intentionally)
-        currentIssuer.remove();
-        currentJwk.remove();
-        currentPlayerUuid.remove();
-        currentUsername.remove();
-        
-        // Debug logging if enabled
-        if (Boolean.getBoolean("dualauth.debug.connections")) {
-            System.out.println("[DualAuth] Connection boundary: context reset");
+        try {
+            // Explicitly set Omni to false BEFORE clearing (prevents race conditions)
+            isCurrentTokenOmni.set(Boolean.FALSE);
+            
+            // Clear thread-local state (but NOT global caches - they're shared intentionally)
+            currentIssuer.remove();
+            currentJwk.remove();
+            currentPlayerUuid.remove();
+            currentUsername.remove();
+            isCurrentTokenOmni.remove();
+            
+            // Debug logging if enabled
+            if (Boolean.getBoolean("dualauth.debug.connections")) {
+                System.out.println("[DualAuth] Connection boundary: context reset completed");
+            }
+        } catch (Exception e) {
+            // Last resort cleanup - don't let errors prevent context reset
+            try {
+                currentIssuer.remove();
+                currentJwk.remove();
+                currentPlayerUuid.remove();
+                currentUsername.remove();
+                isCurrentTokenOmni.remove();
+            } catch (Exception ignored) {
+                // If even this fails, log but don't crash
+                System.err.println("[DualAuth] Critical error in context reset: " + e.getMessage());
+            }
         }
     }
 

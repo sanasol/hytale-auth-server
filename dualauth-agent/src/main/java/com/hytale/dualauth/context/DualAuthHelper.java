@@ -576,9 +576,13 @@ public class DualAuthHelper {
             }
             if (f != null) {
                 f.setAccessible(true);
-                return f.get(obj);
+                Object value = f.get(obj);
+                return value;
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            if (Boolean.getBoolean("dualauth.debug")) {
+                System.err.println("[DualAuth] getF error for field " + name + ": " + e.getMessage());
+            }
         }
         return null;
     }
