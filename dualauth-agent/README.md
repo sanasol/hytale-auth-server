@@ -146,7 +146,6 @@ java -javaagent:dualauth-agent.jar -jar HytaleServer.jar --auth-mode authenticat
 ```
 
 #### **🧪 Development Environment**
-
 ```bash
 # Local development with debugging
 export HYTALE_AUTH_DOMAIN="localhost"

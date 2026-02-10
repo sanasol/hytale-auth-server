@@ -36,7 +36,7 @@ This server handles authentication requests from both the game client (via the F
 
 ### Quick Test (No Setup Required)
 
-1. **Download the pre-built launcher**: [Hytale F2P Launcher v2.0.2b](https://github.com/amiayweb/Hytale-F2P/releases/tag/v2.0.2b)
+1. **Download the pre-built launcher**: [Hytale F2P Launcher v2.2.1](https://github.com/amiayweb/Hytale-F2P/releases/tag/v2.2.1)
 2. **Connect to the public game server**: `ht.vboro.de:5720`
 
 That's it! No auth server or game server setup needed for testing.
@@ -62,16 +62,23 @@ This is part of a complete Hytale F2P setup:
 | [Hytale F2P Launcher](https://github.com/amiayweb/Hytale-F2P) | Game launcher with dual auth support |
 | [hytale-server-docker](https://github.com/sanasol/hytale-server-docker) | Dedicated server Docker image |
 
-## DualAuthPatcher
+## DualAuth ByteBuddy Agent
 
-This repository contains the **authoritative source** for `DualAuthPatcher.java` - the bytecode patcher that enables true hybrid authentication on Hytale servers.
+This repository contains the **DualAuth Agent** (`dualauth-agent.jar`) -- a runtime Java agent that enables multi-issuer authentication on Hytale servers without modifying the original server JAR.
 
-- **Dual-Auth**: Supports both official `hytale.com` and custom F2P servers.
-- **Omni-Auth**: Supports **Decentralized Authentication** by trusting user-provided authorities with embedded JWKs.
-- **Two-Level Cache**: Efficiently manages network and transient keys with an optimized cache system.
-- Location: [`patcher/`](patcher/)
-- Documentation: [`patcher/README.md`](patcher/README.md)
-- Other projects (hytale-server-docker, Hytale-F2P) download from here
+- **Dual-Auth**: Accepts tokens from both official `hytale.com` and custom F2P auth servers
+- **Omni-Auth**: Decentralized authentication via self-signed tokens with embedded JWKs -- no auth server needed
+- **Federated Auth**: Automatic JWKS discovery for any third-party auth server
+- **Non-destructive**: Original `HytaleServer.jar` stays pristine (`-javaagent:` flag, no file modification)
+- Agent source: [`dualauth-agent/`](dualauth-agent/)
+- Legacy patcher: [`patcher/`](patcher/) (deprecated, kept for reference)
+- Released as: [GitHub Releases](https://github.com/sanasol/hytale-auth-server/releases) (`dualauth-agent.jar`)
+
+### Integration Guide
+
+**Building a custom launcher, running your own auth server, or hosting a game server?** See the onboarding guide:
+
+> **[Onboarding Guide](patcher/ONBOARDING_GUIDE.md)** -- How to make your project compatible with DualAuth servers. Covers Omni-Auth token generation, federated auth server requirements, public F2P API usage, game server hosting, and client patching.
 
 ## Requirements (for running your own server)
 
@@ -354,7 +361,7 @@ This exposes the server on `http://localhost:3000`.
    ```
 
 3. **Launch the game** ([Hytale F2P Launcher](https://github.com/amiayweb/Hytale-F2P)):
-   - Download from [releases](https://github.com/amiayweb/Hytale-F2P/releases/tag/v2.0.2b)
+   - Download from [releases](https://github.com/amiayweb/Hytale-F2P/releases/tag/v2.2.1)
    - Or build from source:
    ```bash
    git clone https://github.com/amiayweb/Hytale-F2P.git
