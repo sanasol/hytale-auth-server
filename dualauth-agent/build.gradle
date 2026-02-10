@@ -61,3 +61,11 @@ shadowJar {
     
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
+
+// Disable standard jar task to prevent multiple JAR generation
+jar.enabled = false
+
+// Make shadowJar the default jar task
+tasks.named('assemble') {
+    dependsOn shadowJar
+}
