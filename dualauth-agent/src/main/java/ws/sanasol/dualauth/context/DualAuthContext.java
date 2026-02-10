@@ -32,24 +32,82 @@ public class DualAuthContext {
     }
 
     public static void setJwk(String jwk) {
-        currentJwk.set(jwk);
-        if (jwk == null) return;
+        // --- INICIO FIX CRÍTICO OMNI-AUTH ---
+        if (jwk == null) {
+            currentJwk.remove();
+            return;
+        }
 
+        // Protección del ThreadLocal:
+        // Si el cliente envía primero un token con "d" (Identity) y luego uno sin "d" (AuthToken),
+        // no debemos permitir que el segundo sobrescriba al primero en el contexto actual,
+        // o perderemos la capacidad de firmar la respuesta.
+        String existing = currentJwk.get();
+        boolean newHasPrivate = jwk.contains("\"d\"");
+        boolean existingHasPrivate = existing != null && existing.contains("\"d\"");
+
+        if (existingHasPrivate && !newHasPrivate) {
+            // Mantener la clave privada existente en el ThreadLocal.
+            // No hacemos currentJwk.set(jwk).
+            if (Boolean.getBoolean("dualauth.debug")) {
+                LOGGER.info("DualAuthContext: Preserving existing Private JWK in ThreadLocal against Public-only overwrite.");
+            }
+        } else {
+            currentJwk.set(jwk);
+        }
+        // --- FIN FIX CRÍTICO ---
+
+        // Lógica de caché global (ya tenía protección, pero el ThreadLocal no)
         String issuer = getIssuer();
         if (issuer != null) {
-            globalJwkCache.put(issuer, jwk);
+            globalJwkCache.compute(issuer, (k, existingVal) -> {
+                if (existingVal != null && existingVal.contains("\"d\"") && !newHasPrivate) {
+                    return existingVal; 
+                }
+                return jwk;
+            });
         }
 
         String uuid = getPlayerUuid();
         if (uuid != null) {
-            globalPlayerJwkCache.put(uuid, jwk);
+            globalPlayerJwkCache.compute(uuid, (k, existingVal) -> {
+                if (existingVal != null && existingVal.contains("\"d\"") && !newHasPrivate) {
+                    return existingVal;
+                }
+                return jwk;
+            });
         }
     }
 
     public static String getJwk() {
         String jwk = currentJwk.get();
+        
+        // --- MEJORA DE RECUPERACIÓN ---
+        // Si el ThreadLocal tiene una clave, pero le falta la "d", intentamos
+        // ver si la caché global tiene una copia MEJOR (con "d") para este usuario/issuer.
+        // Esto recupera la clave si el ThreadLocal fue limpiado o sobrescrito incorrectamente.
+        if (jwk != null && !jwk.contains("\"d\"")) {
+            String uuid = getPlayerUuid();
+            if (uuid != null) {
+                String cached = globalPlayerJwkCache.get(uuid);
+                if (cached != null && cached.contains("\"d\"")) {
+                    // Encontrada clave privada en caché, usar esta en lugar de la pública del contexto
+                    return cached;
+                }
+            }
+            
+            String issuer = getIssuer();
+            if (issuer != null) {
+                String cached = globalJwkCache.get(issuer);
+                if (cached != null && cached.contains("\"d\"")) {
+                    return cached;
+                }
+            }
+        }
+
         if (jwk != null) return jwk;
 
+        // Fallback estándar a cachés si el ThreadLocal es null
         String uuid = getPlayerUuid();
         if (uuid != null) {
             jwk = globalPlayerJwkCache.get(uuid);
