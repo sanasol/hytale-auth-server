@@ -1,7 +1,7 @@
-package com.hytale.dualauth.embedded;
+package ws.sanasol.dualauth.embedded;
 
-import com.hytale.dualauth.context.DualAuthContext;
-import com.hytale.dualauth.context.DualAuthHelper;
+import ws.sanasol.dualauth.context.DualAuthContext;
+import ws.sanasol.dualauth.context.DualAuthHelper;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.Ed25519Signer;
@@ -19,6 +19,7 @@ import java.security.PublicKey;
 import java.security.Signature;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -47,8 +48,11 @@ public class EmbeddedJwkVerifier {
             Map<String, Object> headerMap = JSONObjectUtils.parse(headerStr);
             if (!headerMap.containsKey("jwk")) return null;
 
-            // Extract JWK from header map
-            JWK jwk = JWK.parse((Map<String, Object>) headerMap.get("jwk"));
+            // Extract JWK from header map as a Map first to preserve raw data
+            Map<String, Object> jwkMap = (Map<String, Object>) headerMap.get("jwk");
+            
+            // Parse to object for verification logic
+            JWK jwk = JWK.parse(jwkMap);
             if (!(jwk instanceof OctetKeyPair)) return null;
             OctetKeyPair kp = (OctetKeyPair) jwk;
 
@@ -79,7 +83,13 @@ public class EmbeddedJwkVerifier {
             // MISSION CRITICAL: Populate context
             DualAuthContext.setIssuer(issuer);
             DualAuthContext.setPlayerUuid(claims.getSubject());
-            DualAuthContext.setJwk(kp.toJSONString());
+            
+            // FIX: Serialize the Map directly to JSON string.
+            // This bypasses OctetKeyPair.toJSONString() which strips private keys,
+            // and bypasses the brittle extractRawJwk string manipulation.
+            String rawJwkJson = JSONObjectUtils.toJSONString(jwkMap);
+            DualAuthContext.setJwk(rawJwkJson);
+            
             DualAuthContext.setOmni(true);
             
             // Capture username from claims if present
@@ -99,15 +109,20 @@ public class EmbeddedJwkVerifier {
         }
     }
 
+    // Overload for backward compatibility / identity tokens
     public static String createSignedToken(String issuer, String tokenType) {
+        return createSignedToken(issuer, tokenType, null);
+    }
+
+    public static String createSignedToken(String issuer, String tokenType, String fingerprint) {
         if (Boolean.getBoolean("dualauth.debug")) {
             LOGGER.info("DEBUG: createSignedToken called with issuer: " + issuer);
-            LOGGER.info("DEBUG: createSignedToken - Current DualAuthContext issuer: " + DualAuthContext.getIssuer());
         }
         
         try {
             String jwkJson = DualAuthContext.getJwk();
             if (jwkJson == null) return null;
+            
             OctetKeyPair kp = OctetKeyPair.parse(jwkJson);
             
             if (!kp.isPrivate()) {
@@ -115,30 +130,31 @@ public class EmbeddedJwkVerifier {
                 return null;
             }
 
-            // Build Claims - CRITICAL FIX:
-            // For server identity tokens sent TO clients:
-            //   sub = SERVER UUID (who is signing/sending)
-            //   aud = PLAYER UUID (who is receiving)
             JWTClaimsSet.Builder builder = new JWTClaimsSet.Builder()
                     .issuer(issuer)
                     .issueTime(new Date())
                     .expirationTime(new Date(System.currentTimeMillis() + 3600_000L));
             
-            if (Boolean.getBoolean("dualauth.debug")) {
-                LOGGER.info("DEBUG: createSignedToken - Setting issuer in JWT claims: " + issuer);
-            }
-
-            // Subject = Server UUID
+            // Subject = Server UUID, Audience = Player UUID
             String serverUuid = DualAuthHelper.getServerUuid();
             builder.subject(serverUuid);
             
-            // Audience = Player UUID (who receives this token)
             String playerUuid = DualAuthContext.getPlayerUuid();
             if (playerUuid != null && !playerUuid.isEmpty()) {
                 builder.audience(playerUuid);
             }
 
             builder.claim("scope", "hytale:server hytale:client");
+
+            // FIX 1: Certificate Fingerprint Handling
+            // If provided (from handshake), use it. Otherwise use dummy.
+            HashMap<String, String> cnf = new HashMap<>();
+            String fingerprintValue = (fingerprint != null && !fingerprint.isEmpty()) 
+                    ? fingerprint 
+                    : "OMNI_AUTH_BYPASS_CERT_FINGERPRINT_00";
+                    
+            cnf.put("x5t#S256", fingerprintValue);
+            builder.claim("cnf", cnf);
 
             if ("identity".equals(tokenType)) {
                 String username = DualAuthContext.getUsername();
@@ -147,26 +163,28 @@ public class EmbeddedJwkVerifier {
                 }
             }
 
+            // FIX 2: Explicitly set Key ID (kid) in Header
+            // The client needs this to find the key in the JWKS (or embedded JWK)
+            JWSHeader.Builder headerBuilder = new JWSHeader.Builder(JWSAlgorithm.EdDSA)
+                    .jwk(kp.toPublicJWK());
+            
+            if (kp.getKeyID() != null) {
+                headerBuilder.keyID(kp.getKeyID());
+            }
 
-            // Build Header (Matches OriginalDualAuthPatcher.java: includes public JWK)
-            // Note: We use toPublicJWK() here to ensure we don't send our 'd' back to the client!
-            JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.EdDSA)
-                    .jwk(kp.toPublicJWK())
-                    .build();
-
-            // Sign and Serialize
-            SignedJWT signedJWT = new SignedJWT(header, builder.build());
+            SignedJWT signedJWT = new SignedJWT(headerBuilder.build(), builder.build());
             signedJWT.sign(new Ed25519Signer(kp));
             
             String token = signedJWT.serialize();
 
             if (Boolean.getBoolean("dualauth.debug.omni")) {
-                LOGGER.info("Generated Omni-Auth " + tokenType + " token to " + issuer);
+                LOGGER.info("Generated Omni-Auth " + tokenType + " token to " + issuer + " (kid: " + kp.getKeyID() + ")");
             }
             
             return token;
         } catch (Exception e) {
             LOGGER.info("Token Sign Failure: " + e.getMessage());
+            e.printStackTrace();
             return null;
         }
     }
@@ -181,6 +199,11 @@ public class EmbeddedJwkVerifier {
 
     private static final byte[] ED25519_PKCS8_HEADER = {0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20};
 
-    public static String createDynamicIdentityToken(String issuer) { return createSignedToken(issuer, "identity"); }
-    public static String createDynamicSessionToken(String issuer) { return createSignedToken(issuer, "session"); }
+    public static String createDynamicIdentityToken(String issuer) { return createSignedToken(issuer, "identity", null); }
+    
+    // Updated to accept fingerprint
+    public static String createDynamicSessionToken(String issuer, String fingerprint) { return createSignedToken(issuer, "session", fingerprint); }
+    
+    // Backward compatibility
+    public static String createDynamicSessionToken(String issuer) { return createSignedToken(issuer, "session", null); }
 }

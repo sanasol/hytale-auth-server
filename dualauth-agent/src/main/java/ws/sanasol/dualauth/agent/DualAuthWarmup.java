@@ -1,6 +1,6 @@
-package com.hytale.dualauth.agent;
+package ws.sanasol.dualauth.agent;
 
-import com.hytale.dualauth.server.DualServerTokenManager;
+import ws.sanasol.dualauth.server.DualServerTokenManager;
 
 public class DualAuthWarmup implements Runnable {
     @Override

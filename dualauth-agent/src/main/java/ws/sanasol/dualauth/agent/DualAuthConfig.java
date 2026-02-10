@@ -1,4 +1,4 @@
-package com.hytale.dualauth.agent;
+package ws.sanasol.dualauth.agent;
 
 import java.util.Collections;
 import java.util.HashSet;

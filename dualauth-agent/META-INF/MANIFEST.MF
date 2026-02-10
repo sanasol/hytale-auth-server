@@ -1,0 +1,9 @@
+Manifest-Version: 1.0
+Main-Class: ws.sanasol.dualauth.agent.DualAuthAgent
+Premain-Class: ws.sanasol.dualauth.agent.DualAuthAgent
+Agent-Class: ws.sanasol.dualauth.agent.DualAuthAgent
+Can-Redefine-Classes: true
+Can-Retransform-Classes: true
+Implementation-Version: 1.1.5
+Multi-Release: true
+

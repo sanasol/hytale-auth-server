@@ -40,3 +40,4 @@ ref/
 .playwright-mcp
 .agent
 dualauth-agent/start-server.sh
+plugin-reference

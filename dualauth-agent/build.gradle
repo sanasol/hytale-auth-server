@@ -3,10 +3,10 @@ plugins {
     id 'com.gradleup.shadow' version '9.3.1'
 }
 
-group = 'com.hytale.dualauth'
+group = 'ws.sanasol.dualauth'
 
-// Only change the version here
-version = '1.1.4'
+// Only change the version here and in dualauth-agent/src/main/resources/manifest.json
+version = '1.1.5'
 
 java {
     toolchain {
@@ -38,16 +38,21 @@ shadowJar {
     archiveBaseName.set('dualauth-agent')
     manifest {
         attributes(
-            'Main-Class': 'com.hytale.dualauth.agent.DualAuthAgent',
-            'Premain-Class': 'com.hytale.dualauth.agent.DualAuthAgent',
-            'Implementation-Version': project.version,
+            // Config for -javaagent mode
+            'Main-Class': 'ws.sanasol.dualauth.agent.DualAuthAgent',
+            'Premain-Class': 'ws.sanasol.dualauth.agent.DualAuthAgent',
+            'Agent-Class': 'ws.sanasol.dualauth.agent.DualAuthAgent', // For dynamic attach
             'Can-Redefine-Classes': 'true',
             'Can-Retransform-Classes': 'true',
-            'Boot-Class-Path': '.' 
+            'Implementation-Version': project.version
         )
     }
     
-    relocate 'net.bytebuddy', 'com.hytale.dualauth.libs.bytebuddy'
+    relocate 'net.bytebuddy', 'ws.sanasol.dualauth.libs.bytebuddy'
+
+    // CRITICAL: Exclude Hytale API stubs from final JAR
+    // We only use these for compilation; at runtime Hytale provides the real classes
+    exclude 'com/hypixel/hytale/server/core/plugin/**'
 
     exclude 'META-INF/*.SF'
     exclude 'META-INF/*.DSA'
@@ -55,4 +60,12 @@ shadowJar {
     exclude 'META-INF/versions/**'
     
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+// Disable standard jar task to prevent multiple JAR generation
+jar.enabled = false
+
+// Make shadowJar the default jar task
+tasks.named('assemble') {
+    dependsOn shadowJar
 }

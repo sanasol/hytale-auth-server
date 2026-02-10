@@ -31,15 +31,34 @@ Previously, authentication was handled via a **Static ASM Patcher**. While effec
 
 ## 🛠️ Installation & Usage
 
-# Build the agent (requires Gradle installed locally)
+# Build agent
 ```bash
 cd dualauth-agent
-./gradlew shadowJar
+./gradlew build
 ```
 
-# Run the server
+The DualAuth Agent supports **two deployment modes**:
+
+### 📋 **Mode 1: Java Agent (Recommended)**
+*Loads before server startup, transforms classes as they load*
+
+# Run server with Java agent
 ```bash
 java -javaagent:dualauth-agent.jar -jar HytaleServer.jar --auth-mode authenticated
+```
+
+### 🔌 **Mode 2: Plugin (Dynamic Load)**
+*Loads after server startup via Hytale's plugin system*
+
+# Install as plugin
+```bash
+# Copy to plugins directory
+cp dualauth-agent.jar /path/to/hytale-server/mods/
+```
+
+# Run server normally (no -javaagent flag needed)
+```bash
+java -jar HytaleServer.jar --auth-mode authenticated
 ```
 
 ## ⚙️ Configuration
@@ -93,6 +112,8 @@ The agent is configured via environment variables, allowing for easy deployment 
 ### **Example Configuration**
 
 #### **🏠 Basic Community Server Setup**
+
+**Java Agent Mode (Recommended):**
 ```bash
 # Standard community server configuration
 export HYTALE_AUTH_DOMAIN="auth.mycommunity.com"
@@ -100,6 +121,13 @@ export HYTALE_TRUST_ALL_ISSUERS="true"
 export HYTALE_SERVER_NAME="MyCommunity Server"
 
 java -javaagent:dualauth-agent.jar -jar HytaleServer.jar --auth-mode authenticated
+```
+
+**Or without flags, as a mod:**
+
+```bash
+# Run server normally:
+java -jar HytaleServer.jar --auth-mode authenticated
 ```
 
 #### **🔒 High-Security Production Server**
@@ -130,6 +158,13 @@ export HYTALE_SERVER_NAME="Dev Server"
 java -Ddualauth.debug=true -Ddualauth.debug.connections=true \
      -javaagent:dualauth-agent.jar -jar HytaleServer.jar --auth-mode authenticated
 ```
+
+**Or with no flags using the agent as mod:**
+
+```bash
+java -jar HytaleServer.jar --auth-mode authenticated
+```
+
 
 #### **🌐 Multi-Realm Federation**
 ```bash

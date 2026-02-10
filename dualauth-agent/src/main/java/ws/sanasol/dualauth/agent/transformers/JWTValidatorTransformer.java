@@ -1,12 +1,12 @@
-package com.hytale.dualauth.agent.transformers;
+package ws.sanasol.dualauth.agent.transformers;
 
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
-import com.hytale.dualauth.embedded.EmbeddedJwkVerifier;
-import com.hytale.dualauth.fetcher.DualJwksFetcher;
-import com.hytale.dualauth.context.DualAuthContext;
-import com.hytale.dualauth.context.DualAuthHelper;
+import ws.sanasol.dualauth.embedded.EmbeddedJwkVerifier;
+import ws.sanasol.dualauth.fetcher.DualJwksFetcher;
+import ws.sanasol.dualauth.context.DualAuthContext;
+import ws.sanasol.dualauth.context.DualAuthHelper;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 

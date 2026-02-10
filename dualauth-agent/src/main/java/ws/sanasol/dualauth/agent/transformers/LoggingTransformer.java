@@ -1,4 +1,4 @@
-package com.hytale.dualauth.agent.transformers;
+package ws.sanasol.dualauth.agent.transformers;
 
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;

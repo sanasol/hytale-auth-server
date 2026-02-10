@@ -1,10 +1,10 @@
-package com.hytale.dualauth.agent.transformers;
+package ws.sanasol.dualauth.agent.transformers;
 
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
-import com.hytale.dualauth.context.DualAuthContext;
-import com.hytale.dualauth.context.DualAuthHelper;
+import ws.sanasol.dualauth.context.DualAuthContext;
+import ws.sanasol.dualauth.context.DualAuthHelper;
 
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
