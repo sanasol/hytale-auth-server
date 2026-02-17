@@ -1,0 +1,14 @@
+{
+  "Group": "DualAuth",
+  "Name": "DualAuth",
+  "Version": "1.1.5",
+  "Authors": [
+    {
+      "Name": "DualAuth Team",
+      "Email": "admin@sanasol.ws",
+      "Url": "https://github.com/sanasol/hytale-auth-server/tree/master/dualauth-agent"
+    }
+  ],
+  "Main": "ws.sanasol.dualauth.plugin.DualAuthBootstrap",
+  "ServerVersion": "*"
+}

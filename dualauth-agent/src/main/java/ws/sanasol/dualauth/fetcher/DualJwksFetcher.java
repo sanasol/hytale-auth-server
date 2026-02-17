@@ -1,8 +1,8 @@
-package com.hytale.dualauth.fetcher;
+package ws.sanasol.dualauth.fetcher;
 
-import com.hytale.dualauth.agent.DualAuthConfig;
-import com.hytale.dualauth.context.DualAuthContext;
-import com.hytale.dualauth.context.DualAuthHelper;
+import ws.sanasol.dualauth.agent.DualAuthConfig;
+import ws.sanasol.dualauth.context.DualAuthContext;
+import ws.sanasol.dualauth.context.DualAuthHelper;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;

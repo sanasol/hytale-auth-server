@@ -1,8 +1,8 @@
-package com.hytale.dualauth.context;
+package ws.sanasol.dualauth.context;
 
-import com.hytale.dualauth.agent.DualAuthConfig;
-import com.hytale.dualauth.server.DualServerTokenManager;
-import com.hytale.dualauth.embedded.EmbeddedJwkVerifier;
+import ws.sanasol.dualauth.agent.DualAuthConfig;
+import ws.sanasol.dualauth.server.DualServerTokenManager;
+import ws.sanasol.dualauth.embedded.EmbeddedJwkVerifier;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -17,6 +17,7 @@ import com.nimbusds.jose.jwk.JWK;
 import com.nimbusds.jose.jwk.OctetKeyPair;
 import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.ECKey;
+import com.nimbusds.jose.util.Base64URL;
 
 /**
  * Global helper for authentication, reflection, and context processing.
@@ -889,11 +890,18 @@ public class DualAuthHelper {
         if (token == null || !token.contains("."))
             return null;
         try {
-            String header = new String(Base64.getUrlDecoder().decode(token.split("\\.")[0]));
-            int idx = header.indexOf("\"jwk\":");
+            // Use Base64URL from Nimbus to handle unpadded input safely
+            String header = new String(Base64URL.from(token.split("\\.")[0]).decode());
+            
+            // Relaxed check (allow spaces before colon)
+            int idx = header.indexOf("\"jwk\"");
             if (idx < 0)
                 return null;
+            
             int start = header.indexOf('{', idx);
+            if (start < 0)
+                return null;
+                
             int depth = 0;
             for (int i = start; i < header.length(); i++) {
                 if (header.charAt(i) == '{')

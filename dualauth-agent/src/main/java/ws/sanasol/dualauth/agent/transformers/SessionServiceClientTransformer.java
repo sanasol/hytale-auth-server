@@ -1,11 +1,12 @@
-package com.hytale.dualauth.agent.transformers;
+package ws.sanasol.dualauth.agent.transformers;
 
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
-import com.hytale.dualauth.context.DualAuthContext;
-import com.hytale.dualauth.context.DualAuthHelper;
-import com.hytale.dualauth.fetcher.DualJwksFetcher;
+import ws.sanasol.dualauth.context.DualAuthContext;
+import ws.sanasol.dualauth.context.DualAuthHelper;
+import ws.sanasol.dualauth.fetcher.DualJwksFetcher;
+import ws.sanasol.dualauth.embedded.EmbeddedJwkVerifier;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.concurrent.CompletableFuture;
@@ -32,9 +33,15 @@ public class SessionServiceClientTransformer implements net.bytebuddy.agent.buil
             ))
             .visit(Advice.to(ConstructorUrlPatch.class).on(isConstructor()))
             .visit(Advice.to(UrlRoutingAdvice.class).on(
-                named("requestAuthorizationGrantAsync").or(named("refreshSessionAsync")).or(named("validateSessionAsync"))
+                named("requestAuthorizationGrantAsync")
+                .or(named("refreshSessionAsync"))
+                .or(named("validateSessionAsync"))
+                .or(named("exchangeAuthGrantForTokenAsync")) // Added for F2P/Omni
             ))
-            .visit(Advice.to(OfflineBypassAdvice.class).on(named("requestAuthorizationGrantAsync")))
+            .visit(Advice.to(OfflineBypassAdvice.class).on(
+                named("requestAuthorizationGrantAsync")
+                .or(named("exchangeAuthGrantForTokenAsync")) // Added for Omni Bypass
+            ))
             .visit(Advice.to(LambdaContextAdvice.class).on(
                 nameContains("lambda$").and(takesArguments(String.class).or(takesArguments(String.class, String.class)))
             ));
@@ -117,13 +124,56 @@ public class SessionServiceClientTransformer implements net.bytebuddy.agent.buil
     }
 
     public static class OfflineBypassAdvice {
+        /**
+         * Intercepts calls to Session Service.
+         * For exchangeAuthGrantForTokenAsync, we capture the client-provided fingerprint (Argument 1)
+         * to generate a token that matches the client's TLS expectations.
+         */
         @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class)
-        public static CompletableFuture<String> enter(@Advice.Argument(0) String identityToken) {
+        public static CompletableFuture<String> enter(
+                @Advice.Argument(0) String tokenArg, 
+                // We capture arguments as Object array because different methods have different signatures
+                // requestAuthorizationGrantAsync(identityToken, audience, bearer)
+                // exchangeAuthGrantForTokenAsync(grant, fingerprint, bearer)
+                @Advice.AllArguments Object[] args,
+                @Advice.Origin("#m") String methodName) {
             try {
-                if (DualAuthContext.isOmni() || DualAuthHelper.hasEmbeddedJwk(identityToken)) {
-                    return CompletableFuture.completedFuture(identityToken);
+                if (DualAuthContext.isOmni() || DualAuthHelper.hasEmbeddedJwk(tokenArg)) {
+                    if (Boolean.getBoolean("dualauth.debug")) {
+                        System.out.println("[DualAuthAgent] OfflineBypass: Bypassing session call for Omni/Embedded token.");
+                    }
+                    
+                    if (methodName.contains("exchangeAuthGrantForTokenAsync")) {
+                        String issuer = DualAuthContext.getIssuer();
+                        
+                        // FIX: Capture the fingerprint from arguments (index 1)
+                        String clientFingerprint = null;
+                        if (args.length > 1 && args[1] instanceof String) {
+                            clientFingerprint = (String) args[1];
+                        }
+                        
+                        if (Boolean.getBoolean("dualauth.debug")) {
+                            System.out.println("[DualAuthAgent] OfflineBypass: Using client provided fingerprint: " + clientFingerprint);
+                        }
+                        
+                        // Pass fingerprint to generator so the token matches client's calculated hash
+                        String freshToken = EmbeddedJwkVerifier.createDynamicSessionToken(issuer, clientFingerprint);
+                        
+                        if (freshToken != null) {
+                            if (Boolean.getBoolean("dualauth.debug")) {
+                                System.out.println("[DualAuthAgent] OfflineBypass: Generated fresh Server Session Token with matched CNF claim.");
+                            }
+                            return CompletableFuture.completedFuture(freshToken);
+                        }
+                    }
+                    
+                    return CompletableFuture.completedFuture(tokenArg);
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+                if (Boolean.getBoolean("dualauth.debug")) {
+                    System.out.println("[DualAuthAgent] OfflineBypass Exception: " + ignored.getMessage());
+                }
+            }
             return null;
         }
 
