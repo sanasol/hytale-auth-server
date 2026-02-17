@@ -87,28 +87,26 @@ jobs:
           echo "Extracting protocol constants from HytaleServer.jar..."
           jar xf HytaleServer.jar com/hypixel/hytale/protocol/ProtocolSettings.class 2>/dev/null || true
           if [ -f com/hypixel/hytale/protocol/ProtocolSettings.class ]; then
-            # Use javap -v for verbose output showing ConstantValue attributes
-            JAVAP_OUT=$(javap -v -p com/hypixel/hytale/protocol/ProtocolSettings.class 2>/dev/null || true)
-            echo "--- javap output (relevant lines) ---"
-            echo "$JAVAP_OUT" | grep -E "PROTOCOL_CRC|PROTOCOL_BUILD|PROTOCOL_VERSION|ConstantValue|PACKET_COUNT" | head -20
+            # Use python to reliably parse javap output
+            javap -v -p com/hypixel/hytale/protocol/ProtocolSettings.class > /tmp/javap_out.txt 2>/dev/null || true
 
-            # Extract ConstantValue for each field (format: "ConstantValue: int -1356075132")
-            CRC=$(echo "$JAVAP_OUT" | grep -A1 "public static final int PROTOCOL_CRC" | grep "ConstantValue: int" | sed 's/.*int //' | tr -d '[:space:]') || true
-            BUILD=$(echo "$JAVAP_OUT" | grep -A1 "public static final int PROTOCOL_BUILD_NUMBER" | grep "ConstantValue: int" | sed 's/.*int //' | tr -d '[:space:]') || true
+            VALS=$(python3 -c "
+          import re
+          with open('/tmp/javap_out.txt') as f:
+              text = f.read()
+          crc = re.search(r'public static final int PROTOCOL_CRC.*?ConstantValue: int\s+(-?\d+)', text, re.DOTALL)
+          build = re.search(r'public static final int PROTOCOL_BUILD_NUMBER.*?ConstantValue: int\s+(\d+)', text, re.DOTALL)
+          print(f'{crc.group(1) if crc else \"\"},{build.group(1) if build else \"\"}')
+          ")
 
-            # If ConstantValue not found, try bytecode: "ldc #N // int VALUE" before "putstatic PROTOCOL_CRC"
-            if [ -z "$CRC" ]; then
-              echo "Trying bytecode extraction..."
-              JAVAP_C=$(javap -c -p com/hypixel/hytale/protocol/ProtocolSettings.class 2>/dev/null || true)
-              CRC=$(echo "$JAVAP_C" | grep -B2 "Field PROTOCOL_CRC" | grep "// int" | sed 's|.*// int ||' | tr -d '[:space:]' | head -1) || true
-              BUILD=$(echo "$JAVAP_C" | grep -B2 "Field PROTOCOL_BUILD_NUMBER" | grep "// int" | sed 's|.*// int ||' | tr -d '[:space:]' | head -1) || true
-            fi
+            CRC=$(echo "$VALS" | cut -d',' -f1)
+            BUILD=$(echo "$VALS" | cut -d',' -f2)
 
             echo "Protocol CRC: ${CRC:-unknown}"
             echo "Protocol Build Number: ${BUILD:-unknown}"
             echo "crc=${CRC:-1789265863}" >> $GITHUB_OUTPUT
             echo "build=${BUILD:-2}" >> $GITHUB_OUTPUT
-            rm -rf com/
+            rm -rf com/ /tmp/javap_out.txt
           else
             echo "::warning::Could not extract ProtocolSettings.class, using defaults"
             echo "crc=1789265863" >> $GITHUB_OUTPUT
