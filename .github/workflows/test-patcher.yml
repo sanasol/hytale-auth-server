@@ -87,15 +87,25 @@ jobs:
           echo "Extracting protocol constants from HytaleServer.jar..."
           jar xf HytaleServer.jar com/hypixel/hytale/protocol/ProtocolSettings.class 2>/dev/null || true
           if [ -f com/hypixel/hytale/protocol/ProtocolSettings.class ]; then
-            # Extract PROTOCOL_CRC and PROTOCOL_BUILD_NUMBER via javap
-            JAVAP_OUT=$(javap -c -p com/hypixel/hytale/protocol/ProtocolSettings.class 2>/dev/null || true)
-            # CRC is loaded as ldc/sipush/bipush before putstatic PROTOCOL_CRC
-            CRC=$(echo "$JAVAP_OUT" | grep -B1 "PROTOCOL_CRC" | grep -oE "[-]?[0-9]+" | head -1)
-            BUILD=$(echo "$JAVAP_OUT" | grep -B1 "PROTOCOL_BUILD_NUMBER" | grep -oE "[0-9]+" | head -1)
-            VERSION=$(echo "$JAVAP_OUT" | grep -B1 "PROTOCOL_VERSION" | grep -oE "[0-9]+" | head -1)
+            # Use javap -v for verbose output showing ConstantValue attributes
+            JAVAP_OUT=$(javap -v -p com/hypixel/hytale/protocol/ProtocolSettings.class 2>/dev/null || true)
+            echo "--- javap output (relevant lines) ---"
+            echo "$JAVAP_OUT" | grep -E "PROTOCOL_CRC|PROTOCOL_BUILD|PROTOCOL_VERSION|ConstantValue|PACKET_COUNT" | head -20
+
+            # Extract ConstantValue for each field (format: "ConstantValue: int 1789265863")
+            CRC=$(echo "$JAVAP_OUT" | grep -A2 "PROTOCOL_CRC" | grep "ConstantValue" | grep -oE "[-]?[0-9]+" | head -1)
+            BUILD=$(echo "$JAVAP_OUT" | grep -A2 "PROTOCOL_BUILD_NUMBER" | grep "ConstantValue" | grep -oE "[0-9]+" | head -1)
+
+            # If ConstantValue not found, try bytecode: "ldc #N // int VALUE" before "putstatic PROTOCOL_CRC"
+            if [ -z "$CRC" ]; then
+              echo "Trying bytecode extraction..."
+              JAVAP_C=$(javap -c -p com/hypixel/hytale/protocol/ProtocolSettings.class 2>/dev/null || true)
+              CRC=$(echo "$JAVAP_C" | grep -B2 "PROTOCOL_CRC" | grep -oP "//\s*int\s+\K[-]?[0-9]+" | head -1)
+              BUILD=$(echo "$JAVAP_C" | grep -B2 "PROTOCOL_BUILD_NUMBER" | grep -oP "//\s*int\s+\K[0-9]+" | head -1)
+            fi
+
             echo "Protocol CRC: ${CRC:-unknown}"
             echo "Protocol Build Number: ${BUILD:-unknown}"
-            echo "Protocol Version: ${VERSION:-unknown}"
             echo "crc=${CRC:-1789265863}" >> $GITHUB_OUTPUT
             echo "build=${BUILD:-2}" >> $GITHUB_OUTPUT
             rm -rf com/
