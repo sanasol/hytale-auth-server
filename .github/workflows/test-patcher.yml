@@ -93,15 +93,15 @@ jobs:
             echo "$JAVAP_OUT" | grep -E "PROTOCOL_CRC|PROTOCOL_BUILD|PROTOCOL_VERSION|ConstantValue|PACKET_COUNT" | head -20
 
             # Extract ConstantValue for each field (format: "ConstantValue: int -1356075132")
-            CRC=$(echo "$JAVAP_OUT" | grep -A1 "public static final int PROTOCOL_CRC" | grep "ConstantValue: int" | grep -oP "int \K[-]?[0-9]+")
-            BUILD=$(echo "$JAVAP_OUT" | grep -A1 "public static final int PROTOCOL_BUILD_NUMBER" | grep "ConstantValue: int" | grep -oP "int \K[0-9]+")
+            CRC=$(echo "$JAVAP_OUT" | grep -A1 "public static final int PROTOCOL_CRC" | grep "ConstantValue: int" | sed 's/.*int //' | tr -d '[:space:]') || true
+            BUILD=$(echo "$JAVAP_OUT" | grep -A1 "public static final int PROTOCOL_BUILD_NUMBER" | grep "ConstantValue: int" | sed 's/.*int //' | tr -d '[:space:]') || true
 
             # If ConstantValue not found, try bytecode: "ldc #N // int VALUE" before "putstatic PROTOCOL_CRC"
             if [ -z "$CRC" ]; then
               echo "Trying bytecode extraction..."
               JAVAP_C=$(javap -c -p com/hypixel/hytale/protocol/ProtocolSettings.class 2>/dev/null || true)
-              CRC=$(echo "$JAVAP_C" | grep -B2 "Field PROTOCOL_CRC" | grep -oP "//\s*int\s+\K[-]?[0-9]+" | head -1)
-              BUILD=$(echo "$JAVAP_C" | grep -B2 "Field PROTOCOL_BUILD_NUMBER" | grep -oP "//\s*int\s+\K[0-9]+" | head -1)
+              CRC=$(echo "$JAVAP_C" | grep -B2 "Field PROTOCOL_CRC" | grep "// int" | sed 's|.*// int ||' | tr -d '[:space:]' | head -1) || true
+              BUILD=$(echo "$JAVAP_C" | grep -B2 "Field PROTOCOL_BUILD_NUMBER" | grep "// int" | sed 's|.*// int ||' | tr -d '[:space:]' | head -1) || true
             fi
 
             echo "Protocol CRC: ${CRC:-unknown}"
