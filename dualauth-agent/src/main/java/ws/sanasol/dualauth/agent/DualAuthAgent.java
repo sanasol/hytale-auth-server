@@ -10,6 +10,7 @@ import net.bytebuddy.utility.JavaModule;
 import java.io.File;
 import java.io.InputStream;
 import java.lang.instrument.Instrumentation;
+import java.lang.reflect.Method;
 import java.security.ProtectionDomain;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -19,18 +20,26 @@ import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
  * PRODUCTION-READY DUALAUTH AGENT (JDK 25)
- * 
+ *
  * This agent intercepts Hytale Server auth classes to enable:
  * 1. Dual JWKS merging (Official + F2P + Dynamic)
  * 2. Omni-Auth bypass (embedded JWK verification)
  * 3. URL routing based on issuer
  * 4. Token management for F2P/Omni clients
- * 
+ *
  * HYBRID MODE: Works as both -javaagent and Hytale Plugin
+ *
+ * CLASSLOADER ARCHITECTURE:
+ * Hytale uses a TransformingClassLoader (parent: platform CL, NOT system/app CL)
+ * for early plugins. Agent classes on system CL are invisible to it. To fix this,
+ * in -javaagent mode we add the agent JAR to the bootstrap CL and invoke install()
+ * on the bootstrap-loaded version via reflection, ensuring all agent classes
+ * (including shaded ByteBuddy) are loaded from a single classloader (bootstrap).
+ * This avoids LinkageError from same classes loaded by different classloaders.
  */
 public class DualAuthAgent {
     public static final String VERSION = loadVersion();
-    
+
     // Flag to prevent double initialization (-javaagent + Plugin mode)
     private static final AtomicBoolean INSTALLED = new AtomicBoolean(false);
 
@@ -67,20 +76,72 @@ public class DualAuthAgent {
     }
 
     /**
-     * Entry point for -javaagent startup (before main())
+     * Entry point for -javaagent startup (before main()).
+     *
+     * BOOTSTRAP CLASSLOADER STRATEGY:
+     * 1. Add agent JAR to bootstrap classloader
+     * 2. Load DualAuthAgent from bootstrap via Class.forName(name, true, null)
+     * 3. Invoke install() on the bootstrap-loaded class via reflection
+     *
+     * This ensures ALL agent classes (DualAuthAgent, ByteBuddy, DualAuthHelper, etc.)
+     * are loaded from bootstrap. The TransformingClassLoader (used by Hytale for early
+     * plugins) delegates to bootstrap, so advice-inlined references resolve correctly.
+     *
+     * Without this, DualAuthAgent is on system CL, ByteBuddy loads from bootstrap after
+     * appendToBootstrapClassLoaderSearch, and the JVM throws LinkageError because the
+     * same types exist in different classloaders.
      */
     public static void premain(String args, Instrumentation inst) {
+        boolean addedToBootstrap = false;
+        try {
+            File agentJar = new File(
+                DualAuthAgent.class.getProtectionDomain()
+                    .getCodeSource().getLocation().toURI());
+            inst.appendToBootstrapClassLoaderSearch(new JarFile(agentJar));
+            addedToBootstrap = true;
+        } catch (Exception e) {
+            System.err.println("[DualAuth] Could not add agent to bootstrap classpath: " + e.getMessage());
+        }
+
+        if (addedToBootstrap) {
+            try {
+                // Load DualAuthAgent from BOOTSTRAP classloader (null = bootstrap).
+                // This is a DIFFERENT class object than 'this' (which is on system CL).
+                // All types used by install() will also load from bootstrap, avoiding
+                // cross-classloader LinkageError.
+                Class<?> bootstrapAgent = Class.forName(
+                    "ws.sanasol.dualauth.agent.DualAuthAgent", true, null);
+                Method installMethod = bootstrapAgent.getDeclaredMethod("install",
+                    String.class, Instrumentation.class);
+                installMethod.setAccessible(true);
+                installMethod.invoke(null, args, inst);
+                return;
+            } catch (Exception e) {
+                System.err.println("[DualAuth] Bootstrap-first invoke failed: " + e.getMessage());
+                e.printStackTrace();
+                // Don't fall back to direct call — JAR is on bootstrap, direct call
+                // would cause LinkageError. The agent simply won't load.
+                return;
+            }
+        }
+
+        // Fallback: JAR was NOT added to bootstrap (appendToBootstrapClassLoaderSearch failed).
+        // Direct call is safe because there's no dual-classloader situation.
         install(args, inst);
     }
 
     /**
-     * Entry point for Dynamic Attach (Plugin mode - after JVM startup)
+     * Entry point for Dynamic Attach (Plugin mode - after JVM startup).
+     * In plugin mode, DualAuthBootstrap handles classloader isolation via
+     * appendToSystemClassLoaderSearch + reflection trampoline.
+     * We do NOT add to bootstrap here to avoid LinkageError with already-loaded classes.
      */
     public static void agentmain(String args, Instrumentation inst) {
         install(args, inst);
     }
 
-    private static void install(String args, Instrumentation inst) {
+    // Package-private for reflection access from bootstrap-loaded instance
+    static void install(String args, Instrumentation inst) {
         // Prevent double initialization
         if (INSTALLED.getAndSet(true)) {
             System.out.println("[DualAuth] Agent install requested but already active. Skipping.");
@@ -98,25 +159,6 @@ public class DualAuthAgent {
             }
         }
 
-        // CRITICAL: Add agent JAR to the bootstrap classloader.
-        // Hytale uses a custom TransformingClassLoader for early plugins that does NOT
-        // delegate to the system classloader. ByteBuddy Advice inlines bytecode into
-        // server classes that reference agent classes (DualAuthHelper, DualAuthContext, etc.).
-        // Without this, those references fail with NoClassDefFoundError because the
-        // TransformingClassLoader can't find agent classes.
-        // The bootstrap classloader is the root of ALL classloader hierarchies, so adding
-        // the agent JAR here ensures agent classes are visible to every classloader.
-        try {
-            File agentJar = new File(
-                DualAuthAgent.class.getProtectionDomain()
-                    .getCodeSource().getLocation().toURI());
-            inst.appendToBootstrapClassLoaderSearch(new JarFile(agentJar));
-            System.out.println("[DualAuth] Agent JAR added to bootstrap classloader (TransformingClassLoader compatibility)");
-        } catch (Exception e) {
-            System.err.println("[DualAuth] Warning: Could not add agent to bootstrap classpath: " + e.getMessage());
-            System.err.println("[DualAuth] Early plugins using TransformingClassLoader may cause NoClassDefFoundError");
-        }
-
         // Enable experimental mode for newer Java versions
         System.setProperty("net.bytebuddy.experimental", "true");
 
@@ -124,7 +166,7 @@ public class DualAuthAgent {
         // The LoggingAdvice reads this property instead of referencing agent classes,
         // ensuring compatibility with other agents/early plugins (e.g. FixtaleEarly).
         LoggingTransformer.initSystemProperty();
-        
+
         // Startup banner
         System.out.println("╔══════════════════════════════════════════════════════════════╗");
         System.out.println("║            DualAuth ByteBuddy Agent v" + padRight(VERSION, 24) + "║");
@@ -162,7 +204,7 @@ public class DualAuthAgent {
                .or(ElementMatchers.nameStartsWith("java."))
                .or(ElementMatchers.nameStartsWith("sun."))
                .or(ElementMatchers.nameStartsWith("ws.sanasol.dualauth.")))
-            
+
             // 1. JWT Logic
             .type(named("com.hypixel.hytale.server.core.auth.JWTValidator"))
             .transform(new JWTValidatorTransformer())
@@ -182,24 +224,24 @@ public class DualAuthAgent {
             // 5. Manager Logic
             .type(named("com.hypixel.hytale.server.core.auth.ServerAuthManager"))
             .transform(new ServerAuthManagerTransformer())
-            
+
             // 6. Logging Enhancement
             .type(named("com.hypixel.hytale.logger.backend.HytaleLogFormatter"))
             .transform(new LoggingTransformer())
-            
+
             .installOn(inst);
-            
+
         System.out.println("DualAuth Hybrid Agent installed successfully.");
         System.out.println("Waiting for Hytale Server classes to load...");
 
-        // 3. THE "HAMMER": Force retransformation if we are in Plugin mode
+        // THE "HAMMER": Force retransformation if we are in Plugin mode
         // If the server already started, classes are already loaded and ByteBuddy sometimes ignores them.
         // Here we search for them and force the JVM to re-process them.
         boolean isPluginMode = args != null && args.contains("plugin-mode");
         if (isPluginMode) {
             System.out.println("[DualAuth] Dynamic Mode: Scanning for loaded classes to retransform...");
             long count = 0;
-            
+
             // List of critical classes we know are already loaded
             String[] criticalClasses = {
                 "com.hypixel.hytale.server.core.auth.JWTValidator",
@@ -211,7 +253,7 @@ public class DualAuthAgent {
 
             for (Class<?> loadedClass : inst.getAllLoadedClasses()) {
                 String name = loadedClass.getName();
-                
+
                 // Check if it's one of our target classes
                 boolean target = false;
                 for (String critical : criticalClasses) {
