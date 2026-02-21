@@ -480,30 +480,19 @@ public class DualAuthHelper {
             while (clazz != null && clazz != Object.class) {
                 for (Field f : clazz.getDeclaredFields()) {
                     String name = f.getName().toLowerCase();
-                    // Update Issuer - use base domain matching for flexibility
-                    if (issuer != null && (name.contains("expectedissuer") || name.equals("issuer"))) {
+                    // Issuer: READ from validator and cache (never overwrite!)
+                    // The server sets the correct expectedIssuer in the JWTValidator constructor
+                    // (from the official sessions URL). Overwriting it with the F2P issuer
+                    // permanently corrupts the singleton, causing "Invalid identity token issuer"
+                    // when official clients connect after an F2P client.
+                    if (name.contains("expectedissuer") || name.equals("issuer")) {
                         f.setAccessible(true);
-
-                        // Check if we should use base domain matching
-                        String serverBaseDomain = DualAuthConfig.F2P_BASE_DOMAIN;
-                        String issuerBaseDomain = extractBaseDomain(issuer);
-
-                        String finalIssuer = issuer;
-                        // Only apply base domain matching if neither is an IP address
-                        if (issuerBaseDomain != null && issuerBaseDomain.equals(serverBaseDomain) &&
-                                !isIpAddress(issuer) && !isIpAddress(DualAuthConfig.F2P_ISSUER)) {
-                            // Use the server's expected issuer format for compatibility
-                            finalIssuer = DualAuthConfig.F2P_ISSUER;
+                        Object currentIssuer = f.get(validator);
+                        if (currentIssuer instanceof String && !((String) currentIssuer).isEmpty()) {
                             if (Boolean.getBoolean("dualauth.debug")) {
-                                System.out.println("Using base domain matching: " + issuer + " -> "
-                                        + finalIssuer + " (base domain: " + issuerBaseDomain + ")");
+                                System.out.println("Read expectedIssuer from validator: " + currentIssuer
+                                        + " in " + clazz.getSimpleName() + " (not modifying)");
                             }
-                        }
-
-                        f.set(validator, finalIssuer);
-                        if (Boolean.getBoolean("dualauth.debug")) {
-                            System.out.println("Updated expectedIssuer to: " + finalIssuer + " in "
-                                    + clazz.getSimpleName());
                         }
                     }
                     // Audience: READ from validator and cache (never overwrite!)
