@@ -6,7 +6,7 @@ plugins {
 group = 'ws.sanasol.dualauth'
 
 // Version is the single source of truth - auto-injected into manifest.json and version.properties
-version = '1.1.8'
+version = '1.1.9'
 
 java {
     toolchain {

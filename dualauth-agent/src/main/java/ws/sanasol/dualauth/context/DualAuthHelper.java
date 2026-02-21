@@ -506,14 +506,26 @@ public class DualAuthHelper {
                                     + clazz.getSimpleName());
                         }
                     }
-                    // Update Audience
-                    String sId = getServerId();
-                    if (sId != null && (name.contains("expectedaudience") || name.equals("audience"))) {
+                    // Audience: READ from validator and cache (never overwrite!)
+                    // The server sets the correct audience in the JWTValidator constructor
+                    // (from AuthConfig.getServerAudience() → ServerAuthManager.getServerSessionId()).
+                    // Overwriting it with getServerId() corrupts it with a dummy UUID,
+                    // causing "Invalid audience" when manual validation falls back to the
+                    // original method (e.g., when early plugins like FixtaleEarly are present).
+                    if (name.contains("expectedaudience") || name.equals("audience")) {
                         f.setAccessible(true);
-                        f.set(validator, sId);
-                        if (Boolean.getBoolean("dualauth.debug")) {
-                            System.out.println(
-                                    "Updated expectedAudience to: " + sId + " in " + clazz.getSimpleName());
+                        Object currentAudience = f.get(validator);
+                        if (currentAudience instanceof String && !((String) currentAudience).isEmpty()) {
+                            String realAudience = (String) currentAudience;
+                            // Cache the real server audience for federated token requests
+                            if (cachedServerUuid == null
+                                    || cachedServerUuid.equals("00000000-0000-0000-0000-000000000001")) {
+                                setServerUuid(realAudience);
+                                if (Boolean.getBoolean("dualauth.debug")) {
+                                    System.out.println("Captured real server audience: " + realAudience
+                                            + " from " + clazz.getSimpleName());
+                                }
+                            }
                         }
                     }
                 }
