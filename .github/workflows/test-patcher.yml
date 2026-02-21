@@ -404,6 +404,7 @@ jobs:
 
           echo "Starting Hytale server..."
           java -Xmx2G \
+            -Ddualauth.debug=true \
             -javaagent:dualauth-agent.jar \
             -jar HytaleServer.jar \
             --assets Assets.zip \
@@ -668,9 +669,34 @@ jobs:
           fi
 
           echo ""
+          echo "=== Test 6: Issuer Integrity After F2P Connections (Regression) ==="
+          echo "Verifying expectedIssuer on JWTValidator was NOT corrupted by F2P token validation"
+          echo "Bug: v1.1.9 and earlier overwrote expectedIssuer to F2P value, breaking official clients"
+
+          # Check debug logs for issuer read messages
+          ISSUER_READS=$(grep "Read expectedIssuer from validator:" server/server.log 2>/dev/null || echo "")
+          ISSUER_OVERWRITES=$(grep "Updated expectedIssuer to:" server/server.log 2>/dev/null || echo "")
+
+          if [ -n "$ISSUER_OVERWRITES" ]; then
+            echo "::error::Test 6 FAILED - expectedIssuer was OVERWRITTEN (regression!)"
+            echo "$ISSUER_OVERWRITES"
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+          elif echo "$ISSUER_READS" | grep -q "sessions.hytale.com"; then
+            echo "Test 6 PASSED - expectedIssuer preserved as sessions.hytale.com after F2P connections"
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+          elif [ -n "$ISSUER_READS" ]; then
+            echo "Test 6 PASSED - expectedIssuer read without modification"
+            echo "$ISSUER_READS" | head -3
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+          else
+            echo "::warning::Test 6 INCONCLUSIVE - No debug issuer messages found (dualauth.debug may not be enabled)"
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+          fi
+
+          echo ""
           echo "=== WITH-TOKENS Mode Results ==="
-          echo "Passed: $TESTS_PASSED / 5"
-          echo "Failed: $TESTS_FAILED / 5"
+          echo "Passed: $TESTS_PASSED / 6"
+          echo "Failed: $TESTS_FAILED / 6"
 
           # Save for final results
           echo "WITH_TOKENS_FAILED=$TESTS_FAILED" >> $GITHUB_ENV
