@@ -472,6 +472,17 @@ public class DualAuthHelper {
         }
     }
 
+    // Stores the original expectedIssuer value so it can be restored after fallback
+    private static volatile String originalExpectedIssuer = null;
+
+    /**
+     * Temporarily sets expectedIssuer on the validator for F2P fallback validation,
+     * saving the original value for restoration. Also reads and caches the audience.
+     *
+     * The original method checks expectedIssuer against the token's issuer. For F2P tokens
+     * falling back to the original method, we must temporarily match the issuer. But we
+     * MUST restore the original value afterwards, or official clients will break.
+     */
     public static void updateExpectedIssuer(Object validator, String issuer) {
         if (validator == null)
             return;
@@ -480,19 +491,31 @@ public class DualAuthHelper {
             while (clazz != null && clazz != Object.class) {
                 for (Field f : clazz.getDeclaredFields()) {
                     String name = f.getName().toLowerCase();
-                    // Issuer: READ from validator and cache (never overwrite!)
-                    // The server sets the correct expectedIssuer in the JWTValidator constructor
-                    // (from the official sessions URL). Overwriting it with the F2P issuer
-                    // permanently corrupts the singleton, causing "Invalid identity token issuer"
-                    // when official clients connect after an F2P client.
-                    if (name.contains("expectedissuer") || name.equals("issuer")) {
+                    // Issuer: temporarily set for F2P fallback, but save original for restore
+                    if (issuer != null && (name.contains("expectedissuer") || name.equals("issuer"))) {
                         f.setAccessible(true);
-                        Object currentIssuer = f.get(validator);
-                        if (currentIssuer instanceof String && !((String) currentIssuer).isEmpty()) {
+                        String currentIssuer = (String) f.get(validator);
+
+                        // Save original on first encounter
+                        if (originalExpectedIssuer == null && currentIssuer != null && !currentIssuer.isEmpty()) {
+                            originalExpectedIssuer = currentIssuer;
                             if (Boolean.getBoolean("dualauth.debug")) {
-                                System.out.println("Read expectedIssuer from validator: " + currentIssuer
-                                        + " in " + clazz.getSimpleName() + " (not modifying)");
+                                System.out.println("Saved original expectedIssuer: " + currentIssuer);
                             }
+                        }
+
+                        // Temporarily set to F2P issuer for fallback validation
+                        String serverBaseDomain = DualAuthConfig.F2P_BASE_DOMAIN;
+                        String issuerBaseDomain = extractBaseDomain(issuer);
+                        String finalIssuer = issuer;
+                        if (issuerBaseDomain != null && issuerBaseDomain.equals(serverBaseDomain) &&
+                                !isIpAddress(issuer) && !isIpAddress(DualAuthConfig.F2P_ISSUER)) {
+                            finalIssuer = DualAuthConfig.F2P_ISSUER;
+                        }
+                        f.set(validator, finalIssuer);
+                        if (Boolean.getBoolean("dualauth.debug")) {
+                            System.out.println("Temporarily set expectedIssuer to: " + finalIssuer
+                                    + " (original: " + originalExpectedIssuer + ")");
                         }
                     }
                     // Audience: READ from validator and cache (never overwrite!)
@@ -516,6 +539,33 @@ public class DualAuthHelper {
                                 }
                             }
                         }
+                    }
+                }
+                clazz = clazz.getSuperclass();
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    /**
+     * Restores expectedIssuer to its original value after F2P validation completes.
+     * This ensures official clients are not rejected by stale F2P issuer values.
+     */
+    public static void restoreExpectedIssuer(Object validator) {
+        if (validator == null || originalExpectedIssuer == null)
+            return;
+        try {
+            Class<?> clazz = validator.getClass();
+            while (clazz != null && clazz != Object.class) {
+                for (Field f : clazz.getDeclaredFields()) {
+                    String name = f.getName().toLowerCase();
+                    if (name.contains("expectedissuer") || name.equals("issuer")) {
+                        f.setAccessible(true);
+                        f.set(validator, originalExpectedIssuer);
+                        if (Boolean.getBoolean("dualauth.debug")) {
+                            System.out.println("Restored expectedIssuer to: " + originalExpectedIssuer);
+                        }
+                        return;
                     }
                 }
                 clazz = clazz.getSuperclass();

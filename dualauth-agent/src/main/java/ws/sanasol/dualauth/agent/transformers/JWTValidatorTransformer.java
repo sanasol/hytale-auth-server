@@ -107,7 +107,11 @@ public class JWTValidatorTransformer implements net.bytebuddy.agent.builder.Agen
         }
 
         @Advice.OnMethodExit
-        public static void exit(@Advice.Return(readOnly = false, typing = net.bytebuddy.implementation.bytecode.assign.Assigner.Typing.DYNAMIC) Object returned, @Advice.Enter Object entered) {
+        public static void exit(@Advice.This Object thiz, @Advice.Return(readOnly = false, typing = net.bytebuddy.implementation.bytecode.assign.Assigner.Typing.DYNAMIC) Object returned, @Advice.Enter Object entered) {
+            // Always restore original expectedIssuer after validation completes.
+            // updateExpectedIssuer() temporarily sets it to F2P value for fallback;
+            // restoring ensures official clients are not rejected by stale F2P issuer.
+            DualAuthHelper.restoreExpectedIssuer(thiz);
             if (entered != null) {
                 returned = entered;
             }
