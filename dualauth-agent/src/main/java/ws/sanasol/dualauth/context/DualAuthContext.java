@@ -15,6 +15,19 @@ public class DualAuthContext {
     private static final ConcurrentHashMap<String, String> globalJwkCache = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, String> globalPlayerJwkCache = new ConcurrentHashMap<>();
 
+    // Original SessionServiceClient URL — saved on first encounter, used to restore after F2P routing
+    private static volatile String originalSessionUrl = null;
+
+    public static void saveOriginalSessionUrl(String url) {
+        if (originalSessionUrl == null && url != null && !url.isEmpty()) {
+            originalSessionUrl = url;
+        }
+    }
+
+    public static String getOriginalSessionUrl() {
+        return originalSessionUrl;
+    }
+
     public static void setIssuer(String issuer) {
         currentIssuer.set(issuer);
     }

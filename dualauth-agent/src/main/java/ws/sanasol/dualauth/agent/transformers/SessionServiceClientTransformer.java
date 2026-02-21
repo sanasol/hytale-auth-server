@@ -104,9 +104,6 @@ public class SessionServiceClientTransformer implements net.bytebuddy.agent.buil
         }
     }
 
-    // Stores the original SessionServiceClient URL for restoration
-    private static volatile String originalSessionUrl = null;
-
     public static class UrlRoutingAdvice {
         @Advice.OnMethodEnter
         public static void enter(@Advice.This Object thiz) {
@@ -116,10 +113,8 @@ public class SessionServiceClientTransformer implements net.bytebuddy.agent.buil
                 urlField.setAccessible(true);
                 String currentUrl = (String) urlField.get(thiz);
 
-                // Save original URL on first encounter
-                if (originalSessionUrl == null && currentUrl != null && !currentUrl.isEmpty()) {
-                    originalSessionUrl = currentUrl;
-                }
+                // Save original URL on first encounter (stored in DualAuthContext on bootstrap CL)
+                DualAuthContext.saveOriginalSessionUrl(currentUrl);
 
                 String issuer = DualAuthContext.getIssuer();
                 if (issuer != null && !DualAuthHelper.isOfficialIssuer(issuer)) {
@@ -128,9 +123,12 @@ public class SessionServiceClientTransformer implements net.bytebuddy.agent.buil
                     if (!issuerUrl.equals(currentUrl)) {
                         urlField.set(thiz, issuerUrl);
                     }
-                } else if (originalSessionUrl != null && !originalSessionUrl.equals(currentUrl)) {
-                    // Official or no issuer: restore to original URL
-                    urlField.set(thiz, originalSessionUrl);
+                } else {
+                    String originalUrl = DualAuthContext.getOriginalSessionUrl();
+                    if (originalUrl != null && !originalUrl.equals(currentUrl)) {
+                        // Official or no issuer: restore to original URL
+                        urlField.set(thiz, originalUrl);
+                    }
                 }
             } catch (Exception ignored) {}
         }

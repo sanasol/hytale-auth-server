@@ -261,65 +261,6 @@ public class DualServerTokenManager {
     }
 
 
-    /**
-     * Starts federated token fetch in background without blocking the current
-     * thread.
-     * Results will be cached for future requests.
-     */
-    private static void startBackgroundFederatedFetch(String issuer) {
-        // Check if a fetch is already in progress (placeholder with null tokens)
-        FederatedIssuerTokens existing = federatedIssuerCache.get(issuer);
-        if (existing != null) {
-            // If it's a valid cached token (not a placeholder), don't initiate fetch
-            if (existing.getIdentityToken() != null || existing.getSessionToken() != null) {
-                return; // Valid tokens are already cached
-            }
-            // Otherwise, it's a placeholder indicating fetch in progress, so we don't start another
-            return;
-        }
-
-        // Mark as being fetched to avoid duplicates
-        federatedIssuerCache.put(issuer, new FederatedIssuerTokens(null, null, 30000)); // 30 second placeholder TTL
-
-        java.util.concurrent.CompletableFuture.runAsync(() -> {
-            try {
-                if (Boolean.getBoolean("dualauth.debug")) {
-                    LOGGER.info("Background federated fetch started for: " + issuer);
-                }
-
-                // Avoid blocking critical threads blindly, though this is likely called from
-                // serialize() which is sync.
-                // In refined future versions, this should be pre-fetched or async.
-                FederatedIssuerTokens freshTokens = DualServerIdentity.fetchFederatedTokensFromIssuer(issuer);
-                if (freshTokens != null) {
-                    // 3. Cache it
-                    federatedIssuerCache.put(issuer, freshTokens);
-                    if (Boolean.getBoolean("dualauth.debug")) {
-                        LOGGER.info("Cached federated tokens for issuer: " + issuer);
-                    }
-                } else {
-                    // Remove the placeholder if fetch failed
-                    FederatedIssuerTokens current = federatedIssuerCache.get(issuer);
-                    if (current != null && current.getIdentityToken() == null && current.getSessionToken() == null) {
-                        federatedIssuerCache.remove(issuer); // Remove placeholder only if still a placeholder
-                    }
-                    if (Boolean.getBoolean("dualauth.debug")) {
-                        LOGGER.warning("Failed to fetch federated tokens for issuer: " + issuer);
-                    }
-                }
-            } catch (Exception e) {
-                // Remove the placeholder if fetch failed
-                FederatedIssuerTokens current = federatedIssuerCache.get(issuer);
-                if (current != null && current.getIdentityToken() == null && current.getSessionToken() == null) {
-                    federatedIssuerCache.remove(issuer); // Remove placeholder only if still a placeholder
-                }
-                if (Boolean.getBoolean("dualauth.debug")) {
-                    LOGGER.warning("Exception in background federated fetch for issuer: " + issuer + " -> " + e.getMessage());
-                }
-            }
-        });
-    }
-
     public static void cleanupExpiredFederatedCache() {
         java.util.Iterator<java.util.Map.Entry<String, FederatedIssuerTokens>> iterator = federatedIssuerCache
                 .entrySet().iterator();
@@ -368,46 +309,6 @@ public class DualServerTokenManager {
         LOGGER.info("  Total cached: " + total);
         LOGGER.info("  Public issuers: " + publicCount);
         LOGGER.info("  Error entries: " + errorCount);
-    }
-
-    /**
-     * Checks if the given string is an IP address (IPv4 or IPv6).
-     */
-    private static boolean isIpAddress(String address) {
-        if (address == null || address.isEmpty())
-            return false;
-
-        // Remove protocol if present
-        String host = address;
-        if (address.startsWith("http://") || address.startsWith("https://")) {
-            host = address.substring(address.indexOf("://") + 3);
-            int slashIndex = host.indexOf('/');
-            if (slashIndex > 0) {
-                host = host.substring(0, slashIndex);
-            }
-            int colonIndex = host.indexOf(':');
-            if (colonIndex > 0) {
-                host = host.substring(0, colonIndex);
-            }
-        }
-
-        // IPv4 check
-        String[] ipv4Parts = host.split("\\.");
-        if (ipv4Parts.length == 4) {
-            try {
-                for (String part : ipv4Parts) {
-                    int num = Integer.parseInt(part);
-                    if (num < 0 || num > 255)
-                        return false;
-                }
-                return true;
-            } catch (NumberFormatException e) {
-                return false;
-            }
-        }
-
-        // IPv6 check (basic)
-        return host.contains(":");
     }
 
     private static final java.util.concurrent.ScheduledExecutorService cacheCleanupExecutor = java.util.concurrent.Executors

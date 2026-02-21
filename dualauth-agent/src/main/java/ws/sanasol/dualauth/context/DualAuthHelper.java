@@ -159,36 +159,6 @@ public class DualAuthHelper {
         });
     }
 
-    private static boolean detectIssuerPublicAsync(String issuer) {
-        java.util.concurrent.CompletableFuture<Boolean> detectionFuture = java.util.concurrent.CompletableFuture
-                .supplyAsync(() -> performJwksDetection(issuer));
-
-        try {
-            // Fixed timeout for JWKS detection (5 seconds)
-            boolean isPublic = detectionFuture.get(5000, java.util.concurrent.TimeUnit.MILLISECONDS);
-
-            // Cache result from future
-            cacheDetectionResult(issuer, isPublic, null);
-
-            if (Boolean.getBoolean("dualauth.debug")) {
-                LOGGER.info("Detected issuer: " + issuer + " -> public: " + isPublic);
-            }
-            return isPublic;
-        } catch (java.util.concurrent.TimeoutException e) {
-            cacheDetectionResult(issuer, false, e);
-            if (Boolean.getBoolean("dualauth.debug")) {
-                LOGGER.info("Detection timeout for issuer: " + issuer + " -> assuming not public");
-            }
-            return false;
-        } catch (Exception e) {
-            cacheDetectionResult(issuer, false, e);
-            if (Boolean.getBoolean("dualauth.debug")) {
-                System.out.println("Detection error for issuer: " + issuer + " -> " + e.getMessage());
-            }
-            return false;
-        }
-    }
-
     private static void cacheDetectionResult(String issuer, boolean isPublic, Exception error) {
         String jwksUrl = isPublic ? buildJwksUrl(issuer) : null;
         DualServerTokenManager.IssuerDetectionResult result = error != null
@@ -671,116 +641,79 @@ public class DualAuthHelper {
 
     public static void maybeReplaceServerIdentity(Object authGrant) {
         try {
-            // 1. Get the current token first
             Field idField = authGrant.getClass().getDeclaredField("serverIdentityToken");
             idField.setAccessible(true);
             String currentToken = (String) idField.get(authGrant);
 
-            // 2. Determine Issuer (Context > Token)
-            String issuer = DualAuthContext.getIssuer();
-            if (issuer == null && currentToken != null) {
-                issuer = extractIssuerFromToken(currentToken);
+            // CRITICAL FIX: Determine client issuer from the authorizationGrant JWT itself.
+            // ThreadLocal (DualAuthContext.getIssuer()) is UNRELIABLE here because
+            // AuthGrant construction/serialization happens on an async callback thread,
+            // NOT the thread that validated the identity token.
+            // The authorizationGrant was obtained from the session service matching the
+            // client's issuer, so its 'iss' claim reliably identifies the client type.
+            String clientIssuer = null;
+            try {
+                Field grantField = authGrant.getClass().getDeclaredField("authorizationGrant");
+                grantField.setAccessible(true);
+                String grantToken = (String) grantField.get(authGrant);
+                if (grantToken != null) {
+                    clientIssuer = extractIssuerFromToken(grantToken);
+                }
+            } catch (Exception ignored) {}
+
+            // Fallback to ThreadLocal (may be correct if on same thread)
+            if (clientIssuer == null) {
+                clientIssuer = DualAuthContext.getIssuer();
+            }
+            // Last resort: extract from current server identity token
+            if (clientIssuer == null && currentToken != null) {
+                clientIssuer = extractIssuerFromToken(currentToken);
             }
 
-            // Omni-Auth replace with self-signed token
-            if (issuer != null && DualAuthContext.isOmni()) {
-                String omniToken = EmbeddedJwkVerifier.createDynamicIdentityToken(issuer);
+            if (Boolean.getBoolean("dualauth.debug")) {
+                System.out.println("AuthGrant: clientIssuer=" + clientIssuer
+                        + " (ThreadLocal=" + DualAuthContext.getIssuer() + ")");
+            }
+
+            // Omni-Auth: replace with self-signed token
+            if (clientIssuer != null && DualAuthContext.isOmni()) {
+                String omniToken = EmbeddedJwkVerifier.createDynamicIdentityToken(clientIssuer);
                 if (omniToken != null) {
                     idField.set(authGrant, omniToken);
                     if (Boolean.getBoolean("dualauth.debug")) {
-                    LOGGER.info("Replaced with Omni-Auth server identity token");
-                }
+                        LOGGER.info("Replaced with Omni-Auth server identity token");
+                    }
                     return;
                 }
             }
 
-            // 3. PATCHER STRATEGY: For non-official issuers, we MUST provide the F2P
-            // identity token
-            // so the client can validate mutual auth against the F2P JWKS.
-            // Sending null causes "Server did not provide identity token" error on client.
-            if (issuer != null && !isOfficialIssuerStrict(issuer)) {
-                // CRITICAL FIX: Use the exact issuer from the client's token for compatibility
-                // The client expects the server identity token to have the same issuer as their
-                // user token
-                String clientIssuer = issuer; // Keep the exact issuer the client used
-
+            // Official client: keep the native server identity token unchanged
+            if (clientIssuer == null || isOfficialIssuerStrict(clientIssuer)) {
                 if (Boolean.getBoolean("dualauth.debug")) {
-                    System.out.println("Server Identity: Attempting to get token for exact client issuer: "
-                            + clientIssuer);
-                }
-
-                // Get token with client's exact issuer from TokenManager (this will attempt
-                // federated fetch)
-                String correctedToken = DualServerTokenManager.getIdentityTokenForIssuer(clientIssuer,
-                        DualAuthContext.getPlayerUuid());
-                if (correctedToken != null) {
-                    // Extract the actual issuer from the retrieved token
-                    String actualTokenIssuer = extractIssuerFromToken(correctedToken);
-
-                    if (Boolean.getBoolean("dualauth.debug")) {
-                        System.out.println("Server Identity: Got token with actual issuer: "
-                                + actualTokenIssuer + " (expected: " + clientIssuer + ")");
-                    }
-
-                    // IMPORTANT: Do not modify the token if the issuer doesn't match, as this
-                    // breaks the signature
-                    // Instead, we should ensure the token was obtained with the correct issuer from
-                    // the start
-                    if (actualTokenIssuer != null && !actualTokenIssuer.equals(clientIssuer)) {
-                        if (Boolean.getBoolean("dualauth.debug")) {
-                            System.out.println(
-                                    "Server Identity: Token issuer mismatch - expected " + clientIssuer +
-                                            " but got " + actualTokenIssuer
-                                            + " - This may cause signature verification issues if we modify it");
-                        }
-
-                        // For now, we'll proceed with the token we got, but in the future we should
-                        // ensure
-                        // the token is obtained from the correct endpoint to begin with
-                        idField.set(authGrant, correctedToken);
-                    } else {
-                        idField.set(authGrant, correctedToken);
-                    }
-
-                    if (Boolean.getBoolean("dualauth.debug")) {
-                        String finalTokenIssuer = extractIssuerFromToken(correctedToken);
-                        System.out.println("AuthGrant: Replaced serverIdentityToken for issuer: " + issuer
-                                + " -> " + finalTokenIssuer + " (len=" + correctedToken.length() + ")");
-
-                        // DEBUG: Verify the token was actually set
-                        try {
-                            String verifyToken = (String) idField.get(authGrant);
-                            String verifyIssuer = extractIssuerFromToken(verifyToken);
-                            System.out.println("DEBUG: Final token in AuthGrant: " + verifyIssuer);
-                        } catch (Exception e) {
-                            System.out.println("DEBUG: Error verifying final token: " + e.getMessage());
-                        }
-                    }
-                } else {
-                    // No token found for exact issuer - skip base domain fallback to prevent
-                    // signature issues
-                    // Each issuer should get its own properly signed token from its own endpoint
-                    if (Boolean.getBoolean("dualauth.debug")) {
-                        System.out.println("Server Identity: No token found for exact issuer " + clientIssuer
-                                + " - skipping base domain fallback to preserve signature integrity");
-                    }
-
-                    // Only suppress if we truly have no token to give (fallback behavior)
-                    idField.set(authGrant, null);
-                    if (Boolean.getBoolean("dualauth.debug")) {
-                        System.out.println(
-                                "AuthGrant: Suppressed serverIdentityToken (no replacement found) for issuer: "
-                                        + issuer);
-                    }
+                    System.out.println("AuthGrant: Keeping native serverIdentityToken for official client"
+                            + " (issuer: " + clientIssuer + ")");
                 }
                 return;
             }
 
-            // 4. For official issuers, keep existing token
-            if (issuer != null && isOfficialIssuerStrict(issuer)) {
+            // F2P client: replace server identity token with one matching client's issuer
+            if (Boolean.getBoolean("dualauth.debug")) {
+                System.out.println("AuthGrant: F2P client detected, getting token for issuer: " + clientIssuer);
+            }
+
+            String correctedToken = DualServerTokenManager.getIdentityTokenForIssuer(clientIssuer,
+                    DualAuthContext.getPlayerUuid());
+            if (correctedToken != null) {
+                idField.set(authGrant, correctedToken);
                 if (Boolean.getBoolean("dualauth.debug")) {
-                    System.out.println(
-                            "AuthGrant: Keeping serverIdentityToken for official issuer: " + issuer);
+                    String finalIssuer = extractIssuerFromToken(correctedToken);
+                    System.out.println("AuthGrant: Replaced serverIdentityToken -> " + finalIssuer
+                            + " (len=" + correctedToken.length() + ")");
+                }
+            } else {
+                if (Boolean.getBoolean("dualauth.debug")) {
+                    System.out.println("AuthGrant: No F2P token found for issuer " + clientIssuer
+                            + " - keeping native token");
                 }
             }
 

@@ -61,11 +61,18 @@ public class JWTValidatorTransformer implements net.bytebuddy.agent.builder.Agen
                 if (issuer != null && DualAuthHelper.isOfficialIssuer(issuer)) {
                     // Clear any residual DualAuth context that might interfere
                     DualAuthContext.softClear();
-                    
+                    // CRITICAL: Set the official issuer in ThreadLocal so that
+                    // UrlRoutingAdvice (which fires on requestAuthorizationGrantAsync
+                    // on the same thread) routes to the correct official URL.
+                    // Without this, a stale F2P issuer from a previous connection
+                    // causes the official client's auth grant request to go to the
+                    // F2P server instead of sessions.hytale.com.
+                    DualAuthContext.setIssuer(issuer);
+
                     if (Boolean.getBoolean("dualauth.debug")) {
                         System.out.println("[DualAuthAgent] ValidateAdvice: Processing official issuer with clean context: " + issuer);
                     }
-                    
+
                     // Continue to original validation for official issuers
                     // This ensures official tokens are validated by the original system
                     return null;
