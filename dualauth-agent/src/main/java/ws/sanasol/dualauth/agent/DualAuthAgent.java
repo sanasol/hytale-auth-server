@@ -98,6 +98,11 @@ public class DualAuthAgent {
 
         // Enable experimental mode for newer Java versions
         System.setProperty("net.bytebuddy.experimental", "true");
+
+        // Set logging system property BEFORE any class transformation.
+        // The LoggingAdvice reads this property instead of referencing agent classes,
+        // ensuring compatibility with other agents/early plugins (e.g. FixtaleEarly).
+        LoggingTransformer.initSystemProperty();
         
         // Startup banner
         System.out.println("╔══════════════════════════════════════════════════════════════╗");
