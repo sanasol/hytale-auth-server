@@ -9,13 +9,17 @@ import net.bytebuddy.matcher.ElementMatchers;
 import net.bytebuddy.dynamic.ClassFileLocator;
 import net.bytebuddy.utility.JavaModule;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.lang.instrument.Instrumentation;
 import java.lang.reflect.Method;
 import java.security.ProtectionDomain;
+import java.util.Enumeration;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
+import java.util.jar.JarOutputStream;
 
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
@@ -107,7 +111,13 @@ public class DualAuthAgent {
             File agentJar = new File(
                 DualAuthAgent.class.getProtectionDomain()
                     .getCodeSource().getLocation().toURI());
-            inst.appendToBootstrapClassLoaderSearch(new JarFile(agentJar));
+            // Create a filtered copy of the agent JAR that EXCLUDES plugin classes.
+            // The full JAR includes DualAuthBootstrap (extends JavaPlugin from server JAR).
+            // If we add the full JAR to bootstrap, bootstrap CL finds DualAuthBootstrap
+            // but can't resolve JavaPlugin → plugin load fails → server crashes.
+            // The filtered JAR keeps only agent/transformer classes on bootstrap.
+            File bootstrapJar = createBootstrapJar(agentJar);
+            inst.appendToBootstrapClassLoaderSearch(new JarFile(bootstrapJar));
             addedToBootstrap = true;
         } catch (Exception e) {
             System.err.println("[DualAuth] Could not add agent to bootstrap classpath: " + e.getMessage());
@@ -300,6 +310,38 @@ public class DualAuthAgent {
             }
             System.out.println("[DualAuth] Force-retransformation complete. Processed " + count + " critical classes.");
         }
+    }
+
+    /**
+     * Creates a filtered copy of the agent JAR for bootstrap classloader injection.
+     * Excludes plugin classes (DualAuthBootstrap) and manifest.json to prevent the
+     * Hytale PluginManager from discovering the bootstrap JAR as a plugin.
+     * Plugin classes remain on system CL (via -javaagent) where they can resolve
+     * server types like JavaPlugin normally.
+     */
+    private static File createBootstrapJar(File sourceJar) throws Exception {
+        File tempJar = File.createTempFile("dualauth-bootstrap-", ".jar");
+        tempJar.deleteOnExit();
+        try (JarFile source = new JarFile(sourceJar);
+             JarOutputStream target = new JarOutputStream(new FileOutputStream(tempJar))) {
+            Enumeration<JarEntry> entries = source.entries();
+            while (entries.hasMoreElements()) {
+                JarEntry entry = entries.nextElement();
+                String name = entry.getName();
+                // Skip plugin classes and plugin manifest to avoid PluginManager conflicts
+                if (name.startsWith("ws/sanasol/dualauth/plugin/") || name.equals("manifest.json")) {
+                    continue;
+                }
+                target.putNextEntry(new JarEntry(name));
+                if (!entry.isDirectory()) {
+                    try (InputStream is = source.getInputStream(entry)) {
+                        is.transferTo(target);
+                    }
+                }
+                target.closeEntry();
+            }
+        }
+        return tempJar;
     }
 
     private static String padRight(String s, int length) {
