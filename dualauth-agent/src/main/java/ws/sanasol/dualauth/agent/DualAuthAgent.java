@@ -7,11 +7,13 @@ import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.matcher.ElementMatchers;
 import net.bytebuddy.utility.JavaModule;
+import java.io.File;
 import java.io.InputStream;
 import java.lang.instrument.Instrumentation;
 import java.security.ProtectionDomain;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.jar.JarFile;
 
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
@@ -94,6 +96,25 @@ public class DualAuthAgent {
             if (args.equals("version") || args.equals("--version") || args.equals("-v")) {
                 return;
             }
+        }
+
+        // CRITICAL: Add agent JAR to the bootstrap classloader.
+        // Hytale uses a custom TransformingClassLoader for early plugins that does NOT
+        // delegate to the system classloader. ByteBuddy Advice inlines bytecode into
+        // server classes that reference agent classes (DualAuthHelper, DualAuthContext, etc.).
+        // Without this, those references fail with NoClassDefFoundError because the
+        // TransformingClassLoader can't find agent classes.
+        // The bootstrap classloader is the root of ALL classloader hierarchies, so adding
+        // the agent JAR here ensures agent classes are visible to every classloader.
+        try {
+            File agentJar = new File(
+                DualAuthAgent.class.getProtectionDomain()
+                    .getCodeSource().getLocation().toURI());
+            inst.appendToBootstrapClassLoaderSearch(new JarFile(agentJar));
+            System.out.println("[DualAuth] Agent JAR added to bootstrap classloader (TransformingClassLoader compatibility)");
+        } catch (Exception e) {
+            System.err.println("[DualAuth] Warning: Could not add agent to bootstrap classpath: " + e.getMessage());
+            System.err.println("[DualAuth] Early plugins using TransformingClassLoader may cause NoClassDefFoundError");
         }
 
         // Enable experimental mode for newer Java versions
