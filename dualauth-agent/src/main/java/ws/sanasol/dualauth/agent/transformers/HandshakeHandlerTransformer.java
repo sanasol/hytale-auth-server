@@ -20,12 +20,12 @@ public class HandshakeHandlerTransformer implements net.bytebuddy.agent.builder.
         System.out.println("[DualAuthAgent] HandshakeHandlerTransformer: Transforming " + typeDescription.getName());
         
         return builder
-            .visit(Advice.to(HandshakeEntryAdvice.class).on(
+            .visit(Advice.to(HandshakeEntryAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(
                 named("channelRead0")
                 .or(named("handleHandshake"))
                 .or(nameContains("handleLogin"))
             ))
-            .visit(Advice.to(UsernameFallbackAdvice.class).on(
+            .visit(Advice.to(UsernameFallbackAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(
                 named("requestAuthGrant")
                 .or(named("exchangeServerAuthGrant"))
                 .or(nameContains("completeAuthentication"))

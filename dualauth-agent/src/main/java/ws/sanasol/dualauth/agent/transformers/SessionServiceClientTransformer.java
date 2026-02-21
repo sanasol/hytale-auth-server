@@ -28,21 +28,21 @@ public class SessionServiceClientTransformer implements net.bytebuddy.agent.buil
         System.out.println("[DualAuthAgent] SessionServiceClientTransformer: Transforming " + name);
 
         return builder
-            .visit(Advice.to(JwksFetchAdvice.class).on(
+            .visit(Advice.to(JwksFetchAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(
                 named("fetchJwks").or(named("fetchJwksFromService")).or(named("loadJwks")).or(nameContains("fetchJwks"))
             ))
-            .visit(Advice.to(ConstructorUrlPatch.class).on(isConstructor()))
-            .visit(Advice.to(UrlRoutingAdvice.class).on(
+            .visit(Advice.to(ConstructorUrlPatch.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(isConstructor()))
+            .visit(Advice.to(UrlRoutingAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(
                 named("requestAuthorizationGrantAsync")
                 .or(named("refreshSessionAsync"))
                 .or(named("validateSessionAsync"))
                 .or(named("exchangeAuthGrantForTokenAsync")) // Added for F2P/Omni
             ))
-            .visit(Advice.to(OfflineBypassAdvice.class).on(
+            .visit(Advice.to(OfflineBypassAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(
                 named("requestAuthorizationGrantAsync")
                 .or(named("exchangeAuthGrantForTokenAsync")) // Added for Omni Bypass
             ))
-            .visit(Advice.to(LambdaContextAdvice.class).on(
+            .visit(Advice.to(LambdaContextAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(
                 nameContains("lambda$").and(takesArguments(String.class).or(takesArguments(String.class, String.class)))
             ));
     }

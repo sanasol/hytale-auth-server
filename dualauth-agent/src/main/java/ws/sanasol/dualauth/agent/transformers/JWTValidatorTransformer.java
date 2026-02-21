@@ -25,20 +25,20 @@ public class JWTValidatorTransformer implements net.bytebuddy.agent.builder.Agen
         System.out.println("[DualAuthAgent] JWTValidatorTransformer: Transforming " + typeDescription.getName());
         
         return builder
-            .visit(Advice.to(ValidateAdvice.class).on(
+            .visit(Advice.to(ValidateAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(
                 nameStartsWith("validate")
                 .and(takesArgument(0, String.class))
                 .and(not(isStatic()))
                 .and(not(nameContains("Raw"))) 
             ))
-            .visit(Advice.to(FetchJwksAdvice.class).on(
+            .visit(Advice.to(FetchJwksAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(
                 named("fetchJwksFromService")
                 .or(named("fetchJwks"))
                 .or(named("loadJwks"))
                 .or(named("getJwkSet"))
                 .or(named("refreshJwks"))
             ))
-            .visit(Advice.to(CacheProtectionAdvice.class).on(
+            .visit(Advice.to(CacheProtectionAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(
                 named("invalidateJwksCache")
                 .or(named("clearCache"))
                 .or(named("invalidateCache"))

@@ -52,7 +52,7 @@ public class LoggingTransformer implements net.bytebuddy.agent.builder.AgentBuil
         System.out.println("LoggingTransformer: Transforming " + typeDescription.getName());
 
         return builder
-                .visit(Advice.to(LoggingAdvice.class).on(
+                .visit(Advice.to(LoggingAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(
                         named("format")
                                 .and(takesArguments(LogRecord.class))
                                 .and(returns(String.class))

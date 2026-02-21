@@ -16,10 +16,10 @@ public class AuthGrantTransformer implements net.bytebuddy.agent.builder.AgentBu
     @Override
     public DynamicType.Builder<?> transform(DynamicType.Builder<?> builder, TypeDescription typeDescription, ClassLoader classLoader, net.bytebuddy.utility.JavaModule module, java.security.ProtectionDomain pd) {
         return builder
-            .visit(Advice.to(SerializeAdvice.class).on(
+            .visit(Advice.to(SerializeAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(
                 named("serialize").or(named("write")).or(named("encode"))
             ))
-            .visit(Advice.to(ConstructorAdvice.class).on(isConstructor()));
+            .visit(Advice.to(ConstructorAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(isConstructor()));
     }
 
     public static class SerializeAdvice {

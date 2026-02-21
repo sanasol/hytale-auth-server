@@ -6,6 +6,7 @@ import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.matcher.ElementMatchers;
+import net.bytebuddy.dynamic.ClassFileLocator;
 import net.bytebuddy.utility.JavaModule;
 import java.io.File;
 import java.io.InputStream;
@@ -39,6 +40,15 @@ import static net.bytebuddy.matcher.ElementMatchers.*;
  */
 public class DualAuthAgent {
     public static final String VERSION = loadVersion();
+
+    /**
+     * ClassFileLocator for finding advice class files.
+     * When running from bootstrap classloader, the default ForClassLoader.of(null)
+     * cannot locate class files added via appendToBootstrapClassLoaderSearch.
+     * This locator reads directly from the agent JAR file, making advice classes
+     * resolvable regardless of which classloader loaded the agent.
+     */
+    public static ClassFileLocator CLASS_FILE_LOCATOR;
 
     // Flag to prevent double initialization (-javaagent + Plugin mode)
     private static final AtomicBoolean INSTALLED = new AtomicBoolean(false);
@@ -150,6 +160,21 @@ public class DualAuthAgent {
 
         // Mark globally that we're active (for the plugin bootstrap check)
         System.setProperty("dualauth.agent.active", "true");
+
+        // Initialize ClassFileLocator for ByteBuddy Advice resolution.
+        // ByteBuddy needs to read .class file bytes to inline advice code.
+        // When loaded from bootstrap CL, the default locator (ClassFileLocator.ForClassLoader.of(null))
+        // uses ClassLoader.getSystemResourceAsStream() which doesn't search the bootstrap classpath.
+        // ForJarFile reads directly from the agent JAR, working regardless of classloader.
+        try {
+            File agentJar = new File(
+                DualAuthAgent.class.getProtectionDomain()
+                    .getCodeSource().getLocation().toURI());
+            CLASS_FILE_LOCATOR = ClassFileLocator.ForJarFile.of(agentJar);
+        } catch (Exception e) {
+            // Fallback: system classloader locator (works when not on bootstrap)
+            CLASS_FILE_LOCATOR = ClassFileLocator.ForClassLoader.ofSystemLoader();
+        }
 
         // Handle --version in agent arguments
         if (args != null && (args.contains("version") || args.contains("-v"))) {

@@ -26,7 +26,7 @@ public class GenericUrlTransformer implements net.bytebuddy.agent.builder.AgentB
 
         // We use a custom ASM visitor or Advice to replace string constants.
         // Advice is easier for most cases.
-        return builder.visit(Advice.to(UrlReplacementAdvice.class).on(any()));
+        return builder.visit(Advice.to(UrlReplacementAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(any()));
     }
 
     public static class UrlReplacementAdvice {

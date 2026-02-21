@@ -26,21 +26,21 @@ public class ServerAuthManagerTransformer implements net.bytebuddy.agent.builder
         
         return builder
             // 1. Void Capture: Capture from instance field after initialize()
-            .visit(Advice.to(InstanceCaptureAdvice.class).on(
+            .visit(Advice.to(InstanceCaptureAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(
                 named("initialize")
             ))
             // 2. Return Capture: Capture from return value (session creation methods)
-            .visit(Advice.to(ReturnCaptureAdvice.class).on(
+            .visit(Advice.to(ReturnCaptureAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(
                 named("createGameSessionFromOAuth")
                 .or(named("onSessionRefreshed"))
                 .or(named("handleSessionResponse"))
                 .or(named("setGameSession"))
             ))
             // 3. Getter Fallback: Provide custom tokens if official ones are missing
-            .visit(Advice.to(IdentityTokenGetterAdvice.class).on(
+            .visit(Advice.to(IdentityTokenGetterAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(
                 named("getIdentityToken").or(named("getPlatformIdentityToken"))
             ))
-            .visit(Advice.to(SessionTokenGetterAdvice.class).on(
+            .visit(Advice.to(SessionTokenGetterAdvice.class, ws.sanasol.dualauth.agent.DualAuthAgent.CLASS_FILE_LOCATOR).on(
                 named("getSessionToken")
             ));
     }
