@@ -36,7 +36,7 @@ This server handles authentication requests from both the game client (via the F
 
 ### Quick Test (No Setup Required)
 
-1. **Download the pre-built launcher**: [Hytale F2P Launcher v2.2.1](https://github.com/amiayweb/Hytale-F2P/releases/tag/v2.2.1)
+1. **Download the pre-built launcher**: [Hytale F2P Launcher](https://git.sanhost.net/sanasol/hytale-f2p/releases)
 2. **Connect to the public game server**: `ht.vboro.de:5720`
 
 That's it! No auth server or game server setup needed for testing.
@@ -46,9 +46,24 @@ That's it! No auth server or game server setup needed for testing.
 
 > **Note**: There is no password authentication - anyone can use any username. If you use a username someone else has used, you'll see their cosmetics. Use a unique username for testing.
 
+### Host Your Own Game Server (Free)
+
+Use [play.hosting](https://play.hosting) to get a free Hytale game server with F2P support — no hardware or setup needed:
+
+1. Register at [play.hosting](https://play.hosting)
+2. Create a **Hytale** server
+3. Start the server once and wait for it to fully load
+4. Go to **Files** → open the `mods` folder
+5. Click **New** → **File via URL**
+6. Paste: `https://github.com/sanasol/hytale-auth-server/releases/latest/download/dualauth-agent.jar`
+7. Click **Query** and download the file
+8. Go to **Console** and **Restart** the server
+
+Your F2P server is ready — both official and F2P players can join.
+
 ### Build from Source
 
-Alternatively, use the [Hytale F2P Launcher source](https://github.com/amiayweb/Hytale-F2P) and [hytale-server-docker](https://github.com/sanasol/hytale-server-docker) with default settings - they're pre-configured to use `sanasol.ws` with dual auth support (both official and F2P players can play together).
+Alternatively, use the [Hytale F2P Launcher source](https://git.sanhost.net/sanasol/hytale-f2p) and [hytale-server-docker](https://github.com/sanasol/hytale-server-docker) with default settings - they're pre-configured to use `sanasol.ws` with dual auth support (both official and F2P players can play together).
 
 > **Note**: The public server is for testing purposes. For production use or privacy, set up your own server using this repository.
 
@@ -59,7 +74,7 @@ This is part of a complete Hytale F2P setup:
 | Project | Description |
 |---------|-------------|
 | [hytale-auth-server](https://github.com/sanasol/hytale-auth-server) | Authentication server + DualAuthPatcher (this repo) |
-| [Hytale F2P Launcher](https://github.com/amiayweb/Hytale-F2P) | Game launcher with dual auth support |
+| [Hytale F2P Launcher](https://git.sanhost.net/sanasol/hytale-f2p) | Game launcher with dual auth support |
 | [hytale-server-docker](https://github.com/sanasol/hytale-server-docker) | Dedicated server Docker image |
 
 ## DualAuth ByteBuddy Agent
@@ -360,11 +375,11 @@ This exposes the server on `http://localhost:3000`.
    docker compose up -d
    ```
 
-3. **Launch the game** ([Hytale F2P Launcher](https://github.com/amiayweb/Hytale-F2P)):
-   - Download from [releases](https://github.com/amiayweb/Hytale-F2P/releases/tag/v2.2.1)
+3. **Launch the game** ([Hytale F2P Launcher](https://git.sanhost.net/sanasol/hytale-f2p)):
+   - Download from [releases](https://git.sanhost.net/sanasol/hytale-f2p/releases)
    - Or build from source:
    ```bash
-   git clone https://github.com/amiayweb/Hytale-F2P.git
+   git clone https://git.sanhost.net/sanasol/hytale-f2p.git
    cd Hytale-F2P
    npm install
    npm start
