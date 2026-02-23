@@ -243,6 +243,39 @@ public class DualAuthHelper {
 
     // --- JWT VALIDATION HELPERS ---
 
+    private static Object verifyWithKeys(java.util.List<JWK> keys, SignedJWT signedJWT, ClassLoader cl, String methodName) {
+        for (JWK key : keys) {
+            if (key == null)
+                continue;
+            try {
+                boolean verified = false;
+                if (key instanceof OctetKeyPair) {
+                    PublicKey pub = toNativePublic((OctetKeyPair) key);
+                    Signature sig = Signature.getInstance("Ed25519");
+                    sig.initVerify(pub);
+                    sig.update(signedJWT.getSigningInput());
+                    verified = sig.verify(signedJWT.getSignature().decode());
+                } else {
+                    com.nimbusds.jose.proc.JWSVerifierFactory factory = new com.nimbusds.jose.crypto.factories.DefaultJWSVerifierFactory();
+                    java.security.Key pubKey = null;
+                    if (key instanceof RSAKey)
+                        pubKey = ((RSAKey) key).toPublicKey();
+                    else if (key instanceof ECKey)
+                        pubKey = ((ECKey) key).toPublicKey();
+                    if (pubKey != null) {
+                        com.nimbusds.jose.JWSVerifier verifier = factory.createJWSVerifier(signedJWT.getHeader(),
+                                pubKey);
+                        verified = signedJWT.verify(verifier);
+                    }
+                }
+                if (verified)
+                    return createJWTClaimsWrapper(cl, signedJWT.getJWTClaimsSet(), methodName, null);
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
+    }
+
     public static Object verifyTrustedToken(Object validatorInstance, String token, String methodName) {
         try {
             // OPTIMIZATION: If it has an embedded JWK, it's Omni-Auth and already failed
@@ -299,34 +332,30 @@ public class DualAuthHelper {
                     keys = java.util.Collections.singletonList(match);
             }
 
-            for (JWK key : keys) {
-                if (key == null)
-                    continue;
-                try {
-                    boolean verified = false;
-                    if (key instanceof OctetKeyPair) {
-                        PublicKey pub = toNativePublic((OctetKeyPair) key);
-                        Signature sig = Signature.getInstance("Ed25519");
-                        sig.initVerify(pub);
-                        sig.update(signedJWT.getSigningInput());
-                        verified = sig.verify(signedJWT.getSignature().decode());
-                    } else {
-                        com.nimbusds.jose.proc.JWSVerifierFactory factory = new com.nimbusds.jose.crypto.factories.DefaultJWSVerifierFactory();
-                        java.security.Key pubKey = null;
-                        if (key instanceof RSAKey)
-                            pubKey = ((RSAKey) key).toPublicKey();
-                        else if (key instanceof ECKey)
-                            pubKey = ((ECKey) key).toPublicKey();
-                        if (pubKey != null) {
-                            com.nimbusds.jose.JWSVerifier verifier = factory.createJWSVerifier(signedJWT.getHeader(),
-                                    pubKey);
-                            verified = signedJWT.verify(verifier);
-                        }
-                    }
+            Object result = verifyWithKeys(keys, signedJWT, cl, methodName);
+            if (result != null)
+                return result;
 
-                    if (verified)
-                        return createJWTClaimsWrapper(cl, signedJWT.getJWTClaimsSet(), methodName, null);
-                } catch (Exception ignored) {
+            // Keys existed but none verified the token — likely pre-seeded/stale keys.
+            // Force JWKS refresh and retry with merged keys.
+            for (Method m : validatorInstance.getClass().getDeclaredMethods()) {
+                if (m.getName().equals("fetchJwksFromService") || m.getName().equals("getJwkSet")) {
+                    m.setAccessible(true);
+                    if (m.getParameterCount() == 0) {
+                        com.nimbusds.jose.jwk.JWKSet refreshedSet = (com.nimbusds.jose.jwk.JWKSet) m.invoke(validatorInstance);
+                        if (refreshedSet != null && refreshedSet != jwkSet) {
+                            java.util.List<JWK> refreshedKeys = refreshedSet.getKeys();
+                            if (kid != null) {
+                                JWK match = refreshedSet.getKeyByKeyId(kid);
+                                if (match != null)
+                                    refreshedKeys = java.util.Collections.singletonList(match);
+                            }
+                            result = verifyWithKeys(refreshedKeys, signedJWT, cl, methodName);
+                            if (result != null)
+                                return result;
+                        }
+                        break;
+                    }
                 }
             }
         } catch (Exception e) {
