@@ -9,4 +9,5 @@ module.exports = {
   server: require('./server'),
   telemetry: require('./telemetry'),
   debug: require('./debug'),
+  logSubmissions: require('./logSubmissions'),
 };

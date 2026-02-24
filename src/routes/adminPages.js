@@ -351,7 +351,8 @@ const navHtml = (activePage) => `
     <div class="nav-links">
       <a href="/admin/page/servers" class="nav-link ${activePage === 'servers' ? 'active' : ''}">Servers</a>
       <a href="/admin/page/players" class="nav-link ${activePage === 'players' ? 'active' : ''}">Players</a>
-      <a href="/admin/page/logs" class="nav-link ${activePage === 'logs' ? 'active' : ''}">Logs</a>
+      <a href="/admin/page/logs" class="nav-link ${activePage === 'logs' ? 'active' : ''}">Request Logs</a>
+      <a href="/admin/page/log-submissions" class="nav-link ${activePage === 'log-submissions' ? 'active' : ''}">Client Logs</a>
       <a href="/admin/page/metrics" class="nav-link ${activePage === 'metrics' ? 'active' : ''}">Metrics</a>
       <a href="/admin/page/settings" class="nav-link ${activePage === 'settings' ? 'active' : ''}">Settings</a>
     </div>
@@ -1843,6 +1844,25 @@ function handleSettingsPage(req, res) {
         </div>
       </div>
 
+      <!-- Patches CDN Setting -->
+      <div class="settings-section">
+        <h2>Patches CDN Base URL</h2>
+        <p style="color:#888;margin-bottom:20px;font-size:0.9em;">
+          The F2P launcher fetches game patches through <code>/patches/*</code> which redirects to this CDN.
+          Change this URL to instantly switch all launchers to a new storage backend (e.g., after a DMCA takedown).
+        </p>
+        <div class="link-row" style="grid-template-columns: 120px 1fr 80px;">
+          <label>Base URL</label>
+          <input type="text" id="patchesCdnUrl" placeholder="https://cdn.example.com/patches" style="font-size:0.85em;">
+          <button class="save-btn" style="padding:10px 16px;font-size:0.85em;" onclick="savePatchesCdn()">Save</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:15px;margin-top:10px;">
+          <span class="save-status" id="patchesCdnStatus"></span>
+          <button class="remove-btn" onclick="resetPatchesCdn()" style="font-size:0.8em;">Reset to Default</button>
+          <span style="color:#666;font-size:0.8em;" id="patchesCdnDefault"></span>
+        </div>
+      </div>
+
       <!-- CDN Links Settings -->
       <div class="settings-section">
         <h2>CDN Download Links</h2>
@@ -1893,6 +1913,54 @@ function handleSettingsPage(req, res) {
     let downloadChart = null;
     let currentRange = '7d';
     let currentLinks = {};
+
+    // Patches CDN
+    async function loadPatchesCdn() {
+      try {
+        const res = await authFetch('/admin/api/settings/patches-cdn');
+        const data = await res.json();
+        document.getElementById('patchesCdnUrl').value = data.patchesCdnBaseUrl || '';
+        document.getElementById('patchesCdnDefault').textContent = 'Default: ' + (data.default || '');
+      } catch (e) {
+        console.error('Error loading patches CDN:', e);
+      }
+    }
+
+    async function savePatchesCdn() {
+      const url = document.getElementById('patchesCdnUrl').value.trim();
+      const status = document.getElementById('patchesCdnStatus');
+      if (!url) { status.textContent = 'URL required'; status.style.color = '#ff6b6b'; return; }
+      status.textContent = 'Saving...'; status.style.color = '#ffaa00';
+      try {
+        const res = await authFetch('/admin/api/settings/patches-cdn', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ patchesCdnBaseUrl: url })
+        });
+        const data = await res.json();
+        if (data.success) {
+          status.textContent = 'Saved!'; status.style.color = '#00ff88';
+          setTimeout(() => { status.textContent = ''; }, 2000);
+        } else {
+          status.textContent = 'Error: ' + (data.error || 'Unknown'); status.style.color = '#ff6b6b';
+        }
+      } catch (e) {
+        status.textContent = 'Error: ' + e.message; status.style.color = '#ff6b6b';
+      }
+    }
+
+    async function resetPatchesCdn() {
+      if (!confirm('Reset patches CDN to default MEGA S4 URL?')) return;
+      const status = document.getElementById('patchesCdnStatus');
+      try {
+        const res = await authFetch('/admin/api/settings/patches-cdn');
+        const data = await res.json();
+        document.getElementById('patchesCdnUrl').value = data.default || '';
+        await savePatchesCdn();
+      } catch (e) {
+        status.textContent = 'Error: ' + e.message; status.style.color = '#ff6b6b';
+      }
+    }
 
     async function loadSettings() {
       try {
@@ -2151,10 +2219,210 @@ function handleSettingsPage(req, res) {
       loadStats();
       initChart();
       await Promise.all([
+        loadPatchesCdn(),
         loadSettings(),
         loadDownloadStats(),
         loadDownloadHistory()
       ]);
+      setInterval(loadStats, 30000);
+    }
+
+    (async () => {
+      if (await checkAuth()) init();
+    })();
+  </script>
+</body>
+</html>`;
+    sendHtml(res, 200, html);
+}
+
+/**
+ * Log Submissions page (Client Logs)
+ */
+function handleLogSubmissionsPage(req, res) {
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Client Logs - Hytale Admin</title>
+  <style>${sharedStyles}
+    .submissions-table { width: 100%; border-collapse: collapse; }
+    .submissions-table th, .submissions-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .submissions-table th { color: #888; font-size: 0.85em; text-transform: uppercase; }
+    .submissions-table tr:hover { background: rgba(255,255,255,0.03); }
+    .sub-id { font-family: monospace; color: #00d4ff; font-size: 0.9em; }
+    .sub-username { color: #fff; font-weight: 500; }
+    .sub-platform { color: #b388ff; font-size: 0.85em; }
+    .sub-size { color: #888; font-size: 0.85em; }
+    .sub-date { color: #888; font-size: 0.85em; }
+    .btn-download { background: rgba(0,212,255,0.2); border: 1px solid rgba(0,212,255,0.3); color: #00d4ff; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em; margin-right: 4px; }
+    .btn-delete { background: rgba(255,100,100,0.2); border: 1px solid rgba(255,100,100,0.3); color: #ff6b6b; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
+    .search-box { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; padding: 8px 14px; border-radius: 6px; width: 300px; font-size: 0.9em; }
+    .pagination { display: flex; gap: 8px; align-items: center; margin-top: 15px; justify-content: center; }
+    .pagination button { background: rgba(255,255,255,0.1); border: none; color: #fff; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+    .pagination button:disabled { opacity: 0.3; cursor: default; }
+    .pagination span { color: #888; font-size: 0.85em; }
+    .files-list { font-size: 0.8em; color: #888; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .empty-state { text-align: center; padding: 40px; color: #666; }
+  </style>
+</head>
+<body>
+  <div class="login-overlay" id="loginOverlay">
+    <div class="login-box">
+      <h2>Admin Login</h2>
+      <form id="loginForm">
+        <input type="password" id="loginPassword" placeholder="Password" required>
+        <button type="submit" class="btn">Login</button>
+      </form>
+      <div class="login-error" id="loginError"></div>
+    </div>
+  </div>
+
+  <div id="mainContent" class="hidden">
+    ${navHtml('log-submissions')}
+    <div class="container">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Client Log Submissions</span>
+          <div style="display:flex;gap:10px;align-items:center;">
+            <input type="text" class="search-box" id="searchInput" placeholder="Search by username or ID..." oninput="debouncedSearch()">
+            <button class="btn btn-secondary" onclick="loadSubmissions(1)">Refresh</button>
+          </div>
+        </div>
+        <div id="submissionsList">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    ${sharedScripts}
+
+    let currentPage = 1;
+    let searchTimeout;
+
+    function debouncedSearch() {
+      clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(() => loadSubmissions(1), 300);
+    }
+
+    async function loadSubmissions(page) {
+      currentPage = page;
+      const search = document.getElementById('searchInput').value;
+      const container = document.getElementById('submissionsList');
+
+      try {
+        const params = new URLSearchParams({ page, limit: 20 });
+        if (search) params.set('search', search);
+
+        const resp = await fetch('/admin/api/log-submissions?' + params, {
+          headers: { 'x-admin-token': adminToken }
+        });
+        const data = await resp.json();
+
+        if (!data.submissions || data.submissions.length === 0) {
+          container.innerHTML = '<div class="empty-state">No log submissions found</div>';
+          return;
+        }
+
+        let html = '<table class="submissions-table"><thead><tr>' +
+          '<th>ID</th><th>Username</th><th>Platform</th><th>Version</th><th>Files</th><th>Size</th><th>Date</th><th>Actions</th>' +
+          '</tr></thead><tbody>';
+
+        for (const sub of data.submissions) {
+          const shortId = (sub.id || '').substring(0, 8);
+          const date = new Date(sub.createdAt).toLocaleString();
+          const size = formatBytes(parseInt(sub.fileSize) || 0);
+          const filesStr = (sub.files || '').split(',').filter(Boolean).join(', ');
+
+          html += '<tr>' +
+            '<td class="sub-id">' + shortId + '</td>' +
+            '<td class="sub-username">' + escapeHtml(sub.username || 'unknown') + '</td>' +
+            '<td class="sub-platform">' + escapeHtml(sub.platform || '-') + '</td>' +
+            '<td>' + escapeHtml(sub.version || '-') + '</td>' +
+            '<td class="files-list" title="' + escapeHtml(filesStr) + '">' + (parseInt(sub.fileCount) || 0) + ' files</td>' +
+            '<td class="sub-size">' + size + '</td>' +
+            '<td class="sub-date">' + date + '</td>' +
+            '<td>' +
+              '<button class="btn-download" onclick="downloadSub(\\'' + sub.id + '\\')">Download</button>' +
+              '<button class="btn-delete" onclick="deleteSub(\\'' + sub.id + '\\')">Delete</button>' +
+            '</td>' +
+          '</tr>';
+        }
+
+        html += '</tbody></table>';
+
+        // Pagination
+        if (data.totalPages > 1) {
+          html += '<div class="pagination">';
+          html += '<button ' + (page <= 1 ? 'disabled' : '') + ' onclick="loadSubmissions(' + (page - 1) + ')">Prev</button>';
+          html += '<span>Page ' + page + ' of ' + data.totalPages + ' (' + data.total + ' total)</span>';
+          html += '<button ' + (page >= data.totalPages ? 'disabled' : '') + ' onclick="loadSubmissions(' + (page + 1) + ')">Next</button>';
+          html += '</div>';
+        }
+
+        container.innerHTML = html;
+      } catch (err) {
+        container.innerHTML = '<div class="empty-state">Error loading submissions: ' + err.message + '</div>';
+      }
+    }
+
+    function downloadSub(id) {
+      window.open('/admin/api/log-submissions/' + id + '/download?token=' + adminToken);
+    }
+
+    async function deleteSub(id) {
+      if (!confirm('Delete this log submission?')) return;
+      try {
+        await fetch('/admin/api/log-submissions/' + id, {
+          method: 'DELETE',
+          headers: { 'x-admin-token': adminToken }
+        });
+        loadSubmissions(currentPage);
+      } catch (err) {
+        alert('Delete failed: ' + err.message);
+      }
+    }
+
+    function formatBytes(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const password = document.getElementById('loginPassword').value;
+      try {
+        const res = await fetch('/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password })
+        });
+        const data = await res.json();
+        if (res.ok && data.token) {
+          adminToken = data.token;
+          savedPassword = password;
+          localStorage.setItem('adminToken', adminToken);
+          localStorage.setItem('adminPassword', password);
+          init();
+        } else {
+          document.getElementById('loginError').textContent = data.error || 'Failed';
+        }
+      } catch (e) {
+        document.getElementById('loginError').textContent = 'Connection error';
+      }
+    });
+
+    async function init() {
+      document.getElementById('loginOverlay').classList.add('hidden');
+      document.getElementById('mainContent').classList.remove('hidden');
+      loadStats();
+      loadSubmissions(1);
       setInterval(loadStats, 30000);
     }
 
@@ -2172,5 +2440,6 @@ module.exports = {
     handlePlayersPage,
     handleLogsPage,
     handleMetricsPage,
-    handleSettingsPage
+    handleSettingsPage,
+    handleLogSubmissionsPage
 };

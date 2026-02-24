@@ -1155,24 +1155,21 @@ async function getKeyCounts() {
   try {
     // Use Redis DBSIZE for rough count, then sample for accuracy
     // Count only essential keys in parallel using SCAN with limits
-    const countKeysLimited = async (pattern, limit = 10000) => {
+    const countKeys = async (pattern) => {
       let count = 0;
       let cursor = '0';
-      let iterations = 0;
       do {
-        const [newCursor, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 1000);
+        const [newCursor, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 5000);
         cursor = newCursor;
         count += keys.length;
-        iterations++;
-        if (iterations > 20) break; // Limit iterations
-      } while (cursor !== '0' && count < limit);
+      } while (cursor !== '0');
       return count;
     };
 
-    // Get counts in parallel - fast operations only
+    // Get counts in parallel - full scan, no artificial limits
     const [sessions, users] = await Promise.all([
-      countKeysLimited(`${KEYS.SESSION}*`, 5000),
-      countKeysLimited(`${KEYS.USER}*`, 50000)
+      countKeys(`${KEYS.SESSION}*`),
+      countKeys(`${KEYS.USER}*`)
     ]);
 
     counts.sessions = sessions;
@@ -1905,6 +1902,12 @@ const DEFAULT_DOWNLOAD_LINKS = {
   'Assets.zip': 'https://s3.g.s4.mega.io/kcvismkrtfcalgwxzsazbq46l72dwsypqaham/hytale/Assets.zip'
 };
 
+// Default patches CDN base URL (MEGA S4 mirror — used by Caddy redirect)
+const DEFAULT_PATCHES_CDN_BASE_URL = 'https://s3.g.s4.mega.io/kcvismkrtfcalgwxzsazbq46l72dwsypqaham/hytale/patches';
+
+// Default patches redirect URL (what launchers should use)
+const DEFAULT_PATCHES_REDIRECT_URL = 'https://dl.vboro.de/patches';
+
 /**
  * Get all settings
  */
@@ -1944,6 +1947,40 @@ async function saveSettings(settings) {
     console.error('Error saving settings:', e.message);
     return false;
   }
+}
+
+/**
+ * Get patches CDN base URL
+ */
+async function getPatchesCdnBaseUrl() {
+  const settings = await getSettings();
+  return settings.patchesCdnBaseUrl || DEFAULT_PATCHES_CDN_BASE_URL;
+}
+
+/**
+ * Set patches CDN base URL
+ */
+async function setPatchesCdnBaseUrl(url) {
+  const settings = await getSettings();
+  settings.patchesCdnBaseUrl = url;
+  return await saveSettings(settings);
+}
+
+/**
+ * Get patches redirect URL (for launchers to use)
+ */
+async function getPatchesRedirectUrl() {
+  const settings = await getSettings();
+  return settings.patchesRedirectUrl || DEFAULT_PATCHES_REDIRECT_URL;
+}
+
+/**
+ * Set patches redirect URL
+ */
+async function setPatchesRedirectUrl(url) {
+  const settings = await getSettings();
+  settings.patchesRedirectUrl = url;
+  return await saveSettings(settings);
 }
 
 /**
@@ -2126,6 +2163,135 @@ async function getDownloadHistory(filename, url = null, hours = 168) {
   }
 }
 
+// ============================================================================
+// LOG SUBMISSIONS
+// ============================================================================
+
+/**
+ * Save log submission metadata to Redis
+ */
+async function saveLogSubmission(id, metadata) {
+  if (!isConnected()) return false;
+
+  try {
+    await redis.hset(`logsub:${id}`, ...Object.entries(metadata).flat());
+    await redis.zadd('logsub:list', Date.now(), id);
+    return true;
+  } catch (e) {
+    console.error('Failed to save log submission:', e.message);
+    return false;
+  }
+}
+
+/**
+ * Get log submission metadata
+ */
+async function getLogSubmission(id) {
+  if (!isConnected()) return null;
+
+  try {
+    // Support lookup by short ID (first 8 chars)
+    let fullId = id;
+    if (id.length === 8) {
+      // Scan sorted set for matching prefix
+      const allIds = await redis.zrevrange('logsub:list', 0, -1);
+      fullId = allIds.find(i => i.startsWith(id));
+      if (!fullId) return null;
+    }
+
+    const data = await redis.hgetall(`logsub:${fullId}`);
+    if (!data || !data.id) return null;
+    return data;
+  } catch (e) {
+    console.error('Failed to get log submission:', e.message);
+    return null;
+  }
+}
+
+/**
+ * List log submissions with pagination and optional search
+ */
+async function listLogSubmissions(page = 1, limit = 20, search = '') {
+  if (!isConnected()) return { submissions: [], total: 0, page, limit };
+
+  try {
+    const allIds = await redis.zrevrange('logsub:list', 0, -1);
+    let submissions = [];
+
+    for (const id of allIds) {
+      const data = await redis.hgetall(`logsub:${id}`);
+      if (!data || !data.id) continue;
+
+      if (search) {
+        const q = search.toLowerCase();
+        const matchesId = id.toLowerCase().startsWith(q);
+        const matchesUser = (data.username || '').toLowerCase().includes(q);
+        if (!matchesId && !matchesUser) continue;
+      }
+
+      submissions.push(data);
+    }
+
+    const total = submissions.length;
+    const offset = (page - 1) * limit;
+    const paged = submissions.slice(offset, offset + limit);
+
+    return { submissions: paged, total, page, limit, totalPages: Math.ceil(total / limit) };
+  } catch (e) {
+    console.error('Failed to list log submissions:', e.message);
+    return { submissions: [], total: 0, page, limit };
+  }
+}
+
+/**
+ * Delete log submission from Redis
+ */
+async function deleteLogSubmission(id) {
+  if (!isConnected()) return false;
+
+  try {
+    await redis.del(`logsub:${id}`);
+    await redis.zrem('logsub:list', id);
+    return true;
+  } catch (e) {
+    console.error('Failed to delete log submission:', e.message);
+    return false;
+  }
+}
+
+/**
+ * Check rate limit for log submissions (5/hour/IP)
+ * Returns true if allowed, false if rate limited
+ */
+async function checkLogRateLimit(ip) {
+  if (!isConnected()) return true; // Allow if Redis is down
+
+  try {
+    const key = `logsub:rate:${ip}`;
+    const count = await redis.incr(key);
+    if (count === 1) {
+      await redis.expire(key, 3600); // 1 hour TTL
+    }
+    return count <= 5;
+  } catch (e) {
+    return true; // Allow on error
+  }
+}
+
+/**
+ * Get expired log submission IDs (older than cutoff timestamp)
+ */
+async function getExpiredLogSubmissions(cutoffTimestamp) {
+  if (!isConnected()) return [];
+
+  try {
+    return await redis.zrangebyscore('logsub:list', 0, cutoffTimestamp);
+  } catch (e) {
+    console.error('Failed to get expired log submissions:', e.message);
+    return [];
+  }
+}
+
 module.exports = {
   // Sessions
   registerSession,
@@ -2208,4 +2374,22 @@ module.exports = {
   recordDownload,
   getDownloadStats,
   getDownloadHistory,
+
+  // Patches CDN
+  getPatchesCdnBaseUrl,
+  setPatchesCdnBaseUrl,
+  DEFAULT_PATCHES_CDN_BASE_URL,
+
+  // Patches redirect (for launchers)
+  getPatchesRedirectUrl,
+  setPatchesRedirectUrl,
+  DEFAULT_PATCHES_REDIRECT_URL,
+
+  // Log submissions
+  saveLogSubmission,
+  getLogSubmission,
+  listLogSubmissions,
+  deleteLogSubmission,
+  checkLogRateLimit,
+  getExpiredLogSubmissions,
 };

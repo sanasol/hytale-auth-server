@@ -50,6 +50,13 @@ async function handleRequest(req, res) {
     return;
   }
 
+  // Log submission — raw gzip body, bypass JSON parser
+  if (urlPath === '/logs/submit' && req.method === 'POST') {
+    await routes.logSubmissions.handleLogSubmit(req, res);
+    requestLogger.log(req, res, { type: 'log-submission' }, startTime);
+    return;
+  }
+
   // Parse JSON body
   const body = await middleware.parseBody(req);
 
@@ -120,6 +127,37 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
   // Download route (for HytaleServer.jar, etc.)
   if (urlPath.startsWith('/download/')) {
     routes.assets.handleDownload(req, res, urlPath);
+    return;
+  }
+
+  // Patches no longer served from this domain — use /api/patches-config to discover URL
+  if (urlPath.startsWith('/patches/')) {
+    res.writeHead(404);
+    res.end('Not found');
+    return;
+  }
+
+  // Public API: patches config for launchers
+  if (urlPath === '/api/patches-config') {
+    if (req.method === 'POST') {
+      // Update patches URL (requires ADMIN_PASSWORD as Bearer token or ?token= param)
+      const authHeader = headers.authorization || '';
+      const token = authHeader.replace('Bearer ', '') || url.searchParams.get('token') || '';
+      if (!token || token !== config.adminPassword) {
+        sendJson(res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      if (body && body.patches_url) {
+        await storage.setPatchesRedirectUrl(body.patches_url);
+        console.log(`[Patches] URL updated to: ${body.patches_url}`);
+        sendJson(res, 200, { ok: true, patches_url: body.patches_url });
+      } else {
+        sendJson(res, 400, { error: 'Missing patches_url' });
+      }
+      return;
+    }
+    const patchesUrl = await storage.getPatchesRedirectUrl();
+    sendJson(res, 200, { patches_url: patchesUrl });
     return;
   }
 
@@ -348,6 +386,10 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     routes.adminPages.handleSettingsPage(req, res);
     return;
   }
+  if (urlPath === '/admin/page/log-submissions') {
+    routes.adminPages.handleLogSubmissionsPage(req, res);
+    return;
+  }
 
   // Test page for head embed
   if (urlPath === '/test/head') {
@@ -361,9 +403,17 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     return;
   }
 
-  // Protected admin API routes - require token
+  // Protected admin API routes - require token (header or query param for downloads)
   if (urlPath.startsWith('/admin/')) {
-    const validToken = await middleware.verifyAdminAuth(headers);
+    let validToken = await middleware.verifyAdminAuth(headers);
+    if (!validToken) {
+      // Also check query param (for download links opened in new window)
+      const queryToken = url.searchParams.get('token');
+      if (queryToken) {
+        const storage = require('./services/storage');
+        validToken = await storage.verifyAdminToken(queryToken);
+      }
+    }
     if (!validToken) {
       sendJson(res, 401, { error: 'Unauthorized. Please login at /admin' });
       return;
@@ -371,6 +421,27 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
   }
 
   // ====== Optimized Admin APIs ======
+
+  // Log submissions admin APIs
+  if (urlPath === '/admin/api/log-submissions') {
+    await routes.logSubmissions.handleListLogSubmissions(req, res, url);
+    return;
+  }
+  if (urlPath.match(/^\/admin\/api\/log-submissions\/[^/]+\/download$/)) {
+    const id = urlPath.split('/')[4];
+    await routes.logSubmissions.handleDownloadLogSubmission(req, res, id);
+    return;
+  }
+  if (urlPath.match(/^\/admin\/api\/log-submissions\/[^/]+$/) && req.method === 'DELETE') {
+    const id = urlPath.split('/')[4];
+    await routes.logSubmissions.handleDeleteLogSubmission(req, res, id);
+    return;
+  }
+  if (urlPath.match(/^\/admin\/api\/log-submissions\/[^/]+$/)) {
+    const id = urlPath.split('/')[4];
+    await routes.logSubmissions.handleGetLogSubmission(req, res, id);
+    return;
+  }
 
   // Active servers API (optimized)
   if (urlPath === '/admin/api/servers') {
@@ -423,6 +494,14 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
   }
   if (urlPath === '/admin/api/settings/download-history') {
     await routes.admin.handleGetDownloadHistory(req, res, url);
+    return;
+  }
+  if (urlPath === '/admin/api/settings/patches-cdn') {
+    if (req.method === 'POST') {
+      await routes.admin.handleSavePatchesCdn(req, res, body);
+    } else {
+      await routes.admin.handleGetPatchesCdn(req, res);
+    }
     return;
   }
 
@@ -524,7 +603,7 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
   sendJson(res, 200, {
     success: true,
     identityToken: accessToken,
-    sessionToken: auth.generateSessionToken(uuid, requestHost),
+    sessionToken: auth.generateSessionToken(uuid, name, requestHost),
     authorizationGrant: authGrant,
     accessToken: accessToken,
     tokenType: 'Bearer',
@@ -551,6 +630,11 @@ async function startServer() {
 
   // Connect to Redis
   await connectRedis();
+
+  // Cleanup old log submissions (30 day retention)
+  routes.logSubmissions.cleanupOldSubmissions().catch(err => {
+    console.error('Log submissions cleanup error:', err.message);
+  });
 
   // Create HTTP server
   const server = http.createServer(handleRequest);

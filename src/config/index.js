@@ -45,5 +45,10 @@ const config = {
 config.keyFile = path.join(config.dataDir, 'jwt_keys.json');
 config.headCacheDir = path.join(config.dataDir, 'head-cache');
 config.downloadsDir = process.env.DOWNLOADS_DIR || path.join(config.dataDir, 'downloads');
+config.logSubmissionsDir = path.join(config.dataDir, 'log-submissions');
+
+// Telegram notifications
+config.telegramBotToken = process.env.TELEGRAM_BOT_TOKEN || '8690465007:AAGNi9X8oMMnDp_7Idj4VkPc0QYqaHlec0U';
+config.telegramChannelId = process.env.TELEGRAM_CHANNEL_ID || '-1003774965623';
 
 module.exports = config;
