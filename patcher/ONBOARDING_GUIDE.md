@@ -620,7 +620,10 @@ The default username `Player` is used when no username is provided in the token.
 
 ## Community
 
-- **Discord**: https://discord.gg/gME8rUy3MB
+- **Telegram Group**: https://t.me/sanhostnet
+- **Telegram Channel**: https://t.me/hf2p_og
+- **Community Chat**: https://chat.sanhost.net/invite/Tfz4jCK4
+<!-- - **Discord**: https://discord.gg/gME8rUy3MB -->
 - **GitHub Issues**: https://github.com/sanasol/hytale-auth-server/issues
 - **Server List**: https://santale.top
 
