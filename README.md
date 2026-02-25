@@ -4,6 +4,8 @@
 
 This server handles authentication requests from both the game client (via the F2P launcher) and dedicated game servers. It implements the Hytale authentication protocol with Ed25519 JWT signing.
 
+[TG Group](https://t.me/sanhostnet) | [TG Channel](https://t.me/hf2p_og) | [Community Chat](https://chat.sanhost.net/invite/Tfz4jCK4)
+
 > **Warning**: This is an experimental project for educational purposes. Use at your own risk.
 
 ## Screenshots
