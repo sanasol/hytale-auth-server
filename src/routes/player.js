@@ -11,7 +11,8 @@ const MIN_PASSWORD_LENGTH = 6;
 function extractFromBearer(headers) {
   if (!headers || !headers.authorization) return {};
   const token = headers.authorization.replace('Bearer ', '');
-  const data = auth.parseToken(token);
+  // MUST use verifyToken (signature check) — parseToken would allow forged JWTs
+  const data = auth.verifyToken(token);
   return data ? { uuid: data.uuid, username: data.name } : {};
 }
 

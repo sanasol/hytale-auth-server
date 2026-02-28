@@ -200,15 +200,41 @@ async function handleAuthorizationGrant(req, res, body, uuid, name, headers) {
   // Extract scopes from request or identity token
   let scopes = body.scopes || body.scope || null;
 
-  // Extract user info from identity token if present in request (verify signature)
+  // Track whether caller proved identity with a valid signed token
+  let hasValidToken = false;
+
+  // Check Bearer header first
+  const bearerData = verifyBearerToken(req);
+  if (bearerData && bearerData.uuid) {
+    hasValidToken = true;
+  }
+
+  // Extract user info from identity token if present in request (verify signature only, no parseToken fallback)
   if (body.identityToken) {
-    const tokenData = auth.verifyToken(body.identityToken) || auth.parseToken(body.identityToken);
+    const tokenData = auth.verifyToken(body.identityToken);
     if (tokenData) {
+      hasValidToken = true;
       if (tokenData.uuid) uuid = tokenData.uuid;
       if (tokenData.name) name = tokenData.name;
       // Preserve scopes from identity token if not explicitly specified in request
       if (!scopes && tokenData.scope) scopes = tokenData.scope;
       console.log('Extracted from identity token - uuid:', uuid, 'name:', name, 'scope:', tokenData.scope);
+    }
+  }
+
+  // If UUID is password-protected, require valid signed token or password
+  // (game servers pass the client's identity token; direct callers must prove identity)
+  if (!hasValidToken) {
+    const pwResult = await passwordService.verifyPassword(uuid, body.password || null);
+    if (!pwResult.ok) {
+      if (pwResult.lockedOut) {
+        sendJson(res, 429, { error: 'Too many failed attempts. Try again later.', lockoutSeconds: pwResult.lockoutSeconds });
+        return;
+      }
+      if (pwResult.passwordRequired) {
+        sendJson(res, 401, { error: 'Password required', password_required: true, attemptsRemaining: pwResult.attemptsRemaining });
+        return;
+      }
     }
   }
 
@@ -256,10 +282,10 @@ async function handleTokenExchange(req, res, body, uuid, name, headers) {
   // Extract scopes from request or auth grant
   let scopes = body.scopes || body.scope || null;
 
-  // Extract audience from the authorization grant JWT (verify signature)
+  // Extract audience from the authorization grant JWT (verify signature only, no parseToken fallback)
   let audience = null;
   if (body.authorizationGrant) {
-    const tokenData = auth.verifyToken(body.authorizationGrant) || auth.parseToken(body.authorizationGrant);
+    const tokenData = auth.verifyToken(body.authorizationGrant);
     if (tokenData) {
       audience = tokenData.aud;
       if (tokenData.uuid) uuid = tokenData.uuid;

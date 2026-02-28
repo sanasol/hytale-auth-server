@@ -130,6 +130,13 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     return;
   }
 
+  // Sentry SDK error reporting — game client sends crash telemetry here, silently discard
+  if (urlPath.startsWith('/api/') && urlPath.includes('/envelope')) {
+    res.writeHead(200);
+    res.end('{}');
+    return;
+  }
+
   // Patches no longer served from this domain — use /api/patches-config to discover URL
   if (urlPath.startsWith('/patches/')) {
     res.writeHead(404);
@@ -259,7 +266,7 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     return;
   }
 
-  if (urlPath.includes('/validate') || urlPath.includes('/verify')) {
+  if ((urlPath.includes('/validate') || urlPath.includes('/verify')) && !urlPath.startsWith('/admin')) {
     await routes.session.handleValidate(req, res, body, uuid, name);
     return;
   }
