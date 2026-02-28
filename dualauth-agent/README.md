@@ -1,4 +1,4 @@
-# DualAuth ByteBuddy Agent (v1.0.0)
+# DualAuth ByteBuddy Agent (v1.1.16)
 
 A high-performance, non-intrusive **Java Agent** designed for Hytale dedicated servers. It enables seamless dual-authentication (Official + F2P) and decentralized identity (Omni-Auth) without modifying a single byte of the original server JAR.
 
@@ -26,6 +26,9 @@ Previously, authentication was handled via a **Static ASM Patcher**. While effec
 *   ✅ **Automatic JWKS Merging**: Dynamically aggregates signing keys from all trusted sources into a single, unified validator.
 *   ✅ **Precise Type Resolution**: Automatically detects the correct internal Hytale claim wrapper (Identity vs. Session vs. Generic) to prevent casting errors.
 *   ✅ **Auto-Fetch Identity**: If no server tokens are provided, the agent can automatically fetch a valid server identity from your F2P domain.
+*   ✅ **Player Identity Registry**: Thread-safe `ConcurrentHashMap` tracks all online players with auth type (Official/F2P/Omni), accessible from any mod or plugin.
+*   ✅ **In-Game Commands**: `/authinfo` and `/authlist` for real-time player auth inspection.
+*   ✅ **Identity Protection**: Omni-Auth tokens are checked against the auth server's identity protection API to block impersonation of password-protected players.
 
 ---
 
@@ -221,4 +224,202 @@ export HYTALE_SERVER_NAME="High-Performance Server"
 
 java -javaagent:dualauth-agent.jar -jar HytaleServer.jar --auth-mode authenticated
 ```
+
+---
+
+## 💬 In-Game Commands
+
+The agent registers two in-game commands for real-time player auth inspection.
+
+### `/authinfo [player]`
+
+Show authentication details for yourself or a target player.
+
+- **Self-info** (no argument): Any player can run `/authinfo` to see their own auth type.
+- **Target player** (argument): Requires admin permission. Accepts player name or UUID.
+
+**Output:**
+```
+[DualAuth] === Auth Info: Sanasol ===
+  UUID:      adfd7538-edba-459d-a950-05a704e4f42a
+  Auth Type: F2P
+  Issuer:    https://auth.sanasol.ws
+  Session:   2h 15m ago
+  F2P:       true
+  Omni-Auth: false
+  Agent:     v1.1.16
+```
+
+### `/authlist`
+
+List all online players with their auth type. Requires admin permission.
+
+**Output:**
+```
+[DualAuth] Online players (3):
+  Name             | Type          | UUID
+  -----------------+---------------+--------------------------------------
+  Sanasol          | F2P           | adfd7538-edba-459d-a950-05a704e4f42a
+  OfficialPlayer   | OFFICIAL      | 12345678-1234-1234-1234-123456789abc
+  SelfHosted       | OMNI (self-s) | 87654321-4321-4321-4321-cba987654321
+```
+
+### Command Permissions
+
+Admin access is checked in order:
+
+1. **UUID whitelist**: `DUALAUTH_ADMIN_UUIDS` environment variable (comma-separated UUIDs)
+2. **Game permission**: `dualauth.admin` permission node
+3. **Fallback permission**: Configurable via `DUALAUTH_ADMIN_PERMISSION` env var (default: `server.commands.who`)
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `DUALAUTH_ADMIN_UUIDS` | Comma-separated list of admin UUIDs | (Empty) |
+| `DUALAUTH_ADMIN_PERMISSION` | Fallback game permission node | `server.commands.who` |
+
+### permissions.json Setup
+
+Add the following to your server's `permissions.json` to grant command access:
+
+```json
+{
+  "groups": {
+    "admin": {
+      "permissions": [
+        "dualauth.admin",
+        "server.commands.who"
+      ]
+    }
+  },
+  "players": {
+    "adfd7538-edba-459d-a950-05a704e4f42a": {
+      "group": "admin"
+    }
+  }
+}
+```
+
+Or use the UUID whitelist (no permissions.json changes needed):
+```bash
+export DUALAUTH_ADMIN_UUIDS="adfd7538-edba-459d-a950-05a704e4f42a,other-admin-uuid"
+```
+
+---
+
+## 🔌 Mod Developer API — Player Identity Registry
+
+The agent maintains a thread-safe registry of all online players with their authentication type. Mod developers can query this to implement auth-aware features (e.g., F2P-only areas, different permissions, auth badges).
+
+### Accessing the Registry
+
+The registry is available via static methods on `DualAuthContext`. Since the agent runs on the bootstrap classloader, access it via reflection from your mod:
+
+```java
+// Get the DualAuthContext class from the bootstrap classloader
+Class<?> ctx = ClassLoader.getSystemClassLoader()
+    .loadClass("ws.sanasol.dualauth.context.DualAuthContext");
+```
+
+### Available Methods
+
+| Method | Returns | Description |
+| :--- | :--- | :--- |
+| `getPlayerInfo(String uuid)` | `PlayerAuthInfo` or `null` | Full auth info for a player |
+| `isPlayerF2P(String uuid)` | `boolean` | `true` if player authenticated via F2P |
+| `isPlayerOfficial(String uuid)` | `boolean` | `true` if player authenticated via official Hytale |
+| `getOnlinePlayers()` | `Map<String, PlayerAuthInfo>` | Snapshot of all online players |
+
+### PlayerAuthInfo Fields
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `uuid` | `String` | Player UUID |
+| `username` | `String` | Player username |
+| `isF2P` | `boolean` | Authenticated via F2P auth server |
+| `isOmni` | `boolean` | Authenticated via Omni-Auth (self-signed token) |
+| `issuer` | `String` | Token issuer URL (e.g., `https://auth.sanasol.ws`) |
+| `authenticatedAt` | `long` | System.currentTimeMillis() when auth completed |
+
+### Example: Query Player Auth Type from a Mod
+
+```java
+import java.lang.reflect.Method;
+import java.util.Map;
+
+public class MyModAuthHelper {
+
+    private static Class<?> ctxClass;
+    private static Method getPlayerInfoMethod;
+    private static boolean initialized = false;
+
+    private static void init() {
+        if (initialized) return;
+        try {
+            ctxClass = ClassLoader.getSystemClassLoader()
+                .loadClass("ws.sanasol.dualauth.context.DualAuthContext");
+            getPlayerInfoMethod = ctxClass.getMethod("getPlayerInfo", String.class);
+            initialized = true;
+        } catch (Exception e) {
+            // DualAuth agent not loaded — all players are official
+            initialized = true;
+        }
+    }
+
+    /**
+     * Check if a player is F2P.
+     * Returns false if DualAuth agent is not loaded.
+     */
+    public static boolean isF2P(String uuid) {
+        init();
+        if (getPlayerInfoMethod == null) return false;
+        try {
+            Object info = getPlayerInfoMethod.invoke(null, uuid);
+            if (info == null) return false;
+            return info.getClass().getField("isF2P").getBoolean(info);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Get auth type label for display.
+     */
+    public static String getAuthType(String uuid) {
+        init();
+        if (getPlayerInfoMethod == null) return "OFFICIAL";
+        try {
+            Object info = getPlayerInfoMethod.invoke(null, uuid);
+            if (info == null) return "UNKNOWN";
+            boolean isOmni = info.getClass().getField("isOmni").getBoolean(info);
+            boolean isF2P = info.getClass().getField("isF2P").getBoolean(info);
+            if (isOmni) return "OMNI";
+            if (isF2P) return "F2P";
+            return "OFFICIAL";
+        } catch (Exception e) {
+            return "UNKNOWN";
+        }
+    }
+
+    /**
+     * Get the issuer URL for a player's token.
+     */
+    public static String getIssuer(String uuid) {
+        init();
+        if (getPlayerInfoMethod == null) return null;
+        try {
+            Object info = getPlayerInfoMethod.invoke(null, uuid);
+            if (info == null) return null;
+            return (String) info.getClass().getField("issuer").get(info);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+}
+```
+
+### Lifecycle
+
+- **Registration**: Players are registered automatically after successful JWT validation
+- **Unregistration**: Players are removed on disconnect (connection close)
+- **Thread safety**: The registry uses `ConcurrentHashMap` — safe to query from any thread
 
