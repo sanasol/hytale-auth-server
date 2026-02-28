@@ -89,6 +89,17 @@ public class JWTValidatorTransformer implements net.bytebuddy.agent.builder.Agen
                     DualAuthContext.setIssuer(issuer);
                     DualJwksFetcher.registerIssuer(issuer);
 
+                    // Set subject and username BEFORE validation so they're
+                    // available in exit() for player registry even on early return
+                    String subject = DualAuthHelper.extractSubjectFromToken(token);
+                    if (subject != null) {
+                        DualAuthContext.setPlayerUuid(subject);
+                    }
+                    String tokenName = DualAuthHelper.extractClaimFromToken(token, "name");
+                    if (tokenName != null) {
+                        DualAuthContext.setUsername(tokenName);
+                    }
+
                     // MISSION CRITICAL: manual validation for ALL valid issuers
                     if (DualAuthHelper.isValidIssuer(issuer)) {
                          // Proactively update expected issuer
@@ -101,12 +112,6 @@ public class JWTValidatorTransformer implements net.bytebuddy.agent.builder.Agen
                          } else {
                              System.out.println("[DualAuthAgent] Manual validation FAILED for issuer: " + issuer + " (falling back)");
                          }
-                    }
-                    
-                    // Set subject for context propagation
-                    String subject = DualAuthHelper.extractSubjectFromToken(token);
-                    if (subject != null) {
-                        DualAuthContext.setPlayerUuid(subject);
                     }
                 }
             } catch (Exception ignored) {}

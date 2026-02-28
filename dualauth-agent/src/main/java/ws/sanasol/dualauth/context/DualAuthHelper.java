@@ -884,15 +884,26 @@ public class DualAuthHelper {
     }
 
     public static String extractSubjectFromToken(String token) {
-        if (token == null || !token.contains("."))
+        return extractClaimFromToken(token, "sub");
+    }
+
+    /**
+     * Extract any string claim from a JWT token payload without full parsing.
+     * Uses simple JSON string search — works for string-valued claims.
+     */
+    public static String extractClaimFromToken(String token, String claimName) {
+        if (token == null || !token.contains(".") || claimName == null)
             return null;
         try {
             String payload = new String(Base64.getUrlDecoder().decode(token.split("\\.")[1]));
-            int subIdx = payload.indexOf("\"sub\":");
-            if (subIdx < 0)
+            String key = "\"" + claimName + "\":";
+            int idx = payload.indexOf(key);
+            if (idx < 0)
                 return null;
-            int start = payload.indexOf('"', subIdx + 6) + 1;
+            int start = payload.indexOf('"', idx + key.length()) + 1;
             int end = payload.indexOf('"', start);
+            if (start <= 0 || end < start)
+                return null;
             return payload.substring(start, end);
         } catch (Exception e) {
             return null;
