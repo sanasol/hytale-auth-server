@@ -10,4 +10,5 @@ module.exports = {
   telemetry: require('./telemetry'),
   debug: require('./debug'),
   logSubmissions: require('./logSubmissions'),
+  player: require('./player'),
 };

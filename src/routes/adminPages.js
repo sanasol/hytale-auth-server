@@ -354,6 +354,7 @@ const navHtml = (activePage) => `
       <a href="/admin/page/logs" class="nav-link ${activePage === 'logs' ? 'active' : ''}">Request Logs</a>
       <a href="/admin/page/log-submissions" class="nav-link ${activePage === 'log-submissions' ? 'active' : ''}">Client Logs</a>
       <a href="/admin/page/metrics" class="nav-link ${activePage === 'metrics' ? 'active' : ''}">Metrics</a>
+      <a href="/admin/page/identity" class="nav-link ${activePage === 'identity' ? 'active' : ''}">Identity</a>
       <a href="/admin/page/settings" class="nav-link ${activePage === 'settings' ? 'active' : ''}">Settings</a>
     </div>
     <div class="nav-right">
@@ -659,6 +660,7 @@ function handlePlayersPage(req, res) {
               \${st.latency ? '<span class="state-item ' + lc + '">' + Math.round(st.latency) + 'ms</span>' : ''}
             </div>
           </div>
+          <button class="btn btn-secondary" style="margin-left:auto;font-size:0.75em;padding:4px 8px" onclick="resetPassword('\${p.uuid}',this)">Reset PW</button>
         </div>\`;
       }).join('');
       html += '</div>';
@@ -672,6 +674,19 @@ function handlePlayersPage(req, res) {
       }
 
       list.innerHTML = html;
+    }
+
+    async function resetPassword(uuid, btn) {
+      const res1 = await authFetch('/admin/api/players/' + uuid + '/password-status');
+      const st = await res1.json();
+      if (!st.hasPassword) { alert('No password set for this player.'); return; }
+      if (!confirm('Remove password for ' + uuid + '?')) return;
+      btn.disabled = true;
+      try {
+        const res2 = await authFetch('/admin/api/players/' + uuid + '/password', { method: 'DELETE' });
+        const d = await res2.json();
+        if (d.success) { btn.textContent = 'Removed'; } else { alert('Failed'); btn.disabled = false; }
+      } catch (e) { alert('Error: ' + e.message); btn.disabled = false; }
     }
 
     document.getElementById('loginForm').addEventListener('submit', async (e) => {
@@ -2435,11 +2450,459 @@ function handleLogSubmissionsPage(req, res) {
     sendHtml(res, 200, html);
 }
 
+/**
+ * Identity page - Username audit log, lookups, and management actions
+ */
+function handleIdentityPage(req, res) {
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Identity - Hytale Admin</title>
+  <style>
+    ${sharedStyles}
+
+    /* Identity page specific styles */
+    .section { margin-bottom: 25px; }
+    .section-title { color: #00d4ff; font-size: 1.1em; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+
+    .lookup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 25px; }
+    @media (max-width: 900px) { .lookup-grid { grid-template-columns: 1fr; } }
+
+    .lookup-box {
+      background: rgba(0,0,0,0.2);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 8px;
+      padding: 15px;
+    }
+    .lookup-box h3 { color: #00d4ff; font-size: 1em; margin-bottom: 10px; }
+    .lookup-box .input-row { display: flex; gap: 8px; margin-bottom: 10px; }
+    .lookup-box input[type="text"] {
+      flex: 1;
+      padding: 8px 12px;
+      border-radius: 5px;
+      border: 1px solid #333;
+      background: rgba(0,0,0,0.3);
+      color: #fff;
+      font-size: 0.9em;
+    }
+    .lookup-result {
+      background: rgba(0,0,0,0.2);
+      border-radius: 5px;
+      padding: 10px;
+      font-size: 0.85em;
+      min-height: 40px;
+    }
+    .lookup-result .field { margin-bottom: 4px; }
+    .lookup-result .field-label { color: #888; display: inline-block; min-width: 100px; }
+    .lookup-result .field-value { color: #e0e0e0; font-family: monospace; }
+    .lookup-result .field-value.reserved { color: #fc5; }
+    .lookup-result .field-value.not-reserved { color: #5f5; }
+    .lookup-result .field-value.has-password { color: #fc5; }
+    .lookup-result .field-value.no-password { color: #5f5; }
+
+    .action-buttons { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    .action-buttons .btn { font-size: 0.8em; padding: 6px 12px; }
+
+    /* Audit log table */
+    .audit-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85em;
+    }
+    .audit-table th {
+      text-align: left;
+      padding: 8px 10px;
+      background: rgba(0,0,0,0.3);
+      color: #888;
+      font-weight: 600;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+      white-space: nowrap;
+    }
+    .audit-table td {
+      padding: 6px 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      color: #ccc;
+      vertical-align: top;
+    }
+    .audit-table tr:hover td { background: rgba(0, 212, 255, 0.05); }
+    .audit-table .mono { font-family: monospace; font-size: 0.9em; color: #aaa; }
+    .audit-table .action-claim { color: #5f5; }
+    .audit-table .action-deny { color: #f55; }
+    .audit-table .action-release { color: #fc5; }
+    .audit-table .action-change { color: #5af; }
+    .audit-table .action-default { color: #ccc; }
+
+    .audit-controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+    .audit-controls select, .audit-controls input {
+      padding: 6px 10px;
+      border-radius: 5px;
+      border: 1px solid #333;
+      background: rgba(0,0,0,0.3);
+      color: #fff;
+      font-size: 0.85em;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      padding: 12px 20px;
+      border-radius: 8px;
+      color: #fff;
+      font-size: 0.9em;
+      z-index: 9999;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .toast.show { opacity: 1; }
+    .toast.success { background: rgba(0, 200, 100, 0.9); }
+    .toast.error { background: rgba(255, 80, 80, 0.9); }
+  </style>
+</head>
+<body>
+  <div class="login-overlay" id="loginOverlay">
+    <div class="login-box">
+      <h2>Admin Login</h2>
+      <form id="loginForm">
+        <input type="password" id="loginPassword" placeholder="Password" required>
+        <button type="submit" class="btn">Login</button>
+      </form>
+      <div class="login-error" id="loginError"></div>
+    </div>
+  </div>
+
+  <div id="mainContent" class="hidden">
+    ${navHtml('identity')}
+    <div class="container">
+
+      <!-- Lookup Section -->
+      <div class="lookup-grid">
+        <!-- Username Lookup -->
+        <div class="lookup-box">
+          <h3>Username Lookup</h3>
+          <div class="input-row">
+            <input type="text" id="usernameLookupInput" placeholder="Enter username..." onkeyup="if(event.key==='Enter')lookupUsername()">
+            <button class="btn" onclick="lookupUsername()">Lookup</button>
+          </div>
+          <div class="lookup-result" id="usernameResult">
+            <span style="color:#666">Enter a username to check reservation status</span>
+          </div>
+        </div>
+
+        <!-- UUID Lookup -->
+        <div class="lookup-box">
+          <h3>UUID Lookup</h3>
+          <div class="input-row">
+            <input type="text" id="uuidLookupInput" placeholder="Enter UUID..." onkeyup="if(event.key==='Enter')lookupUuid()">
+            <button class="btn" onclick="lookupUuid()">Lookup</button>
+          </div>
+          <div class="lookup-result" id="uuidResult">
+            <span style="color:#666">Enter a UUID to check password and reservation status</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Audit Log Section -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Username Audit Log</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-secondary" onclick="loadAuditLog()">Refresh</button>
+          </div>
+        </div>
+        <div class="audit-controls">
+          <select id="auditCount" onchange="loadAuditLog()">
+            <option value="25">25 entries</option>
+            <option value="50" selected>50 entries</option>
+            <option value="100">100 entries</option>
+            <option value="200">200 entries</option>
+          </select>
+          <input type="text" id="auditFilter" placeholder="Filter by username, UUID, or action..." onkeyup="filterAuditTable()" style="flex:1;min-width:200px">
+        </div>
+        <div style="overflow-x:auto">
+          <table class="audit-table" id="auditTable">
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Action</th>
+                <th>Username</th>
+                <th>UUID</th>
+                <th>IP</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody id="auditBody">
+              <tr><td colspan="6" class="no-data">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="pagination" id="auditPagination"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    ${sharedScripts}
+
+    let auditStart = 0;
+    let allAuditEntries = [];
+
+    // ===== Toast notification =====
+    function showToast(message, type) {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.className = 'toast show ' + (type || 'success');
+      setTimeout(() => { toast.className = 'toast'; }, 3000);
+    }
+
+    // ===== Username Lookup =====
+    async function lookupUsername() {
+      const username = document.getElementById('usernameLookupInput').value.trim();
+      const result = document.getElementById('usernameResult');
+      if (!username) { result.innerHTML = '<span style="color:#666">Enter a username</span>'; return; }
+
+      result.innerHTML = '<span style="color:#888">Looking up...</span>';
+      try {
+        const res = await authFetch('/admin/api/username/' + encodeURIComponent(username));
+        const d = await res.json();
+
+        if (!d.reserved) {
+          result.innerHTML = '<div class="field"><span class="field-label">Status:</span> <span class="field-value not-reserved">Not reserved</span></div>';
+          return;
+        }
+
+        let html = '';
+        html += '<div class="field"><span class="field-label">Status:</span> <span class="field-value reserved">Reserved</span></div>';
+        html += '<div class="field"><span class="field-label">Owner UUID:</span> <span class="field-value mono">' + (d.ownerUuid || 'N/A') + '</span></div>';
+        if (d.ip) html += '<div class="field"><span class="field-label">IP:</span> <span class="field-value mono">' + d.ip + '</span></div>';
+        if (d.reservedAt) html += '<div class="field"><span class="field-label">Reserved:</span> <span class="field-value">' + new Date(d.reservedAt).toLocaleString() + '</span></div>';
+
+        html += '<div class="action-buttons">';
+        html += '<button class="btn btn-danger" onclick="unclaimUsername(\\'' + username.replace(/'/g, "\\\\'") + '\\')">Unclaim Username</button>';
+        if (d.ownerUuid) {
+          html += '<button class="btn btn-secondary" onclick="document.getElementById(\\'uuidLookupInput\\').value=\\'' + d.ownerUuid + '\\';lookupUuid()">Lookup Owner</button>';
+        }
+        html += '</div>';
+
+        result.innerHTML = html;
+      } catch (e) {
+        result.innerHTML = '<span style="color:#f55">Error: ' + e.message + '</span>';
+      }
+    }
+
+    // ===== UUID Lookup =====
+    async function lookupUuid() {
+      const uuid = document.getElementById('uuidLookupInput').value.trim();
+      const result = document.getElementById('uuidResult');
+      if (!uuid) { result.innerHTML = '<span style="color:#666">Enter a UUID</span>'; return; }
+
+      result.innerHTML = '<span style="color:#888">Looking up...</span>';
+      try {
+        const res = await authFetch('/admin/api/players/' + encodeURIComponent(uuid) + '/password-status');
+        const d = await res.json();
+
+        let html = '';
+        html += '<div class="field"><span class="field-label">Password:</span> <span class="field-value ' + (d.hasPassword ? 'has-password' : 'no-password') + '">' + (d.hasPassword ? 'Set' : 'Not set') + '</span></div>';
+        html += '<div class="field"><span class="field-label">Attempts:</span> <span class="field-value">' + (d.attemptCount || 0) + '</span></div>';
+        html += '<div class="field"><span class="field-label">Reserved Name:</span> <span class="field-value ' + (d.reservedUsername ? 'reserved' : 'not-reserved') + '">' + (d.reservedUsername || 'None') + '</span></div>';
+
+        html += '<div class="action-buttons">';
+        if (d.hasPassword) {
+          html += '<button class="btn btn-danger" onclick="resetPassword(\\'' + uuid + '\\')">Reset Password</button>';
+        }
+        if (d.reservedUsername) {
+          html += '<button class="btn btn-danger" onclick="unclaimUsername(\\'' + d.reservedUsername.replace(/'/g, "\\\\'") + '\\')">Unclaim Username</button>';
+        }
+        if (d.attemptCount > 0) {
+          html += '<button class="btn btn-secondary" onclick="clearLockout(\\'' + uuid + '\\')">Clear Lockout</button>';
+        }
+        html += '</div>';
+
+        result.innerHTML = html;
+      } catch (e) {
+        result.innerHTML = '<span style="color:#f55">Error: ' + e.message + '</span>';
+      }
+    }
+
+    // ===== Actions =====
+    async function unclaimUsername(username) {
+      if (!confirm('Release username reservation for "' + username + '"?')) return;
+      try {
+        const res = await authFetch('/admin/api/username/' + encodeURIComponent(username), { method: 'DELETE' });
+        const d = await res.json();
+        if (d.success) {
+          showToast('Username "' + username + '" released from ' + d.releasedFrom);
+          lookupUsername();
+          loadAuditLog();
+        } else {
+          showToast(d.error || 'Failed to release', 'error');
+        }
+      } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+      }
+    }
+
+    async function resetPassword(uuid) {
+      if (!confirm('Remove password AND username reservation for ' + uuid + '?')) return;
+      try {
+        const res = await authFetch('/admin/api/players/' + uuid + '/password', { method: 'DELETE' });
+        const d = await res.json();
+        if (d.success) {
+          showToast('Password and reservation removed for ' + uuid);
+          lookupUuid();
+          loadAuditLog();
+        } else {
+          showToast('Failed to remove password', 'error');
+        }
+      } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+      }
+    }
+
+    async function clearLockout(uuid) {
+      if (!confirm('Clear failed attempt counter for ' + uuid + '?')) return;
+      try {
+        const res = await authFetch('/admin/api/players/' + uuid + '/clear-lockout', { method: 'POST' });
+        const d = await res.json();
+        if (d.success) {
+          showToast('Lockout cleared for ' + uuid);
+          lookupUuid();
+        } else {
+          showToast('Failed to clear lockout', 'error');
+        }
+      } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+      }
+    }
+
+    // ===== Audit Log =====
+    async function loadAuditLog() {
+      const count = parseInt(document.getElementById('auditCount').value) || 50;
+      const body = document.getElementById('auditBody');
+      body.innerHTML = '<tr><td colspan="6" class="no-data">Loading...</td></tr>';
+
+      try {
+        const res = await authFetch('/admin/api/username-audit?start=' + auditStart + '&count=' + count);
+        const d = await res.json();
+        allAuditEntries = d.entries || [];
+
+        if (!allAuditEntries.length) {
+          body.innerHTML = '<tr><td colspan="6" class="no-data">No audit entries</td></tr>';
+          document.getElementById('auditPagination').innerHTML = '';
+          return;
+        }
+
+        renderAuditEntries(allAuditEntries);
+
+        // Pagination
+        const pag = document.getElementById('auditPagination');
+        let pagHtml = '';
+        if (auditStart > 0) {
+          pagHtml += '<button onclick="auditStart=Math.max(0,auditStart-' + count + ');loadAuditLog()">Prev</button>';
+        }
+        pagHtml += '<span>Showing ' + (auditStart + 1) + ' - ' + (auditStart + allAuditEntries.length) + '</span>';
+        if (allAuditEntries.length >= count) {
+          pagHtml += '<button onclick="auditStart+=' + count + ';loadAuditLog()">Next</button>';
+        }
+        pag.innerHTML = pagHtml;
+      } catch (e) {
+        body.innerHTML = '<tr><td colspan="6" class="no-data">Error: ' + e.message + '</td></tr>';
+      }
+    }
+
+    function renderAuditEntries(entries) {
+      const body = document.getElementById('auditBody');
+      body.innerHTML = entries.map(e => {
+        const action = e.action || '';
+        let actionClass = 'action-default';
+        if (action.includes('claim') || action.includes('reserve')) actionClass = 'action-claim';
+        else if (action.includes('deny') || action.includes('reject')) actionClass = 'action-deny';
+        else if (action.includes('release') || action.includes('remove')) actionClass = 'action-release';
+        else if (action.includes('change')) actionClass = 'action-change';
+
+        const ts = e.timestamp ? new Date(e.timestamp).toLocaleString() : '-';
+        const oldName = e.oldUsername ? ' (was: ' + e.oldUsername + ')' : '';
+
+        return '<tr>' +
+          '<td class="mono" style="white-space:nowrap">' + ts + '</td>' +
+          '<td><span class="' + actionClass + '">' + (action || '-') + '</span></td>' +
+          '<td>' + (e.username || '-') + oldName + '</td>' +
+          '<td class="mono" style="font-size:0.8em">' + (e.uuid || '-') + '</td>' +
+          '<td class="mono">' + (e.ip || '-') + '</td>' +
+          '<td>' + (e.reason || '-') + '</td>' +
+          '</tr>';
+      }).join('');
+    }
+
+    function filterAuditTable() {
+      const filter = document.getElementById('auditFilter').value.toLowerCase();
+      if (!filter) {
+        renderAuditEntries(allAuditEntries);
+        return;
+      }
+      const filtered = allAuditEntries.filter(e => {
+        return (e.username || '').toLowerCase().includes(filter) ||
+               (e.uuid || '').toLowerCase().includes(filter) ||
+               (e.action || '').toLowerCase().includes(filter) ||
+               (e.ip || '').toLowerCase().includes(filter) ||
+               (e.reason || '').toLowerCase().includes(filter);
+      });
+      renderAuditEntries(filtered);
+    }
+
+    // ===== Init =====
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const password = document.getElementById('loginPassword').value;
+      try {
+        const res = await fetch('/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password })
+        });
+        const data = await res.json();
+        if (res.ok && data.token) {
+          adminToken = data.token;
+          savedPassword = password;
+          localStorage.setItem('adminToken', adminToken);
+          localStorage.setItem('adminPassword', password);
+          init();
+        } else {
+          document.getElementById('loginError').textContent = data.error || 'Failed';
+        }
+      } catch (e) {
+        document.getElementById('loginError').textContent = 'Connection error';
+      }
+    });
+
+    async function init() {
+      document.getElementById('loginOverlay').classList.add('hidden');
+      document.getElementById('mainContent').classList.remove('hidden');
+      loadStats();
+      loadAuditLog();
+      setInterval(loadStats, 30000);
+    }
+
+    (async () => {
+      if (await checkAuth()) init();
+    })();
+  </script>
+</body>
+</html>`;
+    sendHtml(res, 200, html);
+}
+
 module.exports = {
     handleServersPage,
     handlePlayersPage,
     handleLogsPage,
     handleMetricsPage,
     handleSettingsPage,
-    handleLogSubmissionsPage
+    handleLogSubmissionsPage,
+    handleIdentityPage
 };

@@ -8,6 +8,7 @@
     "dev": "nodemon --watch src src/app.js"
   },
   "dependencies": {
+    "bcryptjs": "^2.4.3",
     "ioredis": "^5.4.1",
     "three": "^0.160.0",
     "gl": "^6.0.2",

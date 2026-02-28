@@ -58,14 +58,16 @@ function extractUserContext(body, headers) {
       if (tokenData.uuid) uuid = tokenData.uuid;
       tokenScope = tokenData.scope;
 
-      // Cache token name if it's valid and from a player token
-      if (uuid && tokenData.name && tokenData.name !== 'Player' && tokenScope &&
-          (tokenScope.includes('hytale:client') || tokenScope.includes('hytale:editor'))) {
-        storage.setCachedUsername(uuid, tokenData.name);
-        console.log(`Cached username from token for UUID ${uuid}: ${tokenData.name}`);
-        name = tokenData.name;
-        // Persist to storage
-        storage.persistUsername(uuid, tokenData.name);
+      // Use token name if available (regardless of scope - session tokens now include name too)
+      if (tokenData.name && tokenData.name !== 'Player') {
+        if (!name || name === 'Player') {
+          name = tokenData.name;
+        }
+        // Cache and persist valid names
+        if (uuid) {
+          storage.setCachedUsername(uuid, tokenData.name);
+          storage.persistUsername(uuid, tokenData.name);
+        }
       }
     }
   }

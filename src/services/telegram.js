@@ -16,10 +16,11 @@ function sendLogNotification(meta, filePath) {
     return;
   }
 
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const caption = [
-    `📋 Log Submission: \`${meta.id.substring(0, 8)}\``,
-    `👤 ${meta.username || 'unknown'}`,
-    `💻 ${meta.platform || 'unknown'} | v${meta.version || '?'}`,
+    `📋 Log Submission: <code>${esc(meta.id.substring(0, 8))}</code>`,
+    `👤 ${esc(meta.username || 'unknown')}`,
+    `💻 ${esc(meta.platform || 'unknown')} | v${esc(meta.version || '?')}`,
     `📁 ${meta.fileCount || 0} files, ${formatBytes(meta.fileSize || 0)}`,
     `🕐 ${new Date(meta.createdAt).toUTCString()}`,
   ].join('\n');
@@ -46,7 +47,7 @@ function sendMessage(token, chatId, text) {
   const payload = JSON.stringify({
     chat_id: chatId,
     text: text,
-    parse_mode: 'Markdown'
+    parse_mode: 'HTML'
   });
 
   const options = {
@@ -104,7 +105,7 @@ function sendDocument(token, chatId, filePath, filename, caption) {
   parts.push(
     `--${boundary}\r\n` +
     `Content-Disposition: form-data; name="parse_mode"\r\n\r\n` +
-    `Markdown\r\n`
+    `HTML\r\n`
   );
 
   // document field (binary)

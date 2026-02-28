@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const storage = require('../services/storage');
 const assets = require('../services/assets');
+const passwordService = require('../services/password');
 const { sendJson, sendNoContent } = require('../utils/response');
 
 /**
@@ -146,12 +147,15 @@ async function handleGameProfile(req, res, body, uuid, name) {
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
+  const hasPass = await passwordService.hasPassword(uuid);
+
   sendJson(res, 200, {
     uuid, username: name,
     entitlements: ["game.base"],
     createdAt: "2024-01-01T00:00:00Z",
     nextNameChangeAt: nextNameChange,
-    skin: skin
+    skin: skin,
+    password_protected: hasPass
   });
 }
 

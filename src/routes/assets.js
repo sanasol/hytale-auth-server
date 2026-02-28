@@ -449,10 +449,42 @@ async function handleDownload(req, res, urlPath) {
   }
 }
 
+/**
+ * Patch redirect route - redirects to configured CDN for patch files
+ * Used by F2P launcher to fetch manifest.json and .pwr patch files
+ * Admin can change the CDN base URL instantly via settings
+ */
+async function handlePatchRedirect(req, res, urlPath) {
+  // Extract path after /patches/ (e.g., manifest.json, windows/amd64/release/0_to_11.pwr)
+  const patchPath = urlPath.replace('/patches/', '');
+
+  // Security: prevent path traversal
+  if (patchPath.includes('..')) {
+    res.writeHead(400);
+    res.end('Invalid path');
+    return;
+  }
+
+  const baseUrl = await storage.getPatchesCdnBaseUrl();
+  const redirectUrl = `${baseUrl.replace(/\/+$/, '')}/${patchPath}`;
+
+  // Track download metrics for patch files
+  const filename = patchPath.split('/').pop() || patchPath;
+  storage.recordDownload(`patch:${filename}`, redirectUrl);
+
+  console.log(`Patch redirect: ${patchPath} -> ${redirectUrl.substring(0, 80)}...`);
+  res.writeHead(302, {
+    'Location': redirectUrl,
+    'Cache-Control': 'no-cache'
+  });
+  res.end();
+}
+
 module.exports = {
   handleCosmeticsList,
   handleCosmeticItem,
   handleStaticAssets,
   handleAssetRoute,
   handleDownload,
+  handlePatchRedirect,
 };

@@ -27,6 +27,9 @@ S4_ENDPOINT="s3.g.s4.mega.io"            # MEGA S4 global endpoint
 AUTH_SERVER="https://auth.sanasol.ws"
 ADMIN_TOKEN="${ADMIN_TOKEN:-}"
 
+PORTAL_URL="${PORTAL_URL:-https://hytale.sanhost.net}"
+PORTAL_KEY="${PORTAL_KEY:-${INTERNAL_API_KEY:-}}"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -96,6 +99,50 @@ EOF
     fi
 }
 
+# Refresh downloader credentials via portal API
+refresh_credentials() {
+    local creds_file="$HYTALE_DOCKER_DIR/data/.hytale-downloader-credentials.json"
+
+    if [ -z "$PORTAL_KEY" ]; then
+        warn "PORTAL_KEY (or INTERNAL_API_KEY) not set — skipping auto-refresh"
+        return 1
+    fi
+
+    # Check if token is still valid
+    if [ -f "$creds_file" ]; then
+        local expires_at now
+        expires_at=$(python3 -c "import json; print(json.load(open('$creds_file')).get('expires_at', 0))" 2>/dev/null || echo 0)
+        now=$(date +%s)
+        if [ "$now" -lt "$((expires_at - 60))" ]; then
+            log "Credentials still valid ($(( (expires_at - now) / 60 )) min remaining)"
+            return 0
+        fi
+    fi
+
+    log "Fetching fresh downloader credentials from portal..."
+
+    local response
+    response=$(curl -sf --max-time 120 \
+        -H "X-Internal-Key: ${PORTAL_KEY}" \
+        "${PORTAL_URL}/api/internal/oauth/token?client=hytale-downloader" 2>&1)
+
+    if [ $? -ne 0 ] || [ -z "$response" ]; then
+        warn "Portal request failed: $response"
+        return 1
+    fi
+
+    # Verify response has access_token
+    if ! echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('access_token')" 2>/dev/null; then
+        warn "Portal returned invalid response: $(echo "$response" | head -c 200)"
+        return 1
+    fi
+
+    # Write credentials file
+    echo "$response" > "$creds_file"
+    log "Credentials refreshed successfully!"
+    return 0
+}
+
 # Extract version from JAR
 get_version() {
     local jar="$1"
@@ -105,6 +152,9 @@ get_version() {
 # Check latest available version
 check_latest_version() {
     log "Checking latest available version..."
+
+    # Auto-refresh credentials if expired
+    refresh_credentials || true
 
     # Check if credentials exist
     if [ ! -f "$HYTALE_DOCKER_DIR/data/.hytale-downloader-credentials.json" ]; then
@@ -120,10 +170,10 @@ check_latest_version() {
     # Check for auth errors
     if echo "$LATEST_VERSION" | grep -qi "unauthorized\|expired\|invalid"; then
         echo ""
-        warn "Authentication failed - credentials may be expired."
-        warn "To refresh credentials:"
-        warn "  1. Run the official Hytale downloader"
-        warn "  2. Or: cd $HYTALE_DOCKER_DIR && docker compose run --rm hytale"
+        warn "Authentication failed even after refresh attempt."
+        warn "Ensure PORTAL_KEY is set for auto-refresh via portal."
+        warn "Or re-authenticate manually:"
+        warn "  cd $HYTALE_DOCKER_DIR && docker compose run --rm hytale"
         error "Please re-authenticate and try again."
     fi
 
@@ -150,6 +200,9 @@ check_latest_version() {
 # Step 1: Download latest files using hytale-downloader
 download_latest() {
     log "Downloading latest Hytale server..."
+
+    # Ensure credentials are fresh before download
+    refresh_credentials || true
 
     # Run downloader in container
     docker run --rm \
@@ -355,6 +408,8 @@ show_help() {
     echo ""
     echo "Environment variables:"
     echo "  ADMIN_TOKEN          Auth server admin token (for auto CDN update)"
+    echo "  PORTAL_KEY           Portal internal API key (for auto credential refresh)"
+    echo "  PORTAL_URL           Portal URL (default: https://hytale.sanhost.net)"
     echo ""
     echo "Examples:"
     echo "  $0 --check                              # Check if new version available"

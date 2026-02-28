@@ -1689,6 +1689,258 @@ async function searchPlayers(query, limit = 50) {
 }
 
 // ============================================================================
+// ACTIVITY WINDOWS (real-time online counts)
+// ============================================================================
+
+/**
+ * Get player and server counts for time windows + estimated real-time online.
+ *
+ * Uses active:players sorted set scores: score = lastActive + sessionTtl*1000
+ * So a player active within N ms has score > now + sessionTtl*1000 - N
+ *
+ * Estimated online uses survival analysis:
+ *   For each time cohort (players who started X minutes ago),
+ *   multiply by probability they're still playing (from session_duration histogram).
+ *   Sum = estimated concurrent players.
+ */
+async function getActivityWindows() {
+  if (!isConnected()) {
+    const empty = { players: 0, servers: 0, topServers: [] };
+    return { estimatedOnline: 0, windows: { '5m': empty, '15m': empty, '30m': empty, '1h': empty, '2h': empty, '4h': empty } };
+  }
+
+  try {
+    const now = Date.now();
+    const sessionTtlMs = config.sessionTtl * 1000;
+
+    // Windows ordered smallest to largest (needed for cohort calculation)
+    const windowDefs = [
+      ['5m', 5 * 60 * 1000],
+      ['15m', 15 * 60 * 1000],
+      ['30m', 30 * 60 * 1000],
+      ['1h', 60 * 60 * 1000],
+      ['2h', 2 * 60 * 60 * 1000],
+      ['4h', 4 * 60 * 60 * 1000]
+    ];
+
+    // Fetch all player counts per window (just ZCOUNT for speed, no UUID fetching)
+    const windowCounts = {};
+    for (const [label, windowMs] of windowDefs) {
+      const minScore = now + sessionTtlMs - windowMs;
+      windowCounts[label] = await redis.zcount('active:players', minScore, '+inf');
+    }
+
+    // Build survival function from session_duration histogram
+    // Buckets: [60, 300, 600, 1800, 3600, 7200, 14400, 28800] seconds
+    // Read histogram from Redis
+    const histData = await redis.hgetall('metrics:histogram:session_duration');
+    const bucketBounds = [60, 300, 600, 1800, 3600, 7200, 14400, 28800]; // seconds
+    const bucketCounts = [];
+    let totalSessions = 0;
+    for (let i = 0; i <= bucketBounds.length; i++) {
+      const count = parseInt(histData[i.toString()] || '0', 10);
+      bucketCounts.push(count);
+      totalSessions += count;
+    }
+
+    // Build survival function: P(session lasts > T seconds)
+    // survival[i] = fraction of sessions lasting longer than bucketBounds[i]
+    function survivalAt(seconds) {
+      if (totalSessions === 0) return 0.5; // no data, assume 50%
+      let ended = 0;
+      for (let i = 0; i < bucketBounds.length; i++) {
+        if (seconds <= bucketBounds[i]) {
+          // Interpolate within this bucket
+          const prevBound = i === 0 ? 0 : bucketBounds[i - 1];
+          const fraction = (seconds - prevBound) / (bucketBounds[i] - prevBound);
+          ended += bucketCounts[i] * fraction;
+          return (totalSessions - ended) / totalSessions;
+        }
+        ended += bucketCounts[i];
+      }
+      // Beyond last bucket
+      const remaining = totalSessions - ended;
+      // Assume exponential decay beyond 8h with half-life of 4h
+      const beyondSeconds = seconds - bucketBounds[bucketBounds.length - 1];
+      const halfLife = 4 * 3600;
+      return (remaining / totalSessions) * Math.pow(0.5, beyondSeconds / halfLife);
+    }
+
+    // Compute estimated online players using cohort survival
+    // Cohort: players who started in each time slice
+    // arrivals_in_slice = window[i] - window[i-1]
+    // P(still playing) = survival(midpoint of slice)
+    const cohorts = [
+      { label: '0-5m',   arrivals: windowCounts['5m'],                                  midpointSec: 2.5 * 60 },
+      { label: '5-15m',  arrivals: windowCounts['15m'] - windowCounts['5m'],             midpointSec: 10 * 60 },
+      { label: '15-30m', arrivals: windowCounts['30m'] - windowCounts['15m'],            midpointSec: 22.5 * 60 },
+      { label: '30m-1h', arrivals: windowCounts['1h']  - windowCounts['30m'],            midpointSec: 45 * 60 },
+      { label: '1-2h',   arrivals: windowCounts['2h']  - windowCounts['1h'],             midpointSec: 90 * 60 },
+      { label: '2-4h',   arrivals: windowCounts['4h']  - windowCounts['2h'],             midpointSec: 180 * 60 }
+    ];
+
+    let estimatedOnline = 0;
+    const cohortDetails = [];
+    for (const c of cohorts) {
+      const prob = survivalAt(c.midpointSec);
+      const expected = Math.round(c.arrivals * prob);
+      estimatedOnline += expected;
+      cohortDetails.push({
+        cohort: c.label,
+        arrivals: c.arrivals,
+        survivalProb: Math.round(prob * 1000) / 1000,
+        expectedActive: expected
+      });
+    }
+
+    // Also get heartbeat-confirmed count
+    const heartbeatCount = await redis.keys('player:state:*');
+    const confirmedOnline = heartbeatCount.length;
+
+    // Use the higher of estimated or confirmed (confirmed is a floor)
+    const realTimeOnline = Math.max(estimatedOnline, confirmedOnline);
+
+    // Get top servers (only for 1h window to keep it fast)
+    const minScore1h = now + sessionTtlMs - (60 * 60 * 1000);
+    const uuids1h = await redis.zrangebyscore('active:players', minScore1h, '+inf');
+    const serverCounts = {};
+    if (uuids1h.length > 0) {
+      const serverAudiences = await Promise.all(
+        uuids1h.map(uuid => redis.get(`${KEYS.PLAYER_SERVER}${uuid}`))
+      );
+      for (let i = 0; i < uuids1h.length; i++) {
+        const server = serverAudiences[i];
+        if (server && server !== 'hytale-client') {
+          serverCounts[server] = (serverCounts[server] || 0) + 1;
+        }
+      }
+    }
+
+    // Get server names for top 10
+    const sortedServers = Object.entries(serverCounts)
+      .sort(([,a], [,b]) => b - a)
+      .slice(0, 10);
+
+    let topServers = [];
+    if (sortedServers.length > 0) {
+      const names = await Promise.all(
+        sortedServers.map(([aud]) => redis.get(`${KEYS.SERVER_NAME}${aud}`))
+      );
+      topServers = sortedServers.map(([audience, players], i) => ({
+        audience,
+        name: names[i] || audience,
+        players
+      }));
+    }
+
+    // Build windows result (counts only, no UUID lists)
+    const result = {};
+    for (const [label] of windowDefs) {
+      result[label] = { players: windowCounts[label] };
+    }
+
+    return {
+      estimatedOnline: realTimeOnline,
+      confirmedOnline,
+      windows: result,
+      cohorts: cohortDetails,
+      survival: {
+        totalSessions,
+        buckets: bucketBounds.map((b, i) => ({
+          le: b,
+          label: b < 3600 ? `${b/60}m` : `${b/3600}h`,
+          count: bucketCounts[i]
+        })).concat([{ le: '+Inf', label: '8h+', count: bucketCounts[bucketBounds.length] }])
+      },
+      topServers,
+      timestamp: new Date().toISOString()
+    };
+  } catch (e) {
+    console.error('getActivityWindows error:', e.message);
+    return { estimatedOnline: 0, error: e.message };
+  }
+}
+
+/**
+ * Get total database stats - player base size, cosmetics, sessions, etc.
+ * Scans Redis key patterns to count total stored data.
+ */
+async function getDatabaseStats() {
+  if (!isConnected()) {
+    return { totalPlayers: 0, totalSessions: 0, totalServers: 0, totalUsernames: 0 };
+  }
+
+  try {
+    const countKeys = async (pattern) => {
+      let count = 0;
+      let cursor = '0';
+      do {
+        const [newCursor, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 5000);
+        cursor = newCursor;
+        count += keys.length;
+      } while (cursor !== '0');
+      return count;
+    };
+
+    // Count all key types in parallel
+    const [totalUsers, totalUsernames, totalSessions, totalServers, totalPlayerStates, totalHardware, dbSize] = await Promise.all([
+      countKeys(`${KEYS.USER}*`),
+      countKeys(`${KEYS.USERNAME}*`),
+      countKeys(`${KEYS.SESSION}*`),
+      countKeys(`${KEYS.SERVER_PLAYERS}*`),
+      countKeys('player:state:*'),
+      redis.scard('players:with_hardware'),
+      redis.dbsize()
+    ]);
+
+    // Count users with cosmetics (skin data)
+    // User data is stored as JSON in user:{uuid}, need to sample for cosmetics
+    let usersWithCosmetics = 0;
+    let sampleCount = 0;
+    let cursor = '0';
+    const sampleSize = Math.min(totalUsers, 500); // sample up to 500
+    do {
+      const [newCursor, keys] = await redis.scan(cursor, 'MATCH', `${KEYS.USER}*`, 'COUNT', 100);
+      cursor = newCursor;
+      for (const key of keys) {
+        if (sampleCount >= sampleSize) break;
+        try {
+          const data = await redis.get(key);
+          if (data) {
+            const parsed = JSON.parse(data);
+            if (parsed.skin || parsed.skins) {
+              usersWithCosmetics++;
+            }
+          }
+        } catch (e) { /* skip */ }
+        sampleCount++;
+      }
+      if (sampleCount >= sampleSize) break;
+    } while (cursor !== '0');
+
+    // Extrapolate if sampled
+    if (sampleCount > 0 && sampleCount < totalUsers) {
+      usersWithCosmetics = Math.round((usersWithCosmetics / sampleCount) * totalUsers);
+    }
+
+    return {
+      totalPlayers: totalUsers,
+      totalUsernames,
+      totalSessions,
+      totalServers: totalServers - (totalServers > 0 ? 1 : 0), // exclude hytale-client
+      playersWithState: totalPlayerStates,
+      playersWithHardware: totalHardware || 0,
+      playersWithCosmetics: usersWithCosmetics,
+      redisDbSize: dbSize,
+      timestamp: new Date().toISOString()
+    };
+  } catch (e) {
+    console.error('getDatabaseStats error:', e.message);
+    return { totalPlayers: 0, error: e.message };
+  }
+}
+
+// ============================================================================
 // CLEANUP FUNCTIONS
 // ============================================================================
 
@@ -2349,6 +2601,8 @@ module.exports = {
   trackActivePlayer,
   getActivePlayers,
   getActiveServers,
+  getActivityWindows,
+  getDatabaseStats,
 
   // Player search
   searchPlayers,

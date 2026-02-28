@@ -151,20 +151,28 @@ function generateIdentityToken(uuid, name, scopes = null, entitlements = ['game.
 /**
  * Generate session token for the game server
  * @param {string} uuid - User UUID
+ * @param {string} [name] - Username (included for name resolution on refresh)
  * @param {string} [requestHost] - Request host for dynamic issuer
  */
-function generateSessionToken(uuid, requestHost = null) {
+function generateSessionToken(uuid, name = null, requestHost = null) {
   const now = Math.floor(Date.now() / 1000);
   const exp = now + config.sessionTtl;
 
-  return generateToken({
+  const payload = {
     sub: uuid,
     scope: 'hytale:server',
     iat: now,
     exp: exp,
     iss: getIssuerUrl(requestHost),
     jti: crypto.randomUUID()
-  });
+  };
+
+  // Include name so token refresh can resolve the username
+  if (name && name !== 'Player') {
+    payload.name = name;
+  }
+
+  return generateToken(payload);
 }
 
 /**
@@ -230,6 +238,39 @@ function generateAccessToken(uuid, name, audience, certFingerprint = null, scope
 }
 
 /**
+ * Verify a JWT token signature and return parsed payload.
+ * Returns null if signature is invalid or token is expired.
+ */
+function verifyToken(tokenString) {
+  try {
+    if (!publicKey || !tokenString) return null;
+    const parts = tokenString.split('.');
+    if (parts.length !== 3) return null;
+
+    const signingInput = `${parts[0]}.${parts[1]}`;
+    const signature = Buffer.from(parts[2], 'base64url');
+    const valid = crypto.verify(null, Buffer.from(signingInput), publicKey, signature);
+    if (!valid) return null;
+
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+
+    // Check expiry
+    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) return null;
+
+    return {
+      uuid: payload.sub,
+      name: payload.username || payload.name,
+      scope: payload.scope,
+      aud: payload.aud,
+      iss: payload.iss,
+      exp: payload.exp,
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
  * Extract UUID and name from a JWT token string
  */
 function parseToken(tokenString) {
@@ -286,6 +327,7 @@ module.exports = {
   generateAuthorizationGrant,
   generateAccessToken,
   parseToken,
+  verifyToken,
   extractServerAudienceFromHeaders,
   normalizeScopes,
 };

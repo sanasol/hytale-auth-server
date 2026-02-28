@@ -215,9 +215,9 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
 
   // ====== Game session endpoints ======
 
-  // Game session endpoints
-  if (urlPath === '/game-session/new') {
-    routes.session.handleGameSessionNew(req, res, body, uuid, name);
+  // Game session endpoints (POST /game-session is alias for /game-session/new — used by HyPrism)
+  if (urlPath === '/game-session/new' || (urlPath === '/game-session' && req.method === 'POST')) {
+    await routes.session.handleGameSessionNew(req, res, body, uuid, name);
     return;
   }
 
@@ -227,45 +227,45 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
   }
 
   if (urlPath === '/game-session/child' || urlPath.includes('/game-session/child')) {
-    routes.session.handleGameSessionChild(req, res, body, uuid, name);
+    await routes.session.handleGameSessionChild(req, res, body, uuid, name);
     return;
   }
 
   // Authorization grant endpoint
   if (urlPath === '/game-session/authorize' || urlPath.includes('/authorize') || urlPath.includes('/auth-grant')) {
-    routes.session.handleAuthorizationGrant(req, res, body, uuid, name, headers);
+    await routes.session.handleAuthorizationGrant(req, res, body, uuid, name, headers);
     return;
   }
 
   // Token exchange endpoint
   if (urlPath === '/server-join/auth-token' || urlPath === '/game-session/exchange' || urlPath.includes('/auth-token')) {
-    routes.session.handleTokenExchange(req, res, body, uuid, name, headers);
+    await routes.session.handleTokenExchange(req, res, body, uuid, name, headers);
     return;
   }
 
   // Session/Auth endpoints (exclude admin paths)
   if ((urlPath.includes('/session') || urlPath.includes('/child')) && !urlPath.startsWith('/admin')) {
-    routes.session.handleSession(req, res, body, uuid, name);
+    await routes.session.handleSession(req, res, body, uuid, name);
     return;
   }
 
   if (urlPath.includes('/auth')) {
-    routes.session.handleAuth(req, res, body, uuid, name);
+    await routes.session.handleAuth(req, res, body, uuid, name);
     return;
   }
 
   if (urlPath.includes('/token')) {
-    routes.session.handleToken(req, res, body, uuid, name);
+    await routes.session.handleToken(req, res, body, uuid, name);
     return;
   }
 
   if (urlPath.includes('/validate') || urlPath.includes('/verify')) {
-    routes.session.handleValidate(req, res, body, uuid, name);
+    await routes.session.handleValidate(req, res, body, uuid, name);
     return;
   }
 
   if (urlPath.includes('/refresh')) {
-    routes.session.handleRefresh(req, res, body, uuid, name);
+    await routes.session.handleRefresh(req, res, body, uuid, name);
     return;
   }
 
@@ -390,6 +390,10 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     routes.adminPages.handleLogSubmissionsPage(req, res);
     return;
   }
+  if (urlPath === '/admin/page/identity') {
+    routes.adminPages.handleIdentityPage(req, res);
+    return;
+  }
 
   // Test page for head embed
   if (urlPath === '/test/head') {
@@ -440,6 +444,12 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
   if (urlPath.match(/^\/admin\/api\/log-submissions\/[^/]+$/)) {
     const id = urlPath.split('/')[4];
     await routes.logSubmissions.handleGetLogSubmission(req, res, id);
+    return;
+  }
+
+  // Activity windows API (real-time online counts)
+  if (urlPath === '/admin/api/activity') {
+    await routes.admin.handleActivityWindows(req, res);
     return;
   }
 
@@ -496,6 +506,42 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     await routes.admin.handleGetDownloadHistory(req, res, url);
     return;
   }
+  // Admin password management
+  if (urlPath.match(/^\/admin\/api\/players\/[^/]+\/password-status$/) && req.method === 'GET') {
+    const pwUuid = urlPath.split('/')[4];
+    await routes.admin.handleAdminPasswordStatus(req, res, pwUuid);
+    return;
+  }
+  if (urlPath.match(/^\/admin\/api\/players\/[^/]+\/password$/) && req.method === 'DELETE') {
+    const pwUuid = urlPath.split('/')[4];
+    await routes.admin.handleAdminPasswordRemove(req, res, pwUuid);
+    return;
+  }
+  // Admin username audit log
+  if (urlPath === '/admin/api/username-audit' && req.method === 'GET') {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const query = Object.fromEntries(urlObj.searchParams);
+    await routes.admin.handleAdminUsernameAudit(req, res, query);
+    return;
+  }
+  // Admin username lookup and release
+  if (urlPath.match(/^\/admin\/api\/username\/[^/]+$/) && req.method === 'GET') {
+    const username = decodeURIComponent(urlPath.split('/')[4]);
+    await routes.admin.handleAdminUsernameLookup(req, res, username);
+    return;
+  }
+  if (urlPath.match(/^\/admin\/api\/username\/[^/]+$/) && req.method === 'DELETE') {
+    const username = decodeURIComponent(urlPath.split('/')[4]);
+    await routes.admin.handleAdminUsernameRelease(req, res, username);
+    return;
+  }
+  // Admin clear lockout
+  if (urlPath.match(/^\/admin\/api\/players\/[^/]+\/clear-lockout$/) && req.method === 'POST') {
+    const lockoutUuid = urlPath.split('/')[4];
+    await routes.admin.handleAdminClearLockout(req, res, lockoutUuid);
+    return;
+  }
+
   if (urlPath === '/admin/api/settings/patches-cdn') {
     if (req.method === 'POST') {
       await routes.admin.handleSavePatchesCdn(req, res, body);
@@ -561,6 +607,41 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     return;
   }
 
+  // ====== Player password endpoints ======
+
+  // Password status (public)
+  if (urlPath.startsWith('/player/password/status/')) {
+    const pwUuid = urlPath.replace('/player/password/status/', '');
+    await routes.player.handlePasswordStatus(req, res, pwUuid);
+    return;
+  }
+
+  // Set password (requires bearer token)
+  if (urlPath === '/player/password/set' && req.method === 'POST') {
+    await routes.player.handlePasswordSet(req, res, body, headers);
+    return;
+  }
+
+  // Remove password (requires bearer token)
+  if (urlPath === '/player/password/remove' && req.method === 'POST') {
+    await routes.player.handlePasswordRemove(req, res, body, headers);
+    return;
+  }
+
+  // Identity protection check (public — used by DualAuth agent)
+  if (urlPath === '/api/check-identity') {
+    const query = Object.fromEntries(url.searchParams);
+    await routes.player.handleCheckIdentity(req, res, query);
+    return;
+  }
+
+  // Username reservation status (public)
+  if (urlPath.startsWith('/player/username/status/')) {
+    const checkUsername = decodeURIComponent(urlPath.replace('/player/username/status/', ''));
+    await routes.player.handleUsernameStatus(req, res, checkUsername);
+    return;
+  }
+
   // Profile lookup by UUID
   if (urlPath.startsWith('/profile/uuid/')) {
     const lookupUuid = urlPath.replace('/profile/uuid/', '');
@@ -597,6 +678,37 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
   // Log unknown endpoints with full details for debugging new game features
   const bodyKeys = body && typeof body === 'object' ? Object.keys(body).join(', ') : 'none';
   console.log(`Unknown endpoint: ${req.method} ${urlPath} | body keys: [${bodyKeys}] | uuid: ${uuid} | name: ${name}`);
+
+  // Password protection — catch-all also issues tokens, so require auth
+  const passwordService = require('./services/password');
+  const pwResult = await passwordService.verifyPassword(uuid, body.password || null);
+  if (!pwResult.ok) {
+    if (pwResult.lockedOut) {
+      sendJson(res, 429, { error: 'Too many failed attempts. Try again later.', lockoutSeconds: pwResult.lockoutSeconds });
+      return;
+    }
+    // Check if Bearer token proves prior auth
+    const authHeader = req.headers && req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.slice(7);
+      if (token && token.length >= 20) {
+        const tokenData = auth.verifyToken(token);
+        if (tokenData && tokenData.uuid === uuid) {
+          // Valid token — fall through to response below
+        } else {
+          sendJson(res, 401, { error: 'Password required', password_required: true, attemptsRemaining: pwResult.attemptsRemaining });
+          return;
+        }
+      } else {
+        sendJson(res, 401, { error: 'Password required', password_required: true, attemptsRemaining: pwResult.attemptsRemaining });
+        return;
+      }
+    } else {
+      sendJson(res, 401, { error: 'Password required', password_required: true, attemptsRemaining: pwResult.attemptsRemaining });
+      return;
+    }
+  }
+
   const requestHost = req.headers.host;
   const authGrant = auth.generateAuthorizationGrant(uuid, name, crypto.randomUUID(), null, requestHost);
   const accessToken = auth.generateIdentityToken(uuid, name, null, ['game.base'], requestHost);

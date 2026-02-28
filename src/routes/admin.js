@@ -1227,6 +1227,119 @@ async function handleGetDownloadHistory(req, res, url) {
   sendJson(res, 200, allHistory);
 }
 
+// ============================================================================
+// PATCHES CDN SETTINGS
+// ============================================================================
+
+/**
+ * Get patches CDN base URL
+ */
+async function handleGetPatchesCdn(req, res) {
+  const url = await storage.getPatchesCdnBaseUrl();
+  sendJson(res, 200, { patchesCdnBaseUrl: url, default: storage.DEFAULT_PATCHES_CDN_BASE_URL });
+}
+
+/**
+ * Save patches CDN base URL
+ */
+async function handleSavePatchesCdn(req, res, body) {
+  if (!body || typeof body.patchesCdnBaseUrl !== 'string') {
+    sendJson(res, 400, { error: 'Missing patchesCdnBaseUrl in request body' });
+    return;
+  }
+
+  const url = body.patchesCdnBaseUrl.trim();
+  if (!url) {
+    sendJson(res, 400, { error: 'URL cannot be empty' });
+    return;
+  }
+
+  const success = await storage.setPatchesCdnBaseUrl(url);
+  if (success) {
+    console.log('Patches CDN URL updated:', url);
+    sendJson(res, 200, { success: true, patchesCdnBaseUrl: url });
+  } else {
+    sendJson(res, 500, { error: 'Failed to save setting' });
+  }
+}
+
+/**
+ * Activity windows API - real-time online counts by time window
+ * GET /admin/api/activity
+ */
+async function handleActivityWindows(req, res) {
+  const activity = await storage.getActivityWindows();
+  const dbStats = await storage.getDatabaseStats();
+  sendJson(res, 200, { ...activity, database: dbStats });
+}
+
+/**
+ * Admin: Get password status for a player
+ */
+async function handleAdminPasswordStatus(req, res, uuid) {
+  const passwordService = require('../services/password');
+  const has = await passwordService.hasPassword(uuid);
+  const attempts = await passwordService.getAttemptCount(uuid);
+  const reservedUsername = await passwordService.getReservedUsername(uuid);
+  sendJson(res, 200, { hasPassword: has, attemptCount: attempts, reservedUsername: reservedUsername || null });
+}
+
+/**
+ * Admin: Remove password for a player
+ */
+async function handleAdminPasswordRemove(req, res, uuid) {
+  const passwordService = require('../services/password');
+  await passwordService.removePassword(uuid);
+  await passwordService.releaseUsername(uuid, 'admin', 'admin_reset');
+  console.log(`Admin removed password and username reservation for UUID: ${uuid}`);
+  sendJson(res, 200, { success: true });
+}
+
+/**
+ * Admin: Get username reservation audit log
+ */
+async function handleAdminUsernameAudit(req, res, query) {
+  const passwordService = require('../services/password');
+  const start = parseInt(query.start || '0');
+  const count = parseInt(query.count || '50');
+  const entries = await passwordService.getAuditLog(start, Math.min(count, 200));
+  sendJson(res, 200, { entries, start, count: entries.length });
+}
+
+/**
+ * Admin: Lookup username reservation details
+ */
+async function handleAdminUsernameLookup(req, res, username) {
+  const passwordService = require('../services/password');
+  const result = await passwordService.checkUsernameReservation(username);
+  sendJson(res, 200, result);
+}
+
+/**
+ * Admin: Release username reservation only (keeps password)
+ */
+async function handleAdminUsernameRelease(req, res, username) {
+  const passwordService = require('../services/password');
+  const reservation = await passwordService.checkUsernameReservation(username);
+  if (!reservation.reserved) {
+    sendJson(res, 404, { error: 'Username not reserved' });
+    return;
+  }
+  await passwordService.releaseUsername(reservation.ownerUuid, 'admin', 'admin_unclaim');
+  console.log(`Admin released username reservation: ${username} (was owned by ${reservation.ownerUuid})`);
+  sendJson(res, 200, { success: true, releasedFrom: reservation.ownerUuid });
+}
+
+/**
+ * Admin: Clear lockout (reset failed attempt counter)
+ */
+async function handleAdminClearLockout(req, res, uuid) {
+  const passwordService = require('../services/password');
+  await passwordService.resetAttempts(uuid);
+  console.log(`Admin cleared lockout for UUID: ${uuid}`);
+  sendJson(res, 200, { success: true });
+}
+
 module.exports = {
   handleAdminLogin,
   handleAdminVerify,
@@ -1240,6 +1353,7 @@ module.exports = {
   handleAdminLogsStats,
   handleAdminCleanup,
   handleAdminDataCounts,
+  handleActivityWindows,
   // Optimized APIs
   handleActiveServersApi,
   handleActivePlayersApi,
@@ -1254,4 +1368,15 @@ module.exports = {
   handleSaveDownloadLinks,
   handleGetDownloadStats,
   handleGetDownloadHistory,
+  // Patches CDN
+  handleGetPatchesCdn,
+  handleSavePatchesCdn,
+  // Password management
+  handleAdminPasswordStatus,
+  handleAdminPasswordRemove,
+  handleAdminUsernameAudit,
+  // Username management
+  handleAdminUsernameLookup,
+  handleAdminUsernameRelease,
+  handleAdminClearLockout,
 };

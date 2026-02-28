@@ -45,7 +45,7 @@ function handleServerAutoAuth(req, res, body) {
     requestHost
   );
 
-  const sessionToken = auth.generateSessionToken(serverUuid, requestHost);
+  const sessionToken = auth.generateSessionToken(serverUuid, serverName, requestHost);
 
   // Register the server session
   storage.registerSession(sessionToken, serverUuid, serverName, serverId);
@@ -279,7 +279,7 @@ async function handleDeviceCodeExchange(req, res, body) {
     requestHost
   );
 
-  const refreshToken = auth.generateSessionToken(serverUuid, requestHost);
+  const refreshToken = auth.generateSessionToken(serverUuid, serverName, requestHost);
   const idToken = auth.generateIdentityToken(serverUuid, serverName, 'openid hytale:server', ['game.base'], requestHost);
 
   // Clean up device code
@@ -322,7 +322,7 @@ function handleTokenRefresh(req, res, body) {
     requestHost
   );
 
-  const newRefreshToken = auth.generateSessionToken(serverUuid, requestHost);
+  const newRefreshToken = auth.generateSessionToken(serverUuid, serverName, requestHost);
 
   sendJson(res, 200, {
     access_token: accessToken,
@@ -360,7 +360,7 @@ function handleAuthCodeExchange(req, res, body) {
     requestHost
   );
 
-  const refreshToken = auth.generateSessionToken(serverUuid, requestHost);
+  const refreshToken = auth.generateSessionToken(serverUuid, serverName, requestHost);
   const idToken = auth.generateIdentityToken(serverUuid, serverName, 'openid hytale:server', ['game.base'], requestHost);
 
   sendJson(res, 200, {

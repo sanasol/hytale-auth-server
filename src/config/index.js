@@ -38,6 +38,12 @@ const config = {
     USERNAME: 'username:',
     SERVER_NAME: 'servername:',
     ADMIN_TOKEN: 'admintoken:',
+    PLAYER_PASSWORD: 'playerpassword:',
+    PASSWORD_ATTEMPTS: 'pwattempts:',
+    USERNAME_RESERVED: 'username_reserved:',
+    UUID_USERNAME: 'uuid_username:',
+    USERNAME_AUDIT: 'username_audit',
+    PASSWORD_SET_RATELIMIT: 'pwset_ratelimit:',
   },
 };
 
@@ -48,7 +54,7 @@ config.downloadsDir = process.env.DOWNLOADS_DIR || path.join(config.dataDir, 'do
 config.logSubmissionsDir = path.join(config.dataDir, 'log-submissions');
 
 // Telegram notifications
-config.telegramBotToken = process.env.TELEGRAM_BOT_TOKEN || '8690465007:AAGNi9X8oMMnDp_7Idj4VkPc0QYqaHlec0U';
-config.telegramChannelId = process.env.TELEGRAM_CHANNEL_ID || '-1003774965623';
+config.telegramBotToken = process.env.TELEGRAM_BOT_TOKEN || '';
+config.telegramChannelId = process.env.TELEGRAM_CHANNEL_ID || '';
 
 module.exports = config;
