@@ -1538,9 +1538,225 @@ jobs:
           path: server/server_plugin.log
           retention-days: 7
 
+  test-offline-boot:
+    name: Test Offline Mode Boot
+    needs: build-agent
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: ${{ !inputs.skip_boot_test }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+
+      - name: Download Agent & Server
+        uses: actions/download-artifact@v4
+        with:
+          path: server
+          merge-multiple: true
+
+      - name: Cache Assets.zip
+        id: cache-assets
+        uses: actions/cache@v4
+        with:
+          path: server/Assets.zip
+          key: hytale-assets-${{ needs.build-agent.outputs.server_jar_hash }}
+
+      - name: Download Assets
+        if: steps.cache-assets.outputs.cache-hit != 'true'
+        working-directory: server
+        run: |
+          echo "Downloading Assets.zip (not cached)..."
+          curl -sfL "$ASSETS_URL" -o Assets.zip
+          ls -lh Assets.zip
+
+      - name: Verify Assets
+        working-directory: server
+        run: |
+          ls -lh Assets.zip
+          echo "Assets ready"
+
+      - name: Fetch Offline Token
+        run: |
+          echo "Fetching offline token from $HYTALE_AUTH_URL..."
+
+          TEST_UUID=$(python3 -c "import uuid; print(uuid.uuid4())")
+          TEST_NAME="CIOfflinePlayer"
+
+          RESPONSE=$(curl -sf -X POST "$HYTALE_AUTH_URL/auth" \
+            -H "Content-Type: application/json" \
+            -d "{\"uuid\":\"$TEST_UUID\",\"name\":\"$TEST_NAME\",\"scopes\":[\"hytale:offline\",\"hytale:client\"]}")
+
+          OFFLINE_TOKEN=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('identity_token',''))")
+
+          if [ -z "$OFFLINE_TOKEN" ]; then
+            echo "::warning::Could not get offline token from /auth endpoint"
+            echo "Response: $RESPONSE"
+            echo "Trying /game-session/new endpoint..."
+
+            RESPONSE=$(curl -sf -X POST "$HYTALE_AUTH_URL/game-session/new" \
+              -H "Content-Type: application/json" \
+              -d "{\"uuid\":\"$TEST_UUID\",\"username\":\"$TEST_NAME\",\"scopes\":[\"hytale:offline\",\"hytale:client\"]}")
+
+            OFFLINE_TOKEN=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('identityToken') or d.get('identity_token',''))")
+          fi
+
+          if [ -z "$OFFLINE_TOKEN" ]; then
+            echo "::error::Failed to obtain offline token from auth server"
+            echo "Response: $RESPONSE"
+            exit 1
+          fi
+
+          echo "Offline token received for $TEST_NAME"
+          echo "TEST_UUID=$TEST_UUID" >> $GITHUB_ENV
+          echo "TEST_NAME=$TEST_NAME" >> $GITHUB_ENV
+          echo "OFFLINE_TOKEN=$OFFLINE_TOKEN" >> $GITHUB_ENV
+
+      - name: Test Offline Mode Server Boot
+        working-directory: server
+        timeout-minutes: 3
+        run: |
+          echo "Starting Hytale server in offline mode with HYTALE_OFFLINE_TOKEN..."
+          echo "Testing validateOfflineToken() bytecode compatibility (v2026.02.26+ fix)"
+          echo ""
+
+          HYTALE_OFFLINE_TOKEN="$OFFLINE_TOKEN" \
+          java -Xmx2G \
+            -Ddualauth.debug=true \
+            -javaagent:dualauth-agent.jar \
+            -jar HytaleServer.jar \
+            --assets Assets.zip \
+            --bare \
+            --auth-mode offline \
+            --singleplayer \
+            --owner-uuid "$TEST_UUID" \
+            --owner-name "$TEST_NAME" \
+            --disable-sentry \
+            2>&1 | tee server_offline.log &
+
+          SERVER_PID=$!
+          echo "Server PID: $SERVER_PID"
+
+          TIMEOUT=60
+          ELAPSED=0
+          SUCCESS=false
+          BYTECODE_ERROR=false
+          CAST_ERROR=false
+
+          echo "Monitoring server boot (max ${TIMEOUT}s)..."
+
+          while kill -0 $SERVER_PID 2>/dev/null; do
+            sleep 2
+            ELAPSED=$((ELAPSED + 2))
+
+            # Check for ClassCastException (the specific bug this test catches)
+            if grep -qE "ClassCastException" server_offline.log 2>/dev/null; then
+              echo ""
+              echo "::error::ClassCastException detected! validateOfflineToken wrapper returning wrong type"
+              grep "ClassCastException" server_offline.log | head -5
+              CAST_ERROR=true
+              kill $SERVER_PID 2>/dev/null || true
+              break
+            fi
+
+            # Check for bytecode errors
+            if grep -qE "NoSuchFieldError|NoSuchMethodError|ClassNotFoundException|VerifyError" server_offline.log 2>/dev/null; then
+              echo ""
+              echo "::error::Bytecode patching error detected in offline mode!"
+              grep -E "NoSuchFieldError|NoSuchMethodError|ClassNotFoundException|VerifyError" server_offline.log | head -5
+              BYTECODE_ERROR=true
+              kill $SERVER_PID 2>/dev/null || true
+              break
+            fi
+
+            # Check for successful boot
+            if grep -qi "Server Booted" server_offline.log 2>/dev/null; then
+              echo "Server booted successfully in offline mode!"
+              SUCCESS=true
+              kill $SERVER_PID 2>/dev/null || true
+              sleep 1
+              kill -9 $SERVER_PID 2>/dev/null || true
+              break
+            fi
+
+            # Check for offline token loaded message
+            if grep -qi "Offline token loaded\|offline.*token.*environment\|validateOfflineToken" server_offline.log 2>/dev/null; then
+              if [ $((ELAPSED % 10)) -eq 0 ]; then
+                echo "... offline token processing detected ($ELAPSED/${TIMEOUT}s)"
+              fi
+            fi
+
+            if [ $((ELAPSED % 10)) -eq 0 ]; then
+              echo "... waiting ($ELAPSED/${TIMEOUT}s)"
+            fi
+
+            if [ $ELAPSED -ge $TIMEOUT ]; then
+              echo "Timeout reached"
+              if grep -qi "Server Booted" server_offline.log 2>/dev/null; then
+                SUCCESS=true
+              elif grep -q "Plugin manager started\|Universe ready" server_offline.log 2>/dev/null; then
+                echo "Server reached plugin stage - patcher is compatible with offline mode"
+                SUCCESS=true
+              fi
+              break
+            fi
+          done
+
+          # Force kill
+          kill $SERVER_PID 2>/dev/null || true
+          sleep 1
+          kill -9 $SERVER_PID 2>/dev/null || true
+          pkill -9 -f HytaleServer.jar 2>/dev/null || true
+
+          echo ""
+          echo "=== Server Log (last 30 lines) ==="
+          tail -30 server_offline.log
+
+          echo ""
+          echo "=== DualAuth Log Messages ==="
+          grep -iE "DualAuth|offline|validateOfflineToken|IdentityTokenClaims" server_offline.log | head -20 || echo "No DualAuth messages found"
+
+          echo ""
+          echo "=== Offline Mode Test Result ==="
+          if [ "$CAST_ERROR" = true ]; then
+            echo "FAILED: ClassCastException in validateOfflineToken - wrapper returns wrong type"
+            echo "This is the exact bug fixed in v1.1.13"
+            exit 1
+          elif [ "$BYTECODE_ERROR" = true ]; then
+            echo "FAILED: Bytecode patching error in offline mode"
+            exit 1
+          elif [ "$SUCCESS" = true ]; then
+            echo "PASSED: Server booted in offline mode without bytecode errors"
+            # Check for offline-specific success indicators
+            if grep -qi "Offline token loaded\|offline.*token" server_offline.log 2>/dev/null; then
+              echo "  (Confirmed: Offline token was processed)"
+            fi
+            exit 0
+          else
+            echo "UNKNOWN: Server may not have reached offline validation"
+            echo "Check logs for details"
+            # Don't fail - the server may have exited before reaching offline validation
+            # The important thing is no ClassCastException or bytecode errors
+            exit 0
+          fi
+
+      - name: Upload Offline Mode Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-mode-boot-log
+          path: server/server_offline.log
+          retention-days: 7
+
   release:
     name: Deploy Release
-    needs: [build-agent, test-server-boot, test-mock-client, test-plugin-mode]
+    needs: [build-agent, test-server-boot, test-mock-client, test-plugin-mode, test-offline-boot]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     permissions:

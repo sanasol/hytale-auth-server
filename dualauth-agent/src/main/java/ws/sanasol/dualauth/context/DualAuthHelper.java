@@ -380,7 +380,7 @@ public class DualAuthHelper {
             // 2. Fallback via method name if descriptor missing/invalid
             if (targetClassName == null && methodName != null) {
                 String lower = methodName.toLowerCase();
-                if (lower.contains("identity")) {
+                if (lower.contains("identity") || lower.contains("offline")) {
                     targetClassName = "com.hypixel.hytale.server.core.auth.JWTValidator$IdentityTokenClaims";
                 } else if (lower.contains("session")) {
                     targetClassName = "com.hypixel.hytale.server.core.auth.JWTValidator$SessionTokenClaims";
