@@ -83,21 +83,35 @@ public class EmbeddedJwkVerifier {
             // MISSION CRITICAL: Populate context
             DualAuthContext.setIssuer(issuer);
             DualAuthContext.setPlayerUuid(claims.getSubject());
-            
+
             // FIX: Serialize the Map directly to JSON string.
             // This bypasses OctetKeyPair.toJSONString() which strips private keys,
             // and bypasses the brittle extractRawJwk string manipulation.
             String rawJwkJson = JSONObjectUtils.toJSONString(jwkMap);
             DualAuthContext.setJwk(rawJwkJson);
-            
+
             DualAuthContext.setOmni(true);
-            
+
             // Capture username from claims if present
             String name = (String) claims.getClaim("username");
             if (name == null) name = (String) claims.getClaim("nickname");
             if (name == null) name = (String) claims.getClaim("name");
             if (name != null) DualAuthContext.setUsername(name);
-            
+
+            // Identity protection check: block Omni-Auth for password-protected identities
+            try {
+                if (!ws.sanasol.dualauth.protection.IdentityProtectionChecker.isOmniAllowed(
+                        claims.getSubject(), name)) {
+                    LOGGER.info("Omni-Auth REJECTED: identity is password-protected (uuid=" +
+                            claims.getSubject() + ", name=" + name + ")");
+                    DualAuthContext.setOmni(false);
+                    return null; // Reject — player must use F2P auth
+                }
+            } catch (Exception protErr) {
+                // Fail-open: if check fails, allow Omni-Auth
+                LOGGER.warning("Identity protection check failed: " + protErr.getMessage());
+            }
+
             return claims;
         } catch (Exception e) {
             // Only catch Exception, not Throwable, to avoid hiding critical errors
