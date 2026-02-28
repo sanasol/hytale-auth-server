@@ -264,6 +264,10 @@ public class DualAuthAgent {
             .type(named("com.hypixel.hytale.logger.backend.HytaleLogFormatter"))
             .transform(new LoggingTransformer())
 
+            // 7. Chat Command System (authinfo, authlist)
+            .type(named("com.hypixel.hytale.server.core.command.system.CommandManager"))
+            .transform(new ChatCommandTransformer())
+
             .installOn(inst);
 
         System.out.println("DualAuth Hybrid Agent installed successfully.");
@@ -283,7 +287,8 @@ public class DualAuthAgent {
                 "com.hypixel.hytale.server.core.auth.SessionServiceClient",
                 "com.hypixel.hytale.server.core.auth.ServerAuthManager",
                 "com.hypixel.hytale.logger.backend.HytaleLogFormatter",
-                "com.hypixel.hytale.server.core.io.handlers.login.HandshakeHandler"
+                "com.hypixel.hytale.server.core.io.handlers.login.HandshakeHandler",
+                "com.hypixel.hytale.server.core.command.system.CommandManager"
             };
 
             for (Class<?> loadedClass : inst.getAllLoadedClasses()) {

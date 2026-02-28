@@ -1,5 +1,7 @@
 package ws.sanasol.dualauth.context;
 
+import java.util.Collections;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
 
@@ -215,9 +217,97 @@ public class DualAuthContext {
     public static boolean isF2P() {
         String issuer = getIssuer();
         if (issuer == null) return false;
-        
+
         // Check against F2P domain from config
         String f2pBase = ws.sanasol.dualauth.agent.DualAuthConfig.F2P_BASE_DOMAIN;
         return f2pBase != null && issuer.contains(f2pBase);
+    }
+
+    // ====== Player Identity Registry ======
+
+    /**
+     * Immutable record of a player's authentication info.
+     * Persists beyond ThreadLocal lifecycle for mod queries.
+     */
+    public static class PlayerAuthInfo {
+        public final String uuid;
+        public final String username;
+        public final boolean isF2P;
+        public final boolean isOmni;
+        public final String issuer;
+        public final long authenticatedAt;
+
+        public PlayerAuthInfo(String uuid, String username, String issuer, boolean isF2P, boolean isOmni) {
+            this.uuid = uuid;
+            this.username = username;
+            this.issuer = issuer;
+            this.isF2P = isF2P;
+            this.isOmni = isOmni;
+            this.authenticatedAt = System.currentTimeMillis();
+        }
+
+        @Override
+        public String toString() {
+            return "PlayerAuthInfo{uuid=" + uuid + ", username=" + username +
+                   ", isF2P=" + isF2P + ", isOmni=" + isOmni + ", issuer=" + issuer + "}";
+        }
+    }
+
+    private static final ConcurrentHashMap<String, PlayerAuthInfo> playerRegistry = new ConcurrentHashMap<>();
+
+    /**
+     * Register a player after successful authentication.
+     * Called from JWTValidatorTransformer on successful token validation.
+     */
+    public static void registerPlayer(String uuid, String username, String issuer, boolean isF2P, boolean isOmni) {
+        if (uuid == null) return;
+        PlayerAuthInfo info = new PlayerAuthInfo(uuid, username, issuer, isF2P, isOmni);
+        playerRegistry.put(uuid, info);
+        if (Boolean.getBoolean("dualauth.debug")) {
+            LOGGER.info("Player registered: " + info);
+        }
+    }
+
+    /**
+     * Unregister a player on disconnect.
+     */
+    public static void unregisterPlayer(String uuid) {
+        if (uuid == null) return;
+        PlayerAuthInfo removed = playerRegistry.remove(uuid);
+        if (removed != null && Boolean.getBoolean("dualauth.debug")) {
+            LOGGER.info("Player unregistered: " + removed.uuid);
+        }
+    }
+
+    /**
+     * Get auth info for a player by UUID.
+     * @return PlayerAuthInfo or null if not found
+     */
+    public static PlayerAuthInfo getPlayerInfo(String uuid) {
+        if (uuid == null) return null;
+        return playerRegistry.get(uuid);
+    }
+
+    /**
+     * Check if a player is F2P by UUID.
+     */
+    public static boolean isPlayerF2P(String uuid) {
+        PlayerAuthInfo info = getPlayerInfo(uuid);
+        return info != null && info.isF2P;
+    }
+
+    /**
+     * Check if a player is official (not F2P) by UUID.
+     */
+    public static boolean isPlayerOfficial(String uuid) {
+        PlayerAuthInfo info = getPlayerInfo(uuid);
+        return info != null && !info.isF2P;
+    }
+
+    /**
+     * Get an unmodifiable snapshot of all online players.
+     */
+    public static Map<String, PlayerAuthInfo> getOnlinePlayers() {
+        return Collections.unmodifiableMap(new ConcurrentHashMap<>(playerRegistry));
     }
 }

@@ -122,6 +122,20 @@ public class JWTValidatorTransformer implements net.bytebuddy.agent.builder.Agen
             if (entered != null) {
                 returned = entered;
             }
+
+            // Register player in the identity registry after successful validation
+            if (returned != null) {
+                try {
+                    String uuid = DualAuthContext.getPlayerUuid();
+                    String username = DualAuthContext.getUsername();
+                    String issuer = DualAuthContext.getIssuer();
+                    boolean isOmni = DualAuthContext.isOmni();
+                    boolean isF2P = DualAuthContext.isF2P();
+                    if (uuid != null) {
+                        DualAuthContext.registerPlayer(uuid, username, issuer, isF2P, isOmni);
+                    }
+                } catch (Exception ignored) {}
+            }
         }
     }
 

@@ -41,6 +41,11 @@ public class HandshakeHandlerTransformer implements net.bytebuddy.agent.builder.
             try {
                 String authUser = (String) DualAuthHelper.getF(thiz, "authenticatedUsername");
                 if (authUser == null) {
+                    // Unregister previous player from registry before resetting context
+                    String previousUuid = DualAuthContext.getPlayerUuid();
+                    if (previousUuid != null) {
+                        DualAuthContext.unregisterPlayer(previousUuid);
+                    }
                     DualAuthContext.resetForNewConnection();
                     String username = DualAuthHelper.extractUsername(thiz);
                     if (username != null && !username.trim().isEmpty()) {
@@ -52,6 +57,10 @@ public class HandshakeHandlerTransformer implements net.bytebuddy.agent.builder.
                 System.out.println("[DualAuthAgent] HandshakeEntryAdvice error: " + e.getMessage());
                 // Ensure context is reset even on error
                 try {
+                    String previousUuid = DualAuthContext.getPlayerUuid();
+                    if (previousUuid != null) {
+                        DualAuthContext.unregisterPlayer(previousUuid);
+                    }
                     DualAuthContext.resetForNewConnection();
                 } catch (Exception resetError) {
                     System.out.println("[DualAuthAgent] Failed to reset context after error: " + resetError.getMessage());
