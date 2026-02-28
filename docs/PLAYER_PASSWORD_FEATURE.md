@@ -273,7 +273,7 @@ Removes password, clears lockout counter, and releases username reservation.
 
 ### Name Lock
 - Password-protected UUIDs can only generate tokens for their registered username
-- Prevents impersonation even if someone knows the UUID + password
+- Prevents using a protected UUID with a different username (e.g., to evade bans or confuse other players)
 - Name changes require re-setting the password (which re-reserves the new name)
 
 ### Username Reservation
