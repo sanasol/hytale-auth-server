@@ -52,6 +52,10 @@ shadowJar {
     }
     
     relocate 'net.bytebuddy', 'ws.sanasol.dualauth.libs.bytebuddy'
+    relocate 'com.google', 'ws.sanasol.dualauth.libs.google'
+    relocate 'com.nimbusds', 'ws.sanasol.dualauth.libs.nimbusds'
+    relocate 'net.minidev', 'ws.sanasol.dualauth.libs.minidev'
+    relocate 'net.jcip', 'ws.sanasol.dualauth.libs.jcip'
 
     // CRITICAL: Exclude Hytale API stubs from final JAR
     // We only use these for compilation; at runtime Hytale provides the real classes
