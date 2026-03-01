@@ -52,10 +52,10 @@ shadowJar {
     }
     
     relocate 'net.bytebuddy', 'ws.sanasol.dualauth.libs.bytebuddy'
+    // Relocate com.google (Gson, Tink, Protobuf) — internal-only, no cross-boundary use
+    // DO NOT relocate com.nimbusds — agent accesses server's JWTValidator which returns
+    // Nimbus types (OctetKeyPair, JWKSet). Relocating would cause ClassCastException.
     relocate 'com.google', 'ws.sanasol.dualauth.libs.google'
-    relocate 'com.nimbusds', 'ws.sanasol.dualauth.libs.nimbusds'
-    relocate 'net.minidev', 'ws.sanasol.dualauth.libs.minidev'
-    relocate 'net.jcip', 'ws.sanasol.dualauth.libs.jcip'
 
     // CRITICAL: Exclude Hytale API stubs from final JAR
     // We only use these for compilation; at runtime Hytale provides the real classes
