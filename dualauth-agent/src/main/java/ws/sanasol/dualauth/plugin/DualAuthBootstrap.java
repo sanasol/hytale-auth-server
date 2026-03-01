@@ -73,6 +73,11 @@ public class DualAuthBootstrap extends JavaPlugin {
             }
 
             if (addedToBootstrap) {
+                // Also add to system CL so ByteBuddy's ClassFileLocator fallback works.
+                // Bootstrap-loaded classes have no code source, so ForJarFile.of() fails.
+                // The fallback ForClassLoader.ofSystemLoader() needs the JAR on system CL.
+                inst.appendToSystemClassLoaderSearch(new JarFile(currentJar));
+
                 // 4. REFLECTION TRAMPOLINE via BOOTSTRAP classloader (null = bootstrap CL)
                 // Load DualAuthAgent from bootstrap so ALL agent classes (DualAuthHelper,
                 // ByteBuddy, DualAuthContext, etc.) load from a single classloader.
