@@ -57,4 +57,7 @@ config.logSubmissionsDir = path.join(config.dataDir, 'log-submissions');
 config.telegramBotToken = process.env.TELEGRAM_BOT_TOKEN || '';
 config.telegramChannelId = process.env.TELEGRAM_CHANNEL_ID || '';
 
+// Log analyzer service
+config.logAnalyzerUrl = process.env.LOG_ANALYZER_URL || '';
+
 module.exports = config;

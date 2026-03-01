@@ -87,6 +87,20 @@ async function handleLogSubmit(req, res) {
   // Fire-and-forget Telegram notification
   telegram.sendLogNotification(metadata, filePath);
 
+  // Fire-and-forget: trigger AI analysis
+  if (config.logAnalyzerUrl) {
+    const http = require('http');
+    const payload = JSON.stringify({ id, filePath: `/app/data/log-submissions/${id}.zip`, metadata });
+    const aUrl = new URL(config.logAnalyzerUrl + '/analyze');
+    const aReq = http.request({
+      hostname: aUrl.hostname, port: aUrl.port, path: aUrl.pathname, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      timeout: 5000,
+    });
+    aReq.on('error', (err) => console.log(`[LogSubmit] Analyzer trigger failed: ${err.message}`));
+    aReq.end(payload);
+  }
+
   console.log(`[LogSubmit] ${id.substring(0, 8)} from ${username} (${platform} v${version}) ${body.length} bytes, ${fileCount} files`);
 
   sendJson(res, 200, {
