@@ -2252,7 +2252,7 @@ function handleSettingsPage(req, res) {
 }
 
 /**
- * Log Submissions page (Client Logs)
+ * Log Submissions page (Client Logs) — Enhanced with analysis results, cases database, follow-up
  */
 function handleLogSubmissionsPage(req, res) {
     const html = `<!DOCTYPE html>
@@ -2266,20 +2266,104 @@ function handleLogSubmissionsPage(req, res) {
     .submissions-table th, .submissions-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
     .submissions-table th { color: #888; font-size: 0.85em; text-transform: uppercase; }
     .submissions-table tr:hover { background: rgba(255,255,255,0.03); }
+    .submissions-table tr.expandable { cursor: pointer; }
     .sub-id { font-family: monospace; color: #00d4ff; font-size: 0.9em; }
     .sub-username { color: #fff; font-weight: 500; }
     .sub-platform { color: #b388ff; font-size: 0.85em; }
     .sub-size { color: #888; font-size: 0.85em; }
     .sub-date { color: #888; font-size: 0.85em; }
-    .btn-download { background: rgba(0,212,255,0.2); border: 1px solid rgba(0,212,255,0.3); color: #00d4ff; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em; margin-right: 4px; }
-    .btn-delete { background: rgba(255,100,100,0.2); border: 1px solid rgba(255,100,100,0.3); color: #ff6b6b; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
+    .btn-sm { padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em; border: 1px solid; margin-right: 4px; }
+    .btn-download { background: rgba(0,212,255,0.2); border-color: rgba(0,212,255,0.3); color: #00d4ff; }
+    .btn-delete { background: rgba(255,100,100,0.2); border-color: rgba(255,100,100,0.3); color: #ff6b6b; }
+    .btn-analyze { background: rgba(0,200,100,0.2); border-color: rgba(0,200,100,0.3); color: #0c8; }
+    .btn-ai { background: rgba(150,100,255,0.2); border-color: rgba(150,100,255,0.3); color: #a8f; }
+    .btn-followup { background: rgba(255,200,0,0.2); border-color: rgba(255,200,0,0.3); color: #fc0; }
     .search-box { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; padding: 8px 14px; border-radius: 6px; width: 300px; font-size: 0.9em; }
     .pagination { display: flex; gap: 8px; align-items: center; margin-top: 15px; justify-content: center; }
     .pagination button { background: rgba(255,255,255,0.1); border: none; color: #fff; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
     .pagination button:disabled { opacity: 0.3; cursor: default; }
     .pagination span { color: #888; font-size: 0.85em; }
-    .files-list { font-size: 0.8em; color: #888; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .files-list { font-size: 0.8em; color: #888; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .empty-state { text-align: center; padding: 40px; color: #666; }
+
+    /* Severity badges */
+    .severity-badge { padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; text-transform: uppercase; }
+    .severity-CRITICAL { background: rgba(255,50,50,0.3); color: #f55; }
+    .severity-HIGH { background: rgba(255,150,50,0.3); color: #fa5; }
+    .severity-MEDIUM { background: rgba(255,200,50,0.3); color: #fc5; }
+    .severity-LOW { background: rgba(100,200,255,0.3); color: #5cf; }
+    .severity-INFO { background: rgba(100,255,100,0.3); color: #5f5; }
+    .severity-none { background: rgba(100,100,100,0.3); color: #888; }
+
+    /* Source badges */
+    .source-badge { padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 500; }
+    .source-heuristic { background: rgba(0,200,100,0.2); color: #0c8; }
+    .source-claude { background: rgba(100,150,255,0.2); color: #69f; }
+
+    /* Status badges */
+    .status-badge { padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 500; cursor: pointer; }
+    .status-open { background: rgba(100,150,255,0.2); color: #69f; }
+    .status-fixed { background: rgba(0,200,100,0.2); color: #0c8; }
+    .status-wrong { background: rgba(255,80,80,0.2); color: #f55; }
+    .status-closed { background: rgba(150,150,150,0.2); color: #999; }
+    .status-launcher-fixed { background: rgba(0,200,200,0.2); color: #0cc; }
+    .status-select { padding: 3px 6px; border-radius: 5px; border: 1px solid #333; background: rgba(0,0,0,0.3); color: #fff; font-size: 0.75em; cursor: pointer; }
+
+    /* Tag chips */
+    .tag-chip { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; background: rgba(255,255,255,0.1); color: #aaa; margin-right: 3px; }
+
+    /* Analysis panel */
+    .analysis-panel {
+      display: none;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 15px;
+      margin: 8px 0;
+      font-size: 0.85em;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #ccc;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    .analysis-panel.visible { display: block; }
+
+    /* Follow-up section */
+    .followup-section { margin-top: 12px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px; }
+    .followup-input { display: flex; gap: 8px; }
+    .followup-input input { flex: 1; padding: 8px 12px; border-radius: 5px; border: 1px solid #333; background: rgba(0,0,0,0.3); color: #fff; font-size: 0.9em; }
+    .followup-response { margin-top: 10px; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 5px; white-space: pre-wrap; color: #aaa; }
+
+    /* Cases section */
+    .cases-table { width: 100%; border-collapse: collapse; }
+    .cases-table th, .cases-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 0.85em; }
+    .cases-table th { color: #888; text-transform: uppercase; font-size: 0.8em; }
+    .cases-table tr:hover { background: rgba(255,255,255,0.03); cursor: pointer; }
+    .filter-row { display: flex; gap: 10px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+    .filter-row select, .filter-row input { padding: 6px 10px; border-radius: 5px; border: 1px solid #333; background: rgba(0,0,0,0.3); color: #fff; font-size: 0.85em; }
+
+    /* Tabs */
+    .tab-bar { display: flex; gap: 2px; margin-bottom: 15px; }
+    .tab-btn { padding: 10px 20px; background: rgba(255,255,255,0.05); border: none; color: #888; cursor: pointer; border-radius: 8px 8px 0 0; font-size: 0.9em; }
+    .tab-btn.active { background: rgba(0,212,255,0.15); color: #00d4ff; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* Modal */
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 1000; justify-content: center; align-items: center; }
+    .modal-overlay.visible { display: flex; }
+    .modal { background: #1a1a2e; border: 1px solid rgba(255,255,255,0.15); border-radius: 12px; padding: 20px; max-width: 800px; width: 90%; max-height: 80vh; overflow-y: auto; }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+    .modal-close { background: none; border: none; color: #888; font-size: 1.5em; cursor: pointer; }
+    .modal-body { white-space: pre-wrap; word-break: break-word; color: #ccc; font-size: 0.85em; line-height: 1.5; }
+
+    /* Toast */
+    .toast { position: fixed; bottom: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; color: #fff; font-size: 0.9em; z-index: 9999; opacity: 0; transition: opacity 0.3s; }
+    .toast.show { opacity: 1; }
+    .toast.success { background: rgba(0, 200, 100, 0.9); }
+    .toast.error { background: rgba(255, 80, 80, 0.9); }
+    .toast.info { background: rgba(0, 150, 255, 0.9); }
   </style>
 </head>
 <body>
@@ -2297,25 +2381,107 @@ function handleLogSubmissionsPage(req, res) {
   <div id="mainContent" class="hidden">
     ${navHtml('log-submissions')}
     <div class="container">
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">Client Log Submissions</span>
-          <div style="display:flex;gap:10px;align-items:center;">
-            <input type="text" class="search-box" id="searchInput" placeholder="Search by username or ID..." oninput="debouncedSearch()">
-            <button class="btn btn-secondary" onclick="loadSubmissions(1)">Refresh</button>
+
+      <!-- Tabs -->
+      <div class="tab-bar">
+        <button class="tab-btn active" onclick="switchTab('submissions')">Log Submissions</button>
+        <button class="tab-btn" onclick="switchTab('cases')">Cases Database</button>
+      </div>
+
+      <!-- Tab 1: Submissions -->
+      <div class="tab-content active" id="tab-submissions">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Client Log Submissions</span>
+            <div style="display:flex;gap:10px;align-items:center;">
+              <input type="text" class="search-box" id="searchInput" placeholder="Search by username or ID..." oninput="debouncedSearch()">
+              <button class="btn btn-secondary" onclick="loadSubmissions(1)">Refresh</button>
+              <button class="btn btn-analyze" onclick="reprocessAll()">Re-process All</button>
+            </div>
           </div>
+          <div id="submissionsList">Loading...</div>
         </div>
-        <div id="submissionsList">Loading...</div>
+      </div>
+
+      <!-- Tab 2: Cases Database -->
+      <div class="tab-content" id="tab-cases">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Cases Database</span>
+            <button class="btn btn-secondary" onclick="loadCases()">Refresh</button>
+          </div>
+          <div class="filter-row">
+            <select id="caseSeverityFilter" onchange="filterCases()">
+              <option value="">All Severities</option>
+              <option value="CRITICAL">Critical</option>
+              <option value="HIGH">High</option>
+              <option value="MEDIUM">Medium</option>
+              <option value="LOW">Low</option>
+              <option value="INFO">Info</option>
+            </select>
+            <select id="caseStatusFilter" onchange="filterCases()">
+              <option value="">All Statuses</option>
+              <option value="open">Open</option>
+              <option value="fixed">Fixed</option>
+              <option value="launcher-fixed">Launcher Fixed</option>
+              <option value="wrong">Wrong Diagnosis</option>
+              <option value="closed">Closed</option>
+            </select>
+            <input type="text" id="caseTagFilter" placeholder="Filter by tag..." oninput="filterCases()" style="min-width:200px">
+          </div>
+          <div id="casesList">Loading...</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Case detail modal -->
+  <div class="modal-overlay" id="caseModal">
+    <div class="modal">
+      <div class="modal-header">
+        <span class="card-title" id="caseModalTitle">Case Details</span>
+        <button class="modal-close" onclick="closeCaseModal()">&times;</button>
+      </div>
+      <div class="modal-body" id="caseModalBody"></div>
+      <div class="followup-section">
+        <div class="followup-input">
+          <input type="text" id="followupInput" placeholder="Ask a follow-up question about this case..." onkeyup="if(event.key==='Enter')sendFollowup()">
+          <button class="btn btn-followup" onclick="sendFollowup()">Ask</button>
+        </div>
+        <div id="followupResponse"></div>
       </div>
     </div>
   </div>
+
+  <div class="toast" id="toast"></div>
 
   <script>
     ${sharedScripts}
 
     let currentPage = 1;
     let searchTimeout;
+    let allCases = [];
+    let currentCaseId = null;
 
+    // ===== Toast =====
+    function showToast(msg, type) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.className = 'toast show ' + (type || 'success');
+      setTimeout(() => t.className = 'toast', 3000);
+    }
+
+    // ===== Tabs =====
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      document.getElementById('tab-' + tab).classList.add('active');
+      event.target.classList.add('active');
+      if (tab === 'cases') loadCases();
+    }
+
+    // ===== Submissions =====
     function debouncedSearch() {
       clearTimeout(searchTimeout);
       searchTimeout = setTimeout(() => loadSubmissions(1), 300);
@@ -2330,9 +2496,7 @@ function handleLogSubmissionsPage(req, res) {
         const params = new URLSearchParams({ page, limit: 20 });
         if (search) params.set('search', search);
 
-        const resp = await fetch('/admin/api/log-submissions?' + params, {
-          headers: { 'x-admin-token': adminToken }
-        });
+        const resp = await authFetch('/admin/api/log-submissions?' + params);
         const data = await resp.json();
 
         if (!data.submissions || data.submissions.length === 0) {
@@ -2341,33 +2505,35 @@ function handleLogSubmissionsPage(req, res) {
         }
 
         let html = '<table class="submissions-table"><thead><tr>' +
-          '<th>ID</th><th>Username</th><th>Platform</th><th>Version</th><th>Files</th><th>Size</th><th>Date</th><th>Actions</th>' +
+          '<th>ID</th><th>Username</th><th>Platform</th><th>Analysis</th><th>Source</th><th>Size</th><th>Date</th><th>Actions</th>' +
           '</tr></thead><tbody>';
 
         for (const sub of data.submissions) {
           const shortId = (sub.id || '').substring(0, 8);
           const date = new Date(sub.createdAt).toLocaleString();
           const size = formatBytes(parseInt(sub.fileSize) || 0);
-          const filesStr = (sub.files || '').split(',').filter(Boolean).join(', ');
+          const rowId = 'row-' + shortId;
 
-          html += '<tr>' +
+          html += '<tr class="expandable" onclick="toggleAnalysis(\\'' + sub.id + '\\', \\'' + rowId + '\\')">' +
             '<td class="sub-id">' + shortId + '</td>' +
             '<td class="sub-username">' + escapeHtml(sub.username || 'unknown') + '</td>' +
-            '<td class="sub-platform">' + escapeHtml(sub.platform || '-') + '</td>' +
-            '<td>' + escapeHtml(sub.version || '-') + '</td>' +
-            '<td class="files-list" title="' + escapeHtml(filesStr) + '">' + (parseInt(sub.fileCount) || 0) + ' files</td>' +
+            '<td class="sub-platform">' + escapeHtml(sub.platform || '-') + ' ' + escapeHtml(sub.version || '') + '</td>' +
+            '<td id="sev-' + shortId + '"><span class="severity-badge severity-none">...</span></td>' +
+            '<td id="src-' + shortId + '">-</td>' +
             '<td class="sub-size">' + size + '</td>' +
             '<td class="sub-date">' + date + '</td>' +
-            '<td>' +
-              '<button class="btn-download" onclick="downloadSub(\\'' + sub.id + '\\')">Download</button>' +
-              '<button class="btn-delete" onclick="deleteSub(\\'' + sub.id + '\\')">Delete</button>' +
+            '<td onclick="event.stopPropagation()">' +
+              '<button class="btn-sm btn-download" onclick="downloadSub(\\'' + sub.id + '\\')">DL</button>' +
+              '<button class="btn-sm btn-analyze" onclick="reanalyze(\\'' + sub.id + '\\', false)">Re-analyze</button>' +
+              '<button class="btn-sm btn-ai" onclick="reanalyze(\\'' + sub.id + '\\', true)">AI</button>' +
+              '<button class="btn-sm btn-delete" onclick="deleteSub(\\'' + sub.id + '\\')">Del</button>' +
             '</td>' +
           '</tr>';
+          html += '<tr><td colspan="8"><div class="analysis-panel" id="' + rowId + '">Loading analysis...</div></td></tr>';
         }
 
         html += '</tbody></table>';
 
-        // Pagination
         if (data.totalPages > 1) {
           html += '<div class="pagination">';
           html += '<button ' + (page <= 1 ? 'disabled' : '') + ' onclick="loadSubmissions(' + (page - 1) + ')">Prev</button>';
@@ -2377,8 +2543,168 @@ function handleLogSubmissionsPage(req, res) {
         }
 
         container.innerHTML = html;
+
+        // Load analysis badges for visible submissions
+        for (const sub of data.submissions) {
+          loadAnalysisBadge(sub.id);
+        }
       } catch (err) {
         container.innerHTML = '<div class="empty-state">Error loading submissions: ' + err.message + '</div>';
+      }
+    }
+
+    async function loadAnalysisBadge(subId) {
+      const shortId = subId.substring(0, 8);
+      try {
+        const resp = await authFetch('/admin/api/log-submissions/' + subId + '/analysis');
+        const data = await resp.json();
+        const sevEl = document.getElementById('sev-' + shortId);
+        const srcEl = document.getElementById('src-' + shortId);
+        if (!sevEl) return;
+
+        if (data.found) {
+          const sev = data.severity || 'UNKNOWN';
+          sevEl.innerHTML = '<span class="severity-badge severity-' + sev + '">' + sev + '</span>';
+          if (data.tags && data.tags.length > 0) {
+            sevEl.innerHTML += ' ' + data.tags.slice(0, 3).map(t => '<span class="tag-chip">' + escapeHtml(t) + '</span>').join('');
+          }
+          const src = data.source || 'claude';
+          srcEl.innerHTML = '<span class="source-badge source-' + src + '">' + (src === 'heuristic' ? 'Auto' : 'AI') + '</span>';
+        } else {
+          sevEl.innerHTML = '<span class="severity-badge severity-none">No analysis</span>';
+          srcEl.innerHTML = '-';
+        }
+      } catch {}
+    }
+
+    async function toggleAnalysis(subId, rowId) {
+      const panel = document.getElementById(rowId);
+      if (!panel) return;
+
+      if (panel.classList.contains('visible')) {
+        panel.classList.remove('visible');
+        return;
+      }
+
+      panel.classList.add('visible');
+      panel.textContent = 'Loading analysis...';
+
+      try {
+        const resp = await authFetch('/admin/api/log-submissions/' + subId + '/analysis');
+        const data = await resp.json();
+
+        if (data.found && data.content) {
+          const shortId = (data.id || subId.substring(0, 8));
+          let html = escapeHtml(data.content);
+          html += '<div class="followup-section">';
+          html += '<div class="followup-input">';
+          html += '<input type="text" id="fu-' + shortId + '" placeholder="Ask a follow-up question..." onkeyup="if(event.key===\\'Enter\\')sendInlineFollowup(\\'' + shortId + '\\')">';
+          html += '<button class="btn-sm btn-followup" onclick="sendInlineFollowup(\\'' + shortId + '\\')">Ask</button>';
+          html += '</div>';
+          html += '<div id="fu-resp-' + shortId + '"></div>';
+          html += '</div>';
+          panel.innerHTML = html;
+        } else {
+          panel.textContent = 'No analysis available. Click "Re-analyze" to run analysis.';
+        }
+      } catch (err) {
+        panel.textContent = 'Error loading analysis: ' + err.message;
+      }
+    }
+
+    // Poll a follow-up job until completion
+    async function pollFollowupJob(jobId, respDiv, questionText, onComplete) {
+      const poll = async () => {
+        try {
+          const resp = await authFetch('/admin/api/followup-status/' + jobId);
+          const data = await resp.json();
+          if (data.status === 'completed') {
+            respDiv.innerHTML += '<div class="followup-response"><strong>Q:</strong> ' + escapeHtml(questionText) + '<br><br><strong>A:</strong> ' + escapeHtml(data.response) + '</div>';
+            showToast('Follow-up response received', 'success');
+            if (onComplete) onComplete();
+            return;
+          }
+          if (data.status === 'failed') {
+            respDiv.innerHTML = '<div class="followup-response" style="color:#f55">Error: ' + escapeHtml(data.error || 'Analysis failed') + '</div>';
+            if (onComplete) onComplete();
+            return;
+          }
+          // Still processing — poll again in 5s
+          setTimeout(poll, 5000);
+        } catch (err) {
+          respDiv.innerHTML = '<div class="followup-response" style="color:#f55">Poll error: ' + escapeHtml(err.message) + '</div>';
+          if (onComplete) onComplete();
+        }
+      };
+      poll();
+    }
+
+    async function sendInlineFollowup(caseId) {
+      const input = document.getElementById('fu-' + caseId);
+      const respDiv = document.getElementById('fu-resp-' + caseId);
+      if (!input || !respDiv) return;
+
+      const question = input.value.trim();
+      if (!question) return;
+
+      respDiv.innerHTML = '<div class="followup-response" style="color:#888">Asking Claude... (polling every 5s, may take a few minutes)</div>';
+      input.disabled = true;
+
+      try {
+        const resp = await authFetch('/admin/api/log-submissions/' + caseId + '/followup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ caseId, question })
+        });
+        const data = await resp.json();
+        if (data.jobId) {
+          input.value = '';
+          pollFollowupJob(data.jobId, respDiv, question, () => { input.disabled = false; });
+        } else if (data.error) {
+          respDiv.innerHTML = '<div class="followup-response" style="color:#f55">Error: ' + escapeHtml(data.error) + '</div>';
+          input.disabled = false;
+        }
+      } catch (err) {
+        respDiv.innerHTML = '<div class="followup-response" style="color:#f55">Error: ' + escapeHtml(err.message) + '</div>';
+        input.disabled = false;
+      }
+    }
+
+    async function reanalyze(subId, forceAI) {
+      showToast('Queuing re-analysis' + (forceAI ? ' with AI' : '') + '...', 'info');
+      try {
+        const filePath = '/app/data/log-submissions/' + subId + '.zip';
+        const metaResp = await authFetch('/admin/api/log-submissions/' + subId);
+        const metadata = await metaResp.json();
+
+        const resp = await fetch('/admin/api/log-submissions/' + subId + '/reanalyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminToken },
+          body: JSON.stringify({ id: subId, filePath, metadata, forceAI })
+        });
+        const data = await resp.json();
+        if (data.queued) {
+          showToast('Analysis queued successfully', 'success');
+        } else {
+          showToast('Failed to queue analysis', 'error');
+        }
+      } catch (err) {
+        showToast('Re-analyze failed: ' + err.message, 'error');
+      }
+    }
+
+    async function reprocessAll() {
+      if (!confirm('Re-process all past log submissions? This may take a while.')) return;
+      showToast('Queuing re-processing...', 'info');
+      try {
+        const resp = await fetch('/admin/api/log-submissions/reprocess', {
+          method: 'POST',
+          headers: { 'X-Admin-Token': adminToken }
+        });
+        const data = await resp.json();
+        showToast('Queued ' + (data.queued || 0) + ' submissions, skipped ' + (data.skipped || 0), 'success');
+      } catch (err) {
+        showToast('Re-process failed: ' + err.message, 'error');
       }
     }
 
@@ -2389,16 +2715,169 @@ function handleLogSubmissionsPage(req, res) {
     async function deleteSub(id) {
       if (!confirm('Delete this log submission?')) return;
       try {
-        await fetch('/admin/api/log-submissions/' + id, {
-          method: 'DELETE',
-          headers: { 'x-admin-token': adminToken }
-        });
+        await authFetch('/admin/api/log-submissions/' + id, { method: 'DELETE' });
         loadSubmissions(currentPage);
       } catch (err) {
-        alert('Delete failed: ' + err.message);
+        showToast('Delete failed: ' + err.message, 'error');
       }
     }
 
+    // ===== Cases Database =====
+    async function loadCases() {
+      const container = document.getElementById('casesList');
+      try {
+        const resp = await authFetch('/admin/api/cases');
+        const data = await resp.json();
+        allCases = data.cases || [];
+        renderCases(allCases);
+      } catch (err) {
+        container.innerHTML = '<div class="empty-state">Error: ' + err.message + '</div>';
+      }
+    }
+
+    function filterCases() {
+      const severity = document.getElementById('caseSeverityFilter').value;
+      const status = document.getElementById('caseStatusFilter').value;
+      const tag = document.getElementById('caseTagFilter').value.toLowerCase();
+      let filtered = allCases;
+      if (severity) filtered = filtered.filter(c => c.severity === severity);
+      if (status) filtered = filtered.filter(c => (c.status || 'open') === status);
+      if (tag) filtered = filtered.filter(c => (c.tags || []).some(t => t.toLowerCase().includes(tag)));
+      renderCases(filtered);
+    }
+
+    function renderCases(cases) {
+      const container = document.getElementById('casesList');
+      if (!cases.length) {
+        container.innerHTML = '<div class="empty-state">No cases found</div>';
+        return;
+      }
+
+      // Sort newest first
+      const sorted = [...cases].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+      let html = '<table class="cases-table"><thead><tr>' +
+        '<th>Date</th><th>ID</th><th>User</th><th>Severity</th><th>Status</th><th>Tags</th><th>Source</th><th>Actions</th>' +
+        '</tr></thead><tbody>';
+
+      for (const c of sorted) {
+        const sev = c.severity || 'UNKNOWN';
+        const src = c.source || 'claude';
+        const st = c.status || 'open';
+        const tags = (c.tags || []).map(t => '<span class="tag-chip">' + escapeHtml(t) + '</span>').join(' ');
+        const statusLabels = { open: 'Open', fixed: 'Fixed', wrong: 'Wrong', closed: 'Closed', 'launcher-fixed': 'Launcher Fixed' };
+
+        html += '<tr onclick="openCaseModal(\\'' + c.id + '\\')">' +
+          '<td class="sub-date">' + (c.date || '-') + '</td>' +
+          '<td class="sub-id">' + (c.id || '-') + '</td>' +
+          '<td class="sub-username">' + escapeHtml(c.username || '-') + '</td>' +
+          '<td><span class="severity-badge severity-' + sev + '">' + sev + '</span></td>' +
+          '<td onclick="event.stopPropagation()"><select class="status-select" onchange="updateCaseStatus(\\'' + c.id + '\\', this.value)">' +
+            ['open','fixed','launcher-fixed','wrong','closed'].map(s =>
+              '<option value="' + s + '"' + (s === st ? ' selected' : '') + '>' + (statusLabels[s] || s) + '</option>'
+            ).join('') +
+          '</select></td>' +
+          '<td>' + tags + '</td>' +
+          '<td><span class="source-badge source-' + src + '">' + (src === 'heuristic' ? 'Auto' : 'AI') + '</span></td>' +
+          '<td onclick="event.stopPropagation()">' +
+            '<button class="btn-sm btn-delete" onclick="deleteCase(\\'' + c.id + '\\')">Delete</button>' +
+          '</td>' +
+        '</tr>';
+      }
+
+      html += '</tbody></table>';
+      container.innerHTML = html;
+    }
+
+    async function openCaseModal(caseId) {
+      currentCaseId = caseId;
+      const modal = document.getElementById('caseModal');
+      const title = document.getElementById('caseModalTitle');
+      const body = document.getElementById('caseModalBody');
+      const followupResp = document.getElementById('followupResponse');
+
+      title.textContent = 'Case ' + caseId;
+      body.textContent = 'Loading...';
+      followupResp.innerHTML = '';
+      document.getElementById('followupInput').value = '';
+      modal.classList.add('visible');
+
+      try {
+        const resp = await authFetch('/admin/api/cases/' + caseId);
+        const data = await resp.json();
+        body.textContent = data.content || 'No content';
+      } catch (err) {
+        body.textContent = 'Error: ' + err.message;
+      }
+    }
+
+    function closeCaseModal() {
+      document.getElementById('caseModal').classList.remove('visible');
+      currentCaseId = null;
+    }
+
+    async function sendFollowup() {
+      if (!currentCaseId) return;
+      const input = document.getElementById('followupInput');
+      const respDiv = document.getElementById('followupResponse');
+      const question = input.value.trim();
+      if (!question) return;
+
+      respDiv.innerHTML = '<div class="followup-response" style="color:#888">Asking Claude... (polling every 5s, may take a few minutes)</div>';
+      input.disabled = true;
+
+      try {
+        const resp = await authFetch('/admin/api/cases/' + currentCaseId + '/followup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ caseId: currentCaseId, question })
+        });
+        const data = await resp.json();
+        if (data.jobId) {
+          input.value = '';
+          const savedCaseId = currentCaseId;
+          pollFollowupJob(data.jobId, respDiv, question, () => {
+            input.disabled = false;
+            openCaseModal(savedCaseId);
+          });
+        } else if (data.error) {
+          respDiv.innerHTML = '<div class="followup-response" style="color:#f55">Error: ' + escapeHtml(data.error) + '</div>';
+          input.disabled = false;
+        }
+      } catch (err) {
+        respDiv.innerHTML = '<div class="followup-response" style="color:#f55">Error: ' + escapeHtml(err.message) + '</div>';
+        input.disabled = false;
+      }
+    }
+
+    async function updateCaseStatus(caseId, status) {
+      try {
+        await authFetch('/admin/api/cases/' + caseId, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status })
+        });
+        // Update local cache
+        const c = allCases.find(x => x.id === caseId);
+        if (c) c.status = status;
+        showToast('Status updated to ' + status, 'success');
+      } catch (err) {
+        showToast('Status update failed: ' + err.message, 'error');
+      }
+    }
+
+    async function deleteCase(caseId) {
+      if (!confirm('Delete case ' + caseId + '?')) return;
+      try {
+        await authFetch('/admin/api/cases/' + caseId, { method: 'DELETE' });
+        showToast('Case deleted', 'success');
+        loadCases();
+      } catch (err) {
+        showToast('Delete failed: ' + err.message, 'error');
+      }
+    }
+
+    // ===== Utilities =====
     function formatBytes(bytes) {
       if (bytes < 1024) return bytes + ' B';
       if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -2406,9 +2885,10 @@ function handleLogSubmissionsPage(req, res) {
     }
 
     function escapeHtml(str) {
-      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
+    // ===== Auth & Init =====
     document.getElementById('loginForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const password = document.getElementById('loginPassword').value;
@@ -2431,6 +2911,11 @@ function handleLogSubmissionsPage(req, res) {
       } catch (e) {
         document.getElementById('loginError').textContent = 'Connection error';
       }
+    });
+
+    // Close modal on overlay click
+    document.getElementById('caseModal').addEventListener('click', function(e) {
+      if (e.target === this) closeCaseModal();
     });
 
     async function init() {

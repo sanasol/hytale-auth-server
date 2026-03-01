@@ -1124,7 +1124,7 @@ function setCachedUsername(uuid, username) {
 const statsCache = {
   data: null,
   timestamp: 0,
-  ttl: 10000 // 10 second cache
+  ttl: 60000 // 60 second cache (matches metrics interval)
 };
 
 const activePlayersCache = {

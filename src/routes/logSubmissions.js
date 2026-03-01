@@ -208,6 +208,189 @@ async function cleanupOldSubmissions() {
   }
 }
 
+/**
+ * GET /internal/log-submission/:id — internal (no auth) metadata endpoint
+ * Only accessible on Docker internal network
+ */
+async function handleInternalGetLogSubmission(req, res, id) {
+  const submission = await storage.getLogSubmission(id);
+  if (!submission) {
+    sendJson(res, 404, { error: 'Submission not found' });
+    return;
+  }
+  sendJson(res, 200, submission);
+}
+
+/**
+ * GET /admin/api/log-submissions/:id/analysis — get case analysis for a submission
+ * Reads from shared /app/data/cases/ volume
+ */
+async function handleGetSubmissionAnalysis(req, res, submissionId) {
+  try {
+    const casesDir = path.join(config.dataDir, 'cases');
+    const indexPath = path.join(casesDir, 'index.json');
+
+    if (!fs.existsSync(indexPath)) {
+      sendJson(res, 200, { found: false });
+      return;
+    }
+
+    const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+    // Match by submissionId or by short ID
+    const shortId = submissionId.substring(0, 8);
+    const entry = index.find(e =>
+      e.submissionId === submissionId ||
+      e.id === shortId
+    );
+
+    if (!entry) {
+      sendJson(res, 200, { found: false });
+      return;
+    }
+
+    const caseFilePath = path.join(casesDir, entry.file);
+    const content = fs.existsSync(caseFilePath)
+      ? fs.readFileSync(caseFilePath, 'utf8')
+      : '';
+
+    sendJson(res, 200, { found: true, ...entry, content });
+  } catch (err) {
+    sendJson(res, 500, { error: err.message });
+  }
+}
+
+/**
+ * GET /admin/api/cases — return full cases index
+ */
+async function handleListCases(req, res) {
+  try {
+    const casesDir = path.join(config.dataDir, 'cases');
+    const indexPath = path.join(casesDir, 'index.json');
+
+    if (!fs.existsSync(indexPath)) {
+      sendJson(res, 200, { cases: [] });
+      return;
+    }
+
+    const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+    sendJson(res, 200, { cases: index });
+  } catch (err) {
+    sendJson(res, 500, { error: err.message });
+  }
+}
+
+/**
+ * GET /admin/api/cases/:id — return single case file content
+ */
+async function handleGetCase(req, res, caseId) {
+  try {
+    const casesDir = path.join(config.dataDir, 'cases');
+    const indexPath = path.join(casesDir, 'index.json');
+
+    if (!fs.existsSync(indexPath)) {
+      sendJson(res, 404, { error: 'No cases' });
+      return;
+    }
+
+    const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+    const entry = index.find(e => e.id === caseId);
+    if (!entry) {
+      sendJson(res, 404, { error: 'Case not found' });
+      return;
+    }
+
+    const caseFilePath = path.join(casesDir, entry.file);
+    const content = fs.existsSync(caseFilePath)
+      ? fs.readFileSync(caseFilePath, 'utf8')
+      : '';
+
+    sendJson(res, 200, { ...entry, content });
+  } catch (err) {
+    sendJson(res, 500, { error: err.message });
+  }
+}
+
+/**
+ * PATCH /admin/api/cases/:id — update case status/fields
+ * Body: { status: 'open'|'fixed'|'wrong'|'closed', note: 'optional note' }
+ */
+async function handleUpdateCase(req, res, caseId, body) {
+  try {
+    const casesDir = path.join(config.dataDir, 'cases');
+    const indexPath = path.join(casesDir, 'index.json');
+
+    if (!fs.existsSync(indexPath)) {
+      sendJson(res, 404, { error: 'No cases' });
+      return;
+    }
+
+    let index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+    const entry = index.find(e => e.id === caseId);
+    if (!entry) {
+      sendJson(res, 404, { error: 'Case not found' });
+      return;
+    }
+
+    // Update allowed fields
+    const validStatuses = ['open', 'fixed', 'wrong', 'closed', 'launcher-fixed'];
+    if (body.status && validStatuses.includes(body.status)) {
+      entry.status = body.status;
+    }
+    if (body.note !== undefined) {
+      entry.note = body.note;
+    }
+
+    fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
+
+    // Append status note to case file if provided
+    if (body.note) {
+      const caseFilePath = path.join(casesDir, entry.file);
+      if (fs.existsSync(caseFilePath)) {
+        const timestamp = new Date().toISOString();
+        const statusNote = `\n\n## Status Update — ${timestamp}\n\n**Status**: ${entry.status || 'open'}\n**Note**: ${body.note}\n`;
+        fs.appendFileSync(caseFilePath, statusNote);
+      }
+    }
+
+    sendJson(res, 200, { ok: true, ...entry });
+  } catch (err) {
+    sendJson(res, 500, { error: err.message });
+  }
+}
+
+/**
+ * DELETE /admin/api/cases/:id — delete case file and remove from index
+ */
+async function handleDeleteCase(req, res, caseId) {
+  try {
+    const casesDir = path.join(config.dataDir, 'cases');
+    const indexPath = path.join(casesDir, 'index.json');
+
+    if (!fs.existsSync(indexPath)) {
+      sendJson(res, 404, { error: 'No cases' });
+      return;
+    }
+
+    let index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+    const entryIdx = index.findIndex(e => e.id === caseId);
+    if (entryIdx === -1) {
+      sendJson(res, 404, { error: 'Case not found' });
+      return;
+    }
+
+    const entry = index[entryIdx];
+    const caseFilePath = path.join(casesDir, entry.file);
+    if (fs.existsSync(caseFilePath)) fs.unlinkSync(caseFilePath);
+
+    index.splice(entryIdx, 1);
+    fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
+
+    sendJson(res, 200, { ok: true });
+  } catch (err) {
+    sendJson(res, 500, { error: err.message });
+  }
+}
+
 module.exports = {
   handleLogSubmit,
   handleListLogSubmissions,
@@ -215,4 +398,10 @@ module.exports = {
   handleDownloadLogSubmission,
   handleDeleteLogSubmission,
   cleanupOldSubmissions,
+  handleInternalGetLogSubmission,
+  handleGetSubmissionAnalysis,
+  handleListCases,
+  handleGetCase,
+  handleUpdateCase,
+  handleDeleteCase,
 };

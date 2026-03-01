@@ -352,6 +352,13 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     return;
   }
 
+  // Internal API (no auth — only accessible on Docker internal network)
+  if (urlPath.match(/^\/internal\/log-submission\/[^/]+$/)) {
+    const id = urlPath.split('/')[3];
+    await routes.logSubmissions.handleInternalGetLogSubmission(req, res, id);
+    return;
+  }
+
   // Admin login endpoint (no auth required)
   if (urlPath === '/admin/login' && req.method === 'POST') {
     await routes.admin.handleAdminLogin(req, res, body);
@@ -443,6 +450,32 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     await routes.logSubmissions.handleDownloadLogSubmission(req, res, id);
     return;
   }
+  if (urlPath.match(/^\/admin\/api\/log-submissions\/[^/]+\/analysis$/)) {
+    const id = urlPath.split('/')[4];
+    await routes.logSubmissions.handleGetSubmissionAnalysis(req, res, id);
+    return;
+  }
+  // Re-analyze a single submission (proxy to log-analyzer)
+  if (urlPath.match(/^\/admin\/api\/log-submissions\/[^/]+\/reanalyze$/) && req.method === 'POST') {
+    await proxyToAnalyzer(req, res, '/analyze', body);
+    return;
+  }
+  // Follow-up on a submission's case (proxy to log-analyzer)
+  if (urlPath.match(/^\/admin\/api\/log-submissions\/[^/]+\/followup$/) && req.method === 'POST') {
+    await proxyToAnalyzer(req, res, '/analyze-followup', body);
+    return;
+  }
+  // Poll follow-up job status (proxy to log-analyzer)
+  if (urlPath.match(/^\/admin\/api\/followup-status\/[a-f0-9]+$/) && req.method === 'GET') {
+    const jobId = urlPath.split('/').pop();
+    await proxyToAnalyzerGet(req, res, '/followup-status/' + jobId);
+    return;
+  }
+  // Re-process all submissions (proxy to log-analyzer)
+  if (urlPath === '/admin/api/log-submissions/reprocess' && req.method === 'POST') {
+    await proxyToAnalyzer(req, res, '/reprocess', {});
+    return;
+  }
   if (urlPath.match(/^\/admin\/api\/log-submissions\/[^/]+$/) && req.method === 'DELETE') {
     const id = urlPath.split('/')[4];
     await routes.logSubmissions.handleDeleteLogSubmission(req, res, id);
@@ -451,6 +484,33 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
   if (urlPath.match(/^\/admin\/api\/log-submissions\/[^/]+$/)) {
     const id = urlPath.split('/')[4];
     await routes.logSubmissions.handleGetLogSubmission(req, res, id);
+    return;
+  }
+
+  // Cases admin APIs
+  if (urlPath === '/admin/api/cases' && req.method === 'GET') {
+    await routes.logSubmissions.handleListCases(req, res);
+    return;
+  }
+  // Case follow-up (proxy to log-analyzer)
+  if (urlPath.match(/^\/admin\/api\/cases\/[^/]+\/followup$/) && req.method === 'POST') {
+    const caseId = urlPath.split('/')[4];
+    await proxyToAnalyzer(req, res, '/analyze-followup', { ...body, caseId });
+    return;
+  }
+  if (urlPath.match(/^\/admin\/api\/cases\/[^/]+$/) && req.method === 'DELETE') {
+    const id = urlPath.split('/')[4];
+    await routes.logSubmissions.handleDeleteCase(req, res, id);
+    return;
+  }
+  if (urlPath.match(/^\/admin\/api\/cases\/[^/]+$/) && req.method === 'PATCH') {
+    const id = urlPath.split('/')[4];
+    await routes.logSubmissions.handleUpdateCase(req, res, id, body);
+    return;
+  }
+  if (urlPath.match(/^\/admin\/api\/cases\/[^/]+$/)) {
+    const id = urlPath.split('/')[4];
+    await routes.logSubmissions.handleGetCase(req, res, id);
     return;
   }
 
@@ -727,6 +787,92 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     accessToken: accessToken,
     tokenType: 'Bearer',
     user: { uuid, name, premium: true }
+  });
+}
+
+/**
+ * Proxy a request to the log-analyzer service
+ */
+async function proxyToAnalyzer(req, res, path, body) {
+  if (!config.logAnalyzerUrl) {
+    sendJson(res, 503, { error: 'Log analyzer not configured' });
+    return;
+  }
+
+  return new Promise((resolve) => {
+    const payload = JSON.stringify(body || {});
+    const aUrl = new URL(config.logAnalyzerUrl + path);
+    const proto = aUrl.protocol === 'https:' ? require('https') : require('http');
+
+    const aReq = proto.request({
+      hostname: aUrl.hostname,
+      port: aUrl.port,
+      path: aUrl.pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      timeout: 600000, // 10 min for follow-ups
+    }, (aRes) => {
+      let data = '';
+      aRes.on('data', (chunk) => { data += chunk; });
+      aRes.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          sendJson(res, aRes.statusCode, json);
+        } catch {
+          sendJson(res, aRes.statusCode, { raw: data });
+        }
+        resolve();
+      });
+    });
+
+    aReq.on('error', (err) => {
+      sendJson(res, 502, { error: 'Analyzer unreachable: ' + err.message });
+      resolve();
+    });
+
+    aReq.on('timeout', () => {
+      aReq.destroy();
+      sendJson(res, 504, { error: 'Analyzer timeout' });
+      resolve();
+    });
+
+    aReq.end(payload);
+  });
+}
+
+/**
+ * Proxy a GET request to the log-analyzer service
+ */
+async function proxyToAnalyzerGet(req, res, urlPath) {
+  if (!config.logAnalyzerUrl) {
+    sendJson(res, 503, { error: 'Log analyzer not configured' });
+    return;
+  }
+
+  return new Promise((resolve) => {
+    const aUrl = new URL(config.logAnalyzerUrl + urlPath);
+    const proto = aUrl.protocol === 'https:' ? require('https') : require('http');
+
+    proto.get({
+      hostname: aUrl.hostname,
+      port: aUrl.port,
+      path: aUrl.pathname,
+      timeout: 10000,
+    }, (aRes) => {
+      let data = '';
+      aRes.on('data', (chunk) => { data += chunk; });
+      aRes.on('end', () => {
+        try {
+          sendJson(res, aRes.statusCode, JSON.parse(data));
+        } catch {
+          sendJson(res, aRes.statusCode, { raw: data });
+        }
+        resolve();
+      });
+    }).on('error', (err) => {
+      sendJson(res, 502, { error: 'Analyzer unreachable: ' + err.message });
+      resolve();
+    });
   });
 }
 
