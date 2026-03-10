@@ -241,6 +241,12 @@ public class DualAuthHelper {
         return issuer;
     }
 
+    public static String getProfileUrlForIssuer(String issuer) {
+        if (issuer == null || isOfficialIssuer(issuer))
+            return "https://account-data.hytale.com";
+        return issuer; // F2P: same server handles all endpoints
+    }
+
     // --- JWT VALIDATION HELPERS ---
 
     private static Object verifyWithKeys(java.util.List<JWK> keys, SignedJWT signedJWT, ClassLoader cl, String methodName) {

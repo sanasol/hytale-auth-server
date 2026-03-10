@@ -20,6 +20,9 @@ public class DualAuthContext {
     // Original SessionServiceClient URL — saved on first encounter, used to restore after F2P routing
     private static volatile String originalSessionUrl = null;
 
+    // Original ProfileServiceClient URL — saved on first encounter, used to restore after F2P routing
+    private static volatile String originalProfileUrl = null;
+
     public static void saveOriginalSessionUrl(String url) {
         if (originalSessionUrl == null && url != null && !url.isEmpty()) {
             originalSessionUrl = url;
@@ -28,6 +31,16 @@ public class DualAuthContext {
 
     public static String getOriginalSessionUrl() {
         return originalSessionUrl;
+    }
+
+    public static void saveOriginalProfileUrl(String url) {
+        if (originalProfileUrl == null && url != null && !url.isEmpty()) {
+            originalProfileUrl = url;
+        }
+    }
+
+    public static String getOriginalProfileUrl() {
+        return originalProfileUrl;
     }
 
     public static void setIssuer(String issuer) {

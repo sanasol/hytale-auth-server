@@ -38,7 +38,7 @@ This server handles authentication requests from both the game client (via the F
 
 ### Quick Test (No Setup Required)
 
-1. **Download the pre-built launcher**: [Hytale F2P Launcher](https://git.sanhost.net/sanasol/hytale-f2p/releases)
+1. **Download the pre-built launcher**: [Hytale F2P Launcher](https://git.sanhost.net/sanasol/f2p-evo/releases/latest)
 2. **Connect to the public game server**: `ht.vboro.de:5720`
 
 That's it! No auth server or game server setup needed for testing.
@@ -65,7 +65,7 @@ Your F2P server is ready — both official and F2P players can join.
 
 ### Build from Source
 
-Alternatively, use the [Hytale F2P Launcher source](https://git.sanhost.net/sanasol/hytale-f2p) and [hytale-server-docker](https://github.com/sanasol/hytale-server-docker) with default settings - they're pre-configured to use `sanasol.ws` with dual auth support (both official and F2P players can play together).
+Alternatively, use the [Hytale F2P Launcher source](https://git.sanhost.net/sanasol/f2p-evo) and [hytale-server-docker](https://github.com/sanasol/hytale-server-docker) with default settings - they're pre-configured to use `sanasol.ws` with dual auth support (both official and F2P players can play together).
 
 > **Note**: The public server is for testing purposes. For production use or privacy, set up your own server using this repository.
 
@@ -76,7 +76,7 @@ This is part of a complete Hytale F2P setup:
 | Project | Description |
 |---------|-------------|
 | [hytale-auth-server](https://github.com/sanasol/hytale-auth-server) | Authentication server + DualAuthPatcher (this repo) |
-| [Hytale F2P Launcher](https://git.sanhost.net/sanasol/hytale-f2p) | Game launcher with dual auth support |
+| [Hytale F2P Launcher](https://git.sanhost.net/sanasol/f2p-evo) | Game launcher with dual auth support |
 | [hytale-server-docker](https://github.com/sanasol/hytale-server-docker) | Dedicated server Docker image |
 
 ## DualAuth ByteBuddy Agent
@@ -90,6 +90,49 @@ This repository contains the **DualAuth Agent** (`dualauth-agent.jar`) -- a runt
 - Agent source: [`dualauth-agent/`](dualauth-agent/)
 - Legacy patcher: [`patcher/`](patcher/) (deprecated, kept for reference)
 - Released as: [GitHub Releases](https://github.com/sanasol/hytale-auth-server/releases) (`dualauth-agent.jar`)
+
+### Loading Modes
+
+The same `dualauth-agent.jar` supports three loading modes:
+
+| Mode | How | JVM Flags | Best For |
+|------|-----|-----------|----------|
+| **Agent** | `-javaagent:dualauth-agent.jar` | None | Docker, dedicated servers |
+| **Plugin** | Drop in `mods/` folder | `-XX:+EnableDynamicAgentLoading` | Hosted panels (Pterodactyl) |
+| **Early Plugin** | Drop in `earlyplugins/` folder | None | Singleplayer, LAN, no JVM flag control |
+
+### Early Plugin Mode (Singleplayer + Online Play)
+
+The early plugin mode lets **official game owners** host dual-auth servers directly from singleplayer -- no JVM flags, no server setup. Both official and F2P players can connect to the same world.
+
+#### Setup
+
+1. Download `dualauth-agent.jar` from [GitHub Releases](https://github.com/sanasol/hytale-auth-server/releases)
+2. Place it in your Hytale early plugins folder:
+   - **Windows**: `%LOCALAPPDATA%\Hytale\UserData\earlyplugins\dualauth-agent.jar`
+   - **macOS**: `~/Library/Application Support/Hytale/UserData/earlyplugins/dualauth-agent.jar`
+3. Launch Hytale normally and start a singleplayer world
+4. Open to LAN / Online Play
+5. Share your server code with F2P players -- they can join using the [F2P Launcher](https://git.sanhost.net/sanasol/f2p-evo/releases/latest)
+
+That's it. Official players join normally through the game. F2P players connect using the launcher with the share code.
+
+#### How It Works
+
+The early plugin system loads `dualauth-agent.jar` before the server starts and transforms authentication classes at load time. No `-javaagent` flag or `-XX:+EnableDynamicAgentLoading` needed -- the Hytale `ClassTransformer` API handles everything.
+
+The agent automatically:
+- Fetches F2P server tokens from `auth.sanasol.ws` on startup
+- Transforms JWT validation to accept both official and F2P tokens
+- Routes auth requests to the correct auth server based on token issuer
+
+#### Verify It's Working
+
+In the game log (or console), look for:
+```
+DualAuth Early Plugin v1.1.19
+Mode: EARLY PLUGIN (ClassTransformer)
+```
 
 ### Integration Guide
 
@@ -377,12 +420,12 @@ This exposes the server on `http://localhost:3000`.
    docker compose up -d
    ```
 
-3. **Launch the game** ([Hytale F2P Launcher](https://git.sanhost.net/sanasol/hytale-f2p)):
-   - Download from [releases](https://git.sanhost.net/sanasol/hytale-f2p/releases)
+3. **Launch the game** ([Hytale F2P Launcher](https://git.sanhost.net/sanasol/f2p-evo)):
+   - Download from [releases](https://git.sanhost.net/sanasol/f2p-evo/releases/latest)
    - Or build from source:
    ```bash
-   git clone https://git.sanhost.net/sanasol/hytale-f2p.git
-   cd Hytale-F2P
+   git clone https://git.sanhost.net/sanasol/f2p-evo.git
+   cd f2p-evo
    npm install
    npm start
    ```

@@ -6,7 +6,7 @@ plugins {
 group = 'ws.sanasol.dualauth'
 
 // Version is the single source of truth - auto-injected into manifest.json and version.properties
-version = '1.1.18'
+version = '1.1.19'
 
 java {
     toolchain {
@@ -60,6 +60,8 @@ shadowJar {
     // CRITICAL: Exclude Hytale API stubs from final JAR
     // We only use these for compilation; at runtime Hytale provides the real classes
     exclude 'com/hypixel/hytale/server/core/plugin/**'
+    exclude 'com/hypixel/hytale/server/core/auth/**'
+    exclude 'com/hypixel/hytale/plugin/early/**'
 
     exclude 'META-INF/*.SF'
     exclude 'META-INF/*.DSA'

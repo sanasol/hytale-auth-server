@@ -46,6 +46,7 @@ The agent is non-destructive -- the original `HytaleServer.jar` is never modifie
 
 | I want to... | Recommended Path | Difficulty |
 |--------------|-----------------|------------|
+| Play singleplayer and invite F2P friends | [Option 0: Singleplayer/LAN](#option-0-singleplayer--lan-easiest) | Trivial |
 | Build a launcher that connects to any F2P server | [Path A: Omni-Auth](#path-a-omni-auth-easiest---no-server-needed) | Easy |
 | Run my own auth server for my community | [Path B: Federated](#path-b-run-your-own-auth-server-federated) | Medium |
 | Build a launcher using the existing public F2P server | [Path C: Public F2P](#path-c-use-the-public-f2p-auth-server) | Easy |
@@ -411,6 +412,26 @@ Response:
 
 ## Hosting a Game Server
 
+### Option 0: Singleplayer / LAN (Easiest)
+
+If you own Hytale, you can host a dual-auth server directly from singleplayer with zero setup:
+
+1. Download `dualauth-agent.jar` from [GitHub Releases](https://github.com/sanasol/hytale-auth-server/releases/latest/download/dualauth-agent.jar)
+2. Place it in your early plugins folder:
+   - **Windows**: `%LOCALAPPDATA%\Hytale\UserData\earlyplugins\dualauth-agent.jar`
+   - **macOS**: `~/Library/Application Support/Hytale/UserData/earlyplugins/dualauth-agent.jar`
+3. Launch Hytale and start a singleplayer world
+4. Open to LAN / Online Play to get a share code
+5. Share the code with F2P players -- they connect using the [F2P Launcher](https://git.sanhost.net/sanasol/f2p-evo/releases/latest)
+
+**No JVM flags, no server setup, no auth server needed.** The early plugin transforms authentication at class load time, accepting both official and F2P tokens automatically.
+
+Verify it's working by checking the game log for:
+```
+DualAuth Early Plugin v1.1.19
+Mode: EARLY PLUGIN (ClassTransformer)
+```
+
 ### Option 1: Docker (Recommended)
 
 ```bash
@@ -519,7 +540,7 @@ Either way, the result is that all auth traffic routes to a single endpoint: `ht
 
 ### Reference Implementation
 
-See the F2P launcher's patcher: [`Hytale-F2P/backend/utils/clientPatcher.js`](https://github.com/sanasol/Hytale-F2P)
+See the F2P launcher's patcher: [`Hytale-F2P/backend/utils/clientPatcher.js`](https://git.sanhost.net/sanasol/f2p-evo)
 
 The patcher:
 1. Reads `HytaleClient.dll`
@@ -608,8 +629,9 @@ The server has `HYTALE_TRUST_ALL_ISSUERS=false` and your issuer URL is not in `H
 
 ### Agent not loading
 
-- Verify `dualauth-agent.jar` exists in the expected path
-- Verify the `-javaagent:` flag is in the Java command
+- **Agent mode**: Verify `-javaagent:dualauth-agent.jar` flag is in the Java command
+- **Plugin mode**: Verify JAR is in `mods/` and `-XX:+EnableDynamicAgentLoading` is set
+- **Early plugin mode**: Verify JAR is in `earlyplugins/` folder (no JVM flags needed)
 - Enable debug: set `DUALAUTH_LOGGING_ENABLED=true` or `-Ddualauth.debug=true`
 
 ### Player names showing as "Player"
@@ -634,6 +656,6 @@ The default username `Player` is used when no username is provided in the token.
 | DualAuth Agent Source | https://github.com/sanasol/hytale-auth-server (dualauth-agent/) |
 | Auth Server Source | https://github.com/sanasol/hytale-auth-server |
 | Docker Game Server | https://github.com/sanasol/hytale-server-docker |
-| F2P Launcher | https://github.com/sanasol/Hytale-F2P |
+| F2P Launcher | https://git.sanhost.net/sanasol/f2p-evo |
 | Omni-Auth Spec | [OMNI_AUTH.md](OMNI_AUTH.md) |
 | RusTale (original Omni-Auth) | https://github.com/soyelmismo/RusTale |

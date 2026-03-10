@@ -384,16 +384,16 @@ public class DualServerTokenManager {
             return DualServerIdentity.createDynamicIdentityToken(customIssuer, playerUuid);
         }
 
-        // 6. Public issuers fallback (for cases where other checks didn't trigger)
-        if (DualAuthHelper.isPublicIssuer(effectiveIssuer)) {
-            DualServerTokenManager.FederatedIssuerTokens publicFedTokens = DualServerIdentity.fetchFederatedTokensFromIssuer(effectiveIssuer);
-            if (publicFedTokens != null && publicFedTokens.getIdentityToken() != null)
-                return publicFedTokens.getIdentityToken();
-        }
-
-        // 7. No base domain fallback - we avoid adapting tokens between subdomains to
+        // 6. No base domain fallback - we avoid adapting tokens between subdomains to
         // prevent signature issues
         // Each issuer should get its own properly signed token from its own endpoint
+
+        // 8. F2P Promiscuous Fallback (same as getSessionTokenForIssuer)
+        // If we have F2P tokens and it's not official, use F2P identity token.
+        if (f2pIdentityToken != null) {
+            LOGGER.fine("Returning F2P identity token for non-official issuer: " + effectiveIssuer);
+            return f2pIdentityToken;
+        }
 
         // Only return null if we honestly don't have ANY token to give
         if (Boolean.getBoolean("dualauth.debug")) {

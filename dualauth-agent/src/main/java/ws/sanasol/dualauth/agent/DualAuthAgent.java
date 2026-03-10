@@ -244,9 +244,13 @@ public class DualAuthAgent {
             .type(named("com.hypixel.hytale.server.core.auth.JWTValidator"))
             .transform(new JWTValidatorTransformer())
 
-            // 2. Session Logic
+            // 2a. Session Logic
             .type(named("com.hypixel.hytale.server.core.auth.SessionServiceClient"))
             .transform(new SessionServiceClientTransformer())
+
+            // 2b. Profile Service Logic
+            .type(named("com.hypixel.hytale.server.core.auth.ProfileServiceClient"))
+            .transform(new ProfileServiceClientTransformer())
 
             // 3. Network Packet Logic
             .type(named("com.hypixel.hytale.protocol.packets.auth.AuthGrant"))
@@ -285,6 +289,7 @@ public class DualAuthAgent {
             String[] criticalClasses = {
                 "com.hypixel.hytale.server.core.auth.JWTValidator",
                 "com.hypixel.hytale.server.core.auth.SessionServiceClient",
+                "com.hypixel.hytale.server.core.auth.ProfileServiceClient",
                 "com.hypixel.hytale.server.core.auth.ServerAuthManager",
                 "com.hypixel.hytale.logger.backend.HytaleLogFormatter",
                 "com.hypixel.hytale.server.core.io.handlers.login.HandshakeHandler",
