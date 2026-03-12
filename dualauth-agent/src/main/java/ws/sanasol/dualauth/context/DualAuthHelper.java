@@ -332,12 +332,19 @@ public class DualAuthHelper {
             String kid = signedJWT.getHeader().getKeyID();
             java.util.List<JWK> keys = jwkSet.getKeys();
 
+            // Try kid-matched keys first (there may be multiple with same kid from different issuers)
             if (kid != null) {
-                JWK match = jwkSet.getKeyByKeyId(kid);
-                if (match != null)
-                    keys = java.util.Collections.singletonList(match);
+                java.util.List<JWK> kidMatches = new java.util.ArrayList<>();
+                for (JWK k : keys) {
+                    if (kid.equals(k.getKeyID())) kidMatches.add(k);
+                }
+                if (!kidMatches.isEmpty()) {
+                    Object result = verifyWithKeys(kidMatches, signedJWT, cl, methodName);
+                    if (result != null) return result;
+                }
             }
 
+            // Kid match failed or no kid — try all keys
             Object result = verifyWithKeys(keys, signedJWT, cl, methodName);
             if (result != null)
                 return result;
@@ -352,9 +359,14 @@ public class DualAuthHelper {
                         if (refreshedSet != null && refreshedSet != jwkSet) {
                             java.util.List<JWK> refreshedKeys = refreshedSet.getKeys();
                             if (kid != null) {
-                                JWK match = refreshedSet.getKeyByKeyId(kid);
-                                if (match != null)
-                                    refreshedKeys = java.util.Collections.singletonList(match);
+                                java.util.List<JWK> kidMatches = new java.util.ArrayList<>();
+                                for (JWK k : refreshedKeys) {
+                                    if (kid.equals(k.getKeyID())) kidMatches.add(k);
+                                }
+                                if (!kidMatches.isEmpty()) {
+                                    result = verifyWithKeys(kidMatches, signedJWT, cl, methodName);
+                                    if (result != null) return result;
+                                }
                             }
                             result = verifyWithKeys(refreshedKeys, signedJWT, cl, methodName);
                             if (result != null)
