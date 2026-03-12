@@ -692,27 +692,36 @@ public class DualAuthHelper {
             idField.setAccessible(true);
             String currentToken = (String) idField.get(authGrant);
 
-            // CRITICAL FIX: Determine client issuer from the authorizationGrant JWT itself.
-            // ThreadLocal (DualAuthContext.getIssuer()) is UNRELIABLE here because
-            // AuthGrant construction/serialization happens on an async callback thread,
-            // NOT the thread that validated the identity token.
-            // The authorizationGrant was obtained from the session service matching the
-            // client's issuer, so its 'iss' claim reliably identifies the client type.
+            // Determine client issuer. Multiple strategies because AuthGrant
+            // serialization happens on an async callback thread where ThreadLocal is empty.
             String clientIssuer = null;
+
+            // Strategy 1: Player registry (most reliable — set during token validation)
+            // Extract player UUID from the auth grant's subject claim
             try {
                 Field grantField = authGrant.getClass().getDeclaredField("authorizationGrant");
                 grantField.setAccessible(true);
                 String grantToken = (String) grantField.get(authGrant);
                 if (grantToken != null) {
-                    clientIssuer = extractIssuerFromToken(grantToken);
+                    String playerUuid = extractClaimFromToken(grantToken, "sub");
+                    if (playerUuid != null) {
+                        DualAuthContext.PlayerAuthInfo info = DualAuthContext.getPlayerInfo(playerUuid);
+                        if (info != null && info.issuer != null) {
+                            clientIssuer = info.issuer;
+                        }
+                    }
+                    // Fallback: auth grant JWT issuer (only correct for F2P, not third-party)
+                    if (clientIssuer == null) {
+                        clientIssuer = extractIssuerFromToken(grantToken);
+                    }
                 }
             } catch (Exception ignored) {}
 
-            // Fallback to ThreadLocal (may be correct if on same thread)
+            // Strategy 2: ThreadLocal (may be correct if on same thread)
             if (clientIssuer == null) {
                 clientIssuer = DualAuthContext.getIssuer();
             }
-            // Last resort: extract from current server identity token
+            // Strategy 3: extract from current server identity token
             if (clientIssuer == null && currentToken != null) {
                 clientIssuer = extractIssuerFromToken(currentToken);
             }
