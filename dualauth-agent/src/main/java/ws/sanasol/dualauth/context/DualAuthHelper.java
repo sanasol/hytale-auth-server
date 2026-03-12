@@ -743,9 +743,9 @@ public class DualAuthHelper {
                 return;
             }
 
-            // F2P client: replace server identity token with one matching client's issuer
+            // Non-official client: replace server identity token with one matching client's issuer
             if (Boolean.getBoolean("dualauth.debug")) {
-                System.out.println("AuthGrant: F2P client detected, getting token for issuer: " + clientIssuer);
+                System.out.println("AuthGrant: Non-official client detected, getting token for issuer: " + clientIssuer);
             }
 
             String correctedToken = DualServerTokenManager.getIdentityTokenForIssuer(clientIssuer,
@@ -757,6 +757,11 @@ public class DualAuthHelper {
                     System.out.println("AuthGrant: Replaced serverIdentityToken -> " + finalIssuer
                             + " (len=" + correctedToken.length() + ")");
                 }
+            } else if (isThirdPartyIssuer(clientIssuer)) {
+                // Third-party issuer (e.g. Butter): no identity token available,
+                // strip server identity so client doesn't try to validate official token
+                idField.set(authGrant, "");
+                System.out.println("[DualAuthAgent] AuthGrant: Stripped server identity for third-party issuer: " + clientIssuer);
             } else {
                 if (Boolean.getBoolean("dualauth.debug")) {
                     System.out.println("AuthGrant: No F2P token found for issuer " + clientIssuer
@@ -1162,6 +1167,11 @@ public class DualAuthHelper {
 
         // F2P issuer (our own): has session service, normal flow
         if (DualAuthContext.isF2P()) return false;
+
+        // Third-party issuers (e.g. Butter): use normal AuthGrant flow
+        // but with stripped server identity (handled by maybeReplaceServerIdentity).
+        // ConnectAccept bypass doesn't work — clients don't support dev mode.
+        if (isThirdPartyIssuer(issuer)) return false;
 
         // Third-party issuer (e.g. Butter): bypass mutual auth
         if (Boolean.getBoolean("dualauth.debug")) {
