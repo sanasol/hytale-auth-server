@@ -72,15 +72,26 @@ public class ServerAuthManagerTransformer implements net.bytebuddy.agent.builder
     }
 
     /**
-     * Provides fallback identity token if the original returns null/empty.
+     * Provides issuer-appropriate identity token.
+     * For non-official clients (Butter, etc.), overrides even non-null official tokens
+     * with a token from the client's issuer so mutual auth succeeds.
      */
     public static class IdentityTokenGetterAdvice {
         @Advice.OnMethodExit
         public static void exit(
                 @Advice.Return(readOnly = false) String returnedValue) {
             try {
+                String issuer = DualAuthContext.getIssuer();
+                if (issuer != null && !DualAuthHelper.isOfficialIssuer(issuer)) {
+                    // Non-official client: must present a token from their issuer
+                    String match = DualServerTokenManager.getIdentityTokenForIssuer(issuer, DualAuthContext.getPlayerUuid());
+                    if (match != null && !match.isEmpty()) {
+                        returnedValue = match;
+                        return;
+                    }
+                }
+                // Null/empty fallback for any issuer
                 if (returnedValue == null || returnedValue.isEmpty()) {
-                    String issuer = DualAuthContext.getIssuer();
                     String fallback = DualServerTokenManager.getIdentityTokenForIssuer(issuer, DualAuthContext.getPlayerUuid());
                     if (fallback != null && !fallback.isEmpty()) {
                         returnedValue = fallback;
@@ -91,15 +102,23 @@ public class ServerAuthManagerTransformer implements net.bytebuddy.agent.builder
     }
 
     /**
-     * Provides fallback session token if the original returns null/empty.
+     * Provides issuer-appropriate session token.
+     * Same logic as identity: override for non-official clients.
      */
     public static class SessionTokenGetterAdvice {
         @Advice.OnMethodExit
         public static void exit(
                 @Advice.Return(readOnly = false) String returnedValue) {
             try {
+                String issuer = DualAuthContext.getIssuer();
+                if (issuer != null && !DualAuthHelper.isOfficialIssuer(issuer)) {
+                    String match = DualServerTokenManager.getSessionTokenForIssuer(issuer);
+                    if (match != null && !match.isEmpty()) {
+                        returnedValue = match;
+                        return;
+                    }
+                }
                 if (returnedValue == null || returnedValue.isEmpty()) {
-                    String issuer = DualAuthContext.getIssuer();
                     String fallback = DualServerTokenManager.getSessionTokenForIssuer(issuer);
                     if (fallback != null && !fallback.isEmpty()) {
                         returnedValue = fallback;
