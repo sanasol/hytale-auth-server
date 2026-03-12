@@ -1188,10 +1188,27 @@ public class DualAuthHelper {
             System.out.println("[DualAuthAgent] HandshakeBypass: Bypassing mutual auth for " +
                 (username != null ? username : "unknown") + " (issuer: " + issuer + ")");
 
-            // 1. Get the channel from the handler (field in HandshakeHandler or parent)
-            Object channel = getFieldFromHierarchy(handshakeHandler, "channel");
+            // 1. Get the channel via getChannel() method (channel is in channels[0] array in PacketHandler)
+            Object channel = null;
+            try {
+                Method getChannel = findMethodInHierarchy(handshakeHandler.getClass(), "getChannel");
+                if (getChannel != null) {
+                    getChannel.setAccessible(true);
+                    channel = getChannel.invoke(handshakeHandler);
+                }
+            } catch (Exception e) {
+                System.err.println("[DualAuthAgent] HandshakeBypass: getChannel() failed: " + e.getMessage());
+            }
+            // Fallback: try 'channels' array field (PacketHandler stores channel in channels[0])
             if (channel == null) {
-                System.err.println("[DualAuthAgent] HandshakeBypass: Could not find 'channel' field");
+                Object channels = getFieldFromHierarchy(handshakeHandler, "channels");
+                if (channels != null && channels.getClass().isArray()) {
+                    Object[] arr = (Object[]) channels;
+                    if (arr.length > 0) channel = arr[0];
+                }
+            }
+            if (channel == null) {
+                System.err.println("[DualAuthAgent] HandshakeBypass: Could not find channel");
                 return false;
             }
 
@@ -1325,6 +1342,17 @@ public class DualAuthHelper {
                 clazz = clazz.getSuperclass();
             } catch (Exception e) {
                 return null;
+            }
+        }
+        return null;
+    }
+
+    private static Method findMethodInHierarchy(Class<?> clazz, String methodName) {
+        while (clazz != null && clazz != Object.class) {
+            try {
+                return clazz.getDeclaredMethod(methodName);
+            } catch (NoSuchMethodException e) {
+                clazz = clazz.getSuperclass();
             }
         }
         return null;
