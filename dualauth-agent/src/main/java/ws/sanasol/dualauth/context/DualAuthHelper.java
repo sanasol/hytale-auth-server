@@ -1077,6 +1077,66 @@ public class DualAuthHelper {
         return c;
     }
 
+    // --- THIRD-PARTY TOKEN ACCEPTANCE (bypass signature verification) ---
+
+    /**
+     * Checks if issuer is a third-party (not official, not F2P, not Omni-Auth).
+     * Used to accept tokens from launchers like Butter whose JWKS doesn't match
+     * their signing key.
+     */
+    public static boolean isThirdPartyIssuer(String issuer) {
+        if (issuer == null) return false;
+        if (isOfficialIssuer(issuer)) return false;
+        if (DualAuthConfig.F2P_BASE_DOMAIN != null && issuer.contains(DualAuthConfig.F2P_BASE_DOMAIN)) return false;
+        return true;
+    }
+
+    /**
+     * Accept a token from a third-party issuer without signature verification.
+     * Parses the JWT payload to extract claims and creates a wrapper that the
+     * server accepts. Only called when:
+     * - Issuer is valid (trusted or TRUST_ALL_ISSUERS=true)
+     * - Issuer is third-party (not official, not F2P)
+     * - Normal signature verification already failed
+     *
+     * This enables launchers like Butter whose published JWKS doesn't match
+     * their signing key to still connect to DualAuth servers.
+     */
+    public static Object acceptThirdPartyToken(Object validatorInstance, String token, String methodName) {
+        try {
+            String issuer = DualAuthContext.getIssuer();
+            if (!isThirdPartyIssuer(issuer)) return null;
+
+            // Parse claims without verification
+            com.nimbusds.jwt.SignedJWT signedJWT = com.nimbusds.jwt.SignedJWT.parse(token);
+            com.nimbusds.jwt.JWTClaimsSet claims = signedJWT.getJWTClaimsSet();
+            if (claims == null || claims.getSubject() == null) return null;
+
+            // Check token expiration (we still enforce TTL even without sig check)
+            java.util.Date exp = claims.getExpirationTime();
+            if (exp != null && exp.before(new java.util.Date())) {
+                System.out.println("[DualAuthAgent] Third-party token expired for issuer: " + issuer);
+                return null;
+            }
+
+            System.out.println("[DualAuthAgent] ACCEPTING third-party token without signature verification" +
+                " (issuer: " + issuer + ", sub: " + claims.getSubject() + ")");
+
+            // Set context so shouldBypassMutualAuth() works downstream
+            DualAuthContext.setPlayerUuid(claims.getSubject());
+            String name = (String) claims.getClaim("name");
+            if (name == null) name = (String) claims.getClaim("username");
+            if (name == null) name = (String) claims.getClaim("nickname");
+            if (name != null) DualAuthContext.setUsername(name);
+
+            ClassLoader cl = validatorInstance.getClass().getClassLoader();
+            return createJWTClaimsWrapper(cl, claims, methodName, null);
+        } catch (Exception e) {
+            System.out.println("[DualAuthAgent] Third-party token acceptance failed: " + e.getMessage());
+            return null;
+        }
+    }
+
     // --- HANDSHAKE BYPASS (Development Flow for third-party issuers) ---
 
     /**
