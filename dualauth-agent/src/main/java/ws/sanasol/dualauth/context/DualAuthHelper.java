@@ -1199,8 +1199,9 @@ public class DualAuthHelper {
         try {
             ClassLoader cl = handshakeHandler.getClass().getClassLoader();
             String issuer = DualAuthContext.getIssuer();
-            String username = DualAuthContext.getUsername();
-            Object playerUuid = getF(handshakeHandler, "playerUuid");
+            // Get username and UUID from handler fields (not ThreadLocal — may be empty)
+            Object playerUuid = getFieldFromHierarchy(handshakeHandler, "playerUuid");
+            String username = (String) getFieldFromHierarchy(handshakeHandler, "username");
 
             System.out.println("[DualAuthAgent] HandshakeBypass: Bypassing mutual auth for " +
                 (username != null ? username : "unknown") + " (issuer: " + issuer + ")");
@@ -1321,24 +1322,28 @@ public class DualAuthHelper {
                     // Create dynamic proxy that bridges AuthHandlerSupplier → SetupHandlerSupplier
                     // Both have create(Channel, ProtocolVersion, String, PlayerAuthentication)
                     final Class<?> finalSetupSupplierClass = setupSupplierClass;
+                    // Lambda classes (InitialPacketHandler$Lambda) aren't accessible via
+                    // reflection from our classloader. Use interface method instead.
+                    // Find the create() method on the AuthHandlerSupplier interface
+                    Method supplierMethod = null;
+                    for (Class<?> iface : authSupplier.getClass().getInterfaces()) {
+                        for (Method m : iface.getDeclaredMethods()) {
+                            if (m.getName().equals("create") && m.getParameterCount() == 4) {
+                                m.setAccessible(true);
+                                supplierMethod = m;
+                                break;
+                            }
+                        }
+                        if (supplierMethod != null) break;
+                    }
+                    final Method finalSupplierMethod = supplierMethod;
+                    if (finalSupplierMethod == null) {
+                        System.err.println("[DualAuthAgent] HandshakeBypass: Could not find create() on authHandlerSupplier interfaces");
+                    }
                     setupSupplier = java.lang.reflect.Proxy.newProxyInstance(cl, new Class<?>[]{setupSupplierClass},
                         (proxy, method, args) -> {
-                            if (method.getName().equals("create")) {
-                                // Delegate to authSupplier.create(...)
-                                for (Method m : authSupplier.getClass().getMethods()) {
-                                    if (m.getName().equals("create") && m.getParameterCount() == 4) {
-                                        return m.invoke(authSupplier, args);
-                                    }
-                                }
-                                // Try interfaces
-                                for (Class<?> iface : authSupplier.getClass().getInterfaces()) {
-                                    for (Method m : iface.getMethods()) {
-                                        if (m.getName().equals("create") && m.getParameterCount() == 4) {
-                                            m.setAccessible(true);
-                                            return m.invoke(authSupplier, args);
-                                        }
-                                    }
-                                }
+                            if (method.getName().equals("create") && finalSupplierMethod != null) {
+                                return finalSupplierMethod.invoke(authSupplier, args);
                             }
                             return null;
                         });
