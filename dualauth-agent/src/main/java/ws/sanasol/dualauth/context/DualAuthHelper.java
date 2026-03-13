@@ -1177,16 +1177,15 @@ public class DualAuthHelper {
         // F2P issuer (our own): has session service, normal flow
         if (DualAuthContext.isF2P()) return false;
 
-        // Third-party issuers (e.g. Butter): use normal AuthGrant flow
-        // but with stripped server identity (handled by maybeReplaceServerIdentity).
-        // ConnectAccept bypass doesn't work — clients don't support dev mode.
-        if (isThirdPartyIssuer(issuer)) return false;
-
-        // Third-party issuer (e.g. Butter): bypass mutual auth
-        if (Boolean.getBoolean("dualauth.debug")) {
-            LOGGER.info("HandshakeBypass: Third-party issuer detected, bypassing mutual auth: " + issuer);
+        // Third-party issuers (e.g. Butter): bypass mutual auth with ConnectAccept.
+        // Their server runs in dev mode (confirmed from Butter server logs),
+        // so their client handles ConnectAccept properly.
+        if (isThirdPartyIssuer(issuer)) {
+            System.out.println("[DualAuthAgent] HandshakeBypass: Third-party issuer detected, bypassing mutual auth: " + issuer);
+            return true;
         }
-        return true;
+
+        return false;
     }
 
     /**
@@ -1198,16 +1197,26 @@ public class DualAuthHelper {
      */
     public static boolean bypassToDevFlow(Object handshakeHandler) {
         try {
+            ClassLoader cl = handshakeHandler.getClass().getClassLoader();
             String issuer = DualAuthContext.getIssuer();
             String username = DualAuthContext.getUsername();
-            String uuid = null;
             Object playerUuid = getF(handshakeHandler, "playerUuid");
-            if (playerUuid != null) uuid = playerUuid.toString();
 
             System.out.println("[DualAuthAgent] HandshakeBypass: Bypassing mutual auth for " +
                 (username != null ? username : "unknown") + " (issuer: " + issuer + ")");
 
-            // 1. Get the channel via getChannel() method (channel is in channels[0] array in PacketHandler)
+            // 1. Clear timeout (we're in auth:grant stage with a timer running)
+            try {
+                Method clearTimeout = findMethodInHierarchy(handshakeHandler.getClass(), "clearTimeout");
+                if (clearTimeout != null) {
+                    clearTimeout.setAccessible(true);
+                    clearTimeout.invoke(handshakeHandler);
+                }
+            } catch (Exception e) {
+                System.err.println("[DualAuthAgent] HandshakeBypass: clearTimeout failed: " + e.getMessage());
+            }
+
+            // 2. Get the channel via getChannel() method
             Object channel = null;
             try {
                 Method getChannel = findMethodInHierarchy(handshakeHandler.getClass(), "getChannel");
@@ -1218,7 +1227,7 @@ public class DualAuthHelper {
             } catch (Exception e) {
                 System.err.println("[DualAuthAgent] HandshakeBypass: getChannel() failed: " + e.getMessage());
             }
-            // Fallback: try 'channels' array field (PacketHandler stores channel in channels[0])
+            // Fallback: channels[0] array in PacketHandler
             if (channel == null) {
                 Object channels = getFieldFromHierarchy(handshakeHandler, "channels");
                 if (channels != null && channels.getClass().isArray()) {
@@ -1231,22 +1240,13 @@ public class DualAuthHelper {
                 return false;
             }
 
-            // 2. Get ProtocolVersion and other fields needed for PasswordPacketHandler
-            Object protocolVersion = getFieldFromHierarchy(handshakeHandler, "protocolVersion");
-            Object language = getFieldFromHierarchy(handshakeHandler, "language");
-            Object referralData = getFieldFromHierarchy(handshakeHandler, "referralData");
-            Object referralSource = getFieldFromHierarchy(handshakeHandler, "referralSource");
-
-            // 3. Create ConnectAccept packet with null password challenge
-            //    ConnectAccept is in com.hypixel.hytale.protocol.packets.auth
-            Class<?> connectAcceptClass = findClass(handshakeHandler.getClass().getClassLoader(),
+            // 3. Create ConnectAccept(null) — no password challenge
+            Class<?> connectAcceptClass = findClass(cl,
                 "com.hypixel.hytale.protocol.packets.auth.ConnectAccept");
             if (connectAcceptClass == null) {
                 System.err.println("[DualAuthAgent] HandshakeBypass: Could not find ConnectAccept class");
                 return false;
             }
-
-            // ConnectAccept(byte[] passwordChallenge)
             Object connectAccept = null;
             for (Constructor<?> c : connectAcceptClass.getDeclaredConstructors()) {
                 Class<?>[] params = c.getParameterTypes();
@@ -1257,7 +1257,6 @@ public class DualAuthHelper {
                 }
             }
             if (connectAccept == null) {
-                // Try no-arg constructor + set field
                 try {
                     Constructor<?> c = connectAcceptClass.getDeclaredConstructor();
                     c.setAccessible(true);
@@ -1268,30 +1267,113 @@ public class DualAuthHelper {
                 }
             }
 
-            // 4. Send ConnectAccept via channel.writeAndFlush()
-            Method writeAndFlush = channel.getClass().getMethod("writeAndFlush", Object.class);
-            writeAndFlush.invoke(channel, connectAccept);
+            // 4. Send ConnectAccept via handler's write() method (same as InitialPacketHandler does)
+            //    this.write((ToClientPacket) new ConnectAccept(passwordChallenge))
+            Method writeMethod = findMethodInHierarchy(handshakeHandler.getClass(), "write");
+            if (writeMethod != null) {
+                writeMethod.setAccessible(true);
+                writeMethod.invoke(handshakeHandler, connectAccept);
+            } else {
+                // Fallback to channel.writeAndFlush()
+                System.out.println("[DualAuthAgent] HandshakeBypass: write() method not found, using channel.writeAndFlush()");
+                Method writeAndFlush = channel.getClass().getMethod("writeAndFlush", Object.class);
+                writeAndFlush.invoke(channel, connectAccept);
+            }
             System.out.println("[DualAuthAgent] HandshakeBypass: Sent ConnectAccept (no password challenge)");
 
-            // 5. Create PasswordPacketHandler
-            //    PasswordPacketHandler(Channel, ProtocolVersion, String language, UUID, String username,
-            //                          byte[] referralData, HostAddress referralSource,
-            //                          byte[] passwordChallenge, SetupHandlerSupplier)
-            Class<?> passwordHandlerClass = findClass(handshakeHandler.getClass().getClassLoader(),
+            // 5. Get fields needed for PasswordPacketHandler
+            Object protocolVersion = getFieldFromHierarchy(handshakeHandler, "protocolVersion");
+            Object language = getFieldFromHierarchy(handshakeHandler, "language");
+            Object referralData = getFieldFromHierarchy(handshakeHandler, "referralData");
+            Object referralSource = getFieldFromHierarchy(handshakeHandler, "referralSource");
+
+            // 6. Create SetupHandlerSupplier via Proxy.
+            //    AuthHandlerSupplier and SetupHandlerSupplier are different interfaces with same
+            //    signature: create(Channel, ProtocolVersion, String, PlayerAuthentication).
+            //    We bridge them with a dynamic proxy wrapping the authHandlerSupplier.
+            Class<?> passwordHandlerClass = findClass(cl,
                 "com.hypixel.hytale.server.core.io.handlers.login.PasswordPacketHandler");
             if (passwordHandlerClass == null) {
                 System.err.println("[DualAuthAgent] HandshakeBypass: Could not find PasswordPacketHandler class");
                 return false;
             }
 
-            // Find the SetupHandlerSupplier from AuthenticationPacketHandler.authHandlerSupplier
-            // or from InitialPacketHandler
-            Object setupHandlerSupplier = findSetupHandlerSupplier(handshakeHandler);
+            // Find SetupHandlerSupplier interface class
+            Class<?> setupSupplierClass = null;
+            for (Class<?> inner : passwordHandlerClass.getDeclaredClasses()) {
+                if (inner.getSimpleName().equals("SetupHandlerSupplier") ||
+                    inner.getSimpleName().contains("Supplier")) {
+                    setupSupplierClass = inner;
+                    break;
+                }
+            }
+            if (setupSupplierClass == null) {
+                // Try loading directly
+                setupSupplierClass = findClass(cl,
+                    "com.hypixel.hytale.server.core.io.handlers.login.PasswordPacketHandler$SetupHandlerSupplier");
+            }
 
+            Object setupSupplier = null;
+            if (setupSupplierClass != null) {
+                // Get the authHandlerSupplier from AuthenticationPacketHandler
+                final Object authSupplier = getFieldFromHierarchy(handshakeHandler, "authHandlerSupplier");
+                if (authSupplier != null) {
+                    // Create dynamic proxy that bridges AuthHandlerSupplier → SetupHandlerSupplier
+                    // Both have create(Channel, ProtocolVersion, String, PlayerAuthentication)
+                    final Class<?> finalSetupSupplierClass = setupSupplierClass;
+                    setupSupplier = java.lang.reflect.Proxy.newProxyInstance(cl, new Class<?>[]{setupSupplierClass},
+                        (proxy, method, args) -> {
+                            if (method.getName().equals("create")) {
+                                // Delegate to authSupplier.create(...)
+                                for (Method m : authSupplier.getClass().getMethods()) {
+                                    if (m.getName().equals("create") && m.getParameterCount() == 4) {
+                                        return m.invoke(authSupplier, args);
+                                    }
+                                }
+                                // Try interfaces
+                                for (Class<?> iface : authSupplier.getClass().getInterfaces()) {
+                                    for (Method m : iface.getMethods()) {
+                                        if (m.getName().equals("create") && m.getParameterCount() == 4) {
+                                            m.setAccessible(true);
+                                            return m.invoke(authSupplier, args);
+                                        }
+                                    }
+                                }
+                            }
+                            return null;
+                        });
+                } else {
+                    // Fallback: create SetupPacketHandler::new equivalent via proxy
+                    Class<?> setupPHClass = findClass(cl,
+                        "com.hypixel.hytale.server.core.io.handlers.SetupPacketHandler");
+                    if (setupPHClass != null) {
+                        final Class<?> finalSetupPHClass = setupPHClass;
+                        setupSupplier = java.lang.reflect.Proxy.newProxyInstance(cl, new Class<?>[]{setupSupplierClass},
+                            (proxy, method, args) -> {
+                                if (method.getName().equals("create") && args != null && args.length == 4) {
+                                    for (Constructor<?> ctor : finalSetupPHClass.getDeclaredConstructors()) {
+                                        if (ctor.getParameterCount() == 4) {
+                                            ctor.setAccessible(true);
+                                            return ctor.newInstance(args);
+                                        }
+                                    }
+                                }
+                                return null;
+                            });
+                    }
+                }
+            }
+
+            if (setupSupplier == null) {
+                System.err.println("[DualAuthAgent] HandshakeBypass: Could not create SetupHandlerSupplier");
+                return false;
+            }
+
+            // 7. Create PasswordPacketHandler
             Object passwordHandler = null;
             for (Constructor<?> c : passwordHandlerClass.getDeclaredConstructors()) {
                 Class<?>[] params = c.getParameterTypes();
-                if (params.length >= 8) {
+                if (params.length == 9) {
                     c.setAccessible(true);
                     try {
                         passwordHandler = c.newInstance(
@@ -1299,13 +1381,12 @@ public class DualAuthHelper {
                             playerUuid, username,
                             referralData, referralSource,
                             null,  // passwordChallenge = null (no password)
-                            setupHandlerSupplier
+                            setupSupplier
                         );
                         break;
                     } catch (Exception e) {
-                        if (Boolean.getBoolean("dualauth.debug")) {
-                            System.out.println("[DualAuthAgent] HandshakeBypass: Constructor attempt failed: " + e.getMessage());
-                        }
+                        System.err.println("[DualAuthAgent] HandshakeBypass: PasswordPacketHandler constructor failed: " + e.getMessage());
+                        e.printStackTrace();
                     }
                 }
             }
@@ -1315,8 +1396,8 @@ public class DualAuthHelper {
                 return false;
             }
 
-            // 6. Install via NettyUtil.setChannelHandler(channel, passwordHandler)
-            Class<?> nettyUtilClass = findClass(handshakeHandler.getClass().getClassLoader(),
+            // 8. Install via NettyUtil.setChannelHandler(channel, passwordHandler)
+            Class<?> nettyUtilClass = findClass(cl,
                 "com.hypixel.hytale.server.core.io.netty.NettyUtil");
             if (nettyUtilClass == null) {
                 System.err.println("[DualAuthAgent] HandshakeBypass: Could not find NettyUtil class");
@@ -1337,7 +1418,7 @@ public class DualAuthHelper {
 
             setChannelHandler.setAccessible(true);
             setChannelHandler.invoke(null, channel, passwordHandler);
-            System.out.println("[DualAuthAgent] HandshakeBypass: Installed PasswordPacketHandler - development flow active");
+            System.out.println("[DualAuthAgent] HandshakeBypass: Installed PasswordPacketHandler - development flow active for " + username);
 
             return true;
         } catch (Exception e) {
