@@ -1,4 +1,4 @@
-# DualAuth ByteBuddy Agent
+# DualAuth ByteBuddy Agent (v1.1.17)
 
 A high-performance, non-intrusive **Java Agent** designed for Hytale dedicated servers. It enables seamless dual-authentication (Official + F2P) and decentralized identity (Omni-Auth) without modifying a single byte of the original server JAR.
 
@@ -247,7 +247,7 @@ Show authentication details for yourself or a target player.
   Session:   2h 15m ago
   F2P:       true
   Omni-Auth: false
-  Agent:     v1.1.20
+  Agent:     v1.1.17
 ```
 
 ### `/authlist`

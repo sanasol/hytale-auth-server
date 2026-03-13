@@ -110,13 +110,7 @@ public class JWTValidatorTransformer implements net.bytebuddy.agent.builder.Agen
                              System.out.println("[DualAuthAgent] Manual validation SUCCESS for issuer: " + issuer);
                              return wrapper;
                          } else {
-                             System.out.println("[DualAuthAgent] Manual validation FAILED for issuer: " + issuer);
-                             // Third-party issuers (e.g. Butter): accept token without signature
-                             // verification when JWKS key doesn't match signing key
-                             Object thirdPartyWrapper = DualAuthHelper.acceptThirdPartyToken(thiz, token, methodName);
-                             if (thirdPartyWrapper != null) {
-                                 return thirdPartyWrapper;
-                             }
+                             System.out.println("[DualAuthAgent] Manual validation FAILED for issuer: " + issuer + " (falling back)");
                          }
                     }
                 }

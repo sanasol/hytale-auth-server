@@ -248,22 +248,15 @@ public class DualServerTokenManager {
             }
         }
 
-        // 3. Federated tokens from issuer's /server/auto-auth
-        DualServerTokenManager.FederatedIssuerTokens fedTokens = DualServerIdentity.fetchFederatedTokensFromIssuer(issuer);
-        if (fedTokens != null && fedTokens.getSessionToken() != null) {
-            if (Boolean.getBoolean("dualauth.debug")) {
-                LOGGER.info("Got federated session token for issuer: " + issuer);
-            }
-            return fedTokens.getSessionToken();
-        }
-
-        // 4. F2P Promiscuous Fallback
+        // 3. F2P Promiscuous Fallback
+        // If we have F2P tokens and it's not official, use F2P tokens.
+        // This solves the localhost vs sanasol.ws development mismatch.
         if (f2pSessionToken != null) {
             LOGGER.fine("Returning F2P session token for non-official issuer: " + issuer);
             return f2pSessionToken;
         }
 
-        // 5. Dynamic Cache (Federated)
+        // 4. Dynamic Cache (Federated)
         return issuerSessionCache.get(issuer);
     }
 
