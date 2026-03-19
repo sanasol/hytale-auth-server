@@ -1397,7 +1397,10 @@ async function getPaginatedServers(page, limit, activeOnly = true) {
       serverKeys.push(...keys);
     } while (cursor !== '0');
 
-    // Get player counts for all servers
+    // Also get servers from active:servers sorted set (includes servers with 0 players)
+    const activeServerIds = await redis.zrevrange('active:servers', 0, -1);
+
+    // Get player counts for all servers from SCAN
     // Filter out 'hytale-client' which contains ALL players with valid tokens
     let serverCounts = (await Promise.all(serverKeys.map(async (key) => ({
       key,
@@ -1405,9 +1408,23 @@ async function getPaginatedServers(page, limit, activeOnly = true) {
       count: await redis.scard(key)
     })))).filter(s => s.audience !== 'hytale-client');
 
-    // If activeOnly, filter servers with players and verify players have valid TTL
+    // Add servers from active:servers that aren't already in the list
+    const existingAudiences = new Set(serverCounts.map(s => s.audience));
+    const activeServerSet = new Set(activeServerIds);
+    for (const serverId of activeServerIds) {
+      if (!existingAudiences.has(serverId)) {
+        const key = `${KEYS.SERVER_PLAYERS}${serverId}`;
+        serverCounts.push({
+          key,
+          audience: serverId,
+          count: await redis.scard(key)
+        });
+      }
+    }
+
+    // If activeOnly, filter servers with players — but always keep servers from active:servers
     if (activeOnly) {
-      serverCounts = serverCounts.filter(s => s.count > 0);
+      serverCounts = serverCounts.filter(s => s.count > 0 || activeServerSet.has(s.audience));
     }
 
     // Sort by player count descending

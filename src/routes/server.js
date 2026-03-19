@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const config = require('../config');
 const auth = require('../services/auth');
 const storage = require('../services/storage');
+const { redis, isConnected } = require('../services/redis');
 const { sendJson } = require('../utils/response');
 
 /**
@@ -15,11 +16,11 @@ const { sendJson } = require('../utils/response');
  * The server provides a unique identifier (server_id or generates one)
  * and receives session + identity tokens immediately.
  */
-function handleServerAutoAuth(req, res, body) {
+async function handleServerAutoAuth(req, res, body) {
   console.log('server/auto-auth request:', JSON.stringify(body));
 
   // Server can provide its own ID or we generate one
-  const serverId = body.server_id || body.serverId || crypto.randomUUID();
+  const serverId = body.server_id || body.serverId || body.serverUuid || crypto.randomUUID();
 
   // Server name for logging/identification (optional)
   const serverName = body.server_name || body.serverName || `Server-${serverId.substring(0, 8)}`;
@@ -47,8 +48,14 @@ function handleServerAutoAuth(req, res, body) {
 
   const sessionToken = auth.generateSessionToken(serverUuid, serverName, requestHost);
 
-  // Register the server session
-  storage.registerSession(sessionToken, serverUuid, serverName, serverId);
+  // Register the server session (null serverAudience to avoid tracking server as a player)
+  storage.registerSession(sessionToken, serverUuid, serverName, null);
+
+  // Track server in active:servers (without adding to active:players)
+  if (isConnected()) {
+    const expiry = Date.now() + (config.sessionTtl * 1000);
+    await redis.zadd('active:servers', expiry, serverId).catch(() => {});
+  }
 
   // Store server name and IP for admin dashboard
   storage.setServerName(serverId, serverName);
@@ -374,9 +381,15 @@ function handleAuthCodeExchange(req, res, body) {
 }
 
 /**
- * Generate a deterministic UUID from server ID
+ * Generate a deterministic UUID from server ID.
+ * If the input is already a valid UUID, use it directly.
  */
 function generateServerUuid(serverId) {
+  // If serverId is already a valid UUID, use it directly
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (uuidRegex.test(serverId)) {
+    return serverId.toLowerCase();
+  }
   const hash = crypto.createHash('sha256').update(`f2p-server-${serverId}`).digest('hex');
   // Format as UUID v4
   return `${hash.substring(0, 8)}-${hash.substring(8, 12)}-4${hash.substring(13, 16)}-a${hash.substring(17, 20)}-${hash.substring(20, 32)}`;
