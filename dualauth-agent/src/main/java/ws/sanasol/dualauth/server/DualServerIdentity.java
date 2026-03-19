@@ -68,7 +68,22 @@ public class DualServerIdentity {
         try {
             String endpoint = DualAuthConfig.F2P_SESSION_URL + "/server/auto-auth";
             LOGGER.info("Fetching F2P identity token from: " + endpoint);
-            String response = fetchUrl(endpoint);
+
+            // Send POST with server identity so auth server uses real UUID/name
+            String serverUuid = DualAuthHelper.getServerUuid();
+            String serverName = DualAuthHelper.getServerName();
+
+            Map<String, Object> requestData = Map.of(
+                "serverUuid", serverUuid,
+                "serverName", serverName
+            );
+            String jsonBody = new com.google.gson.Gson().toJson(requestData);
+
+            String response = postJson(endpoint, jsonBody);
+            if (response == null || response.isEmpty()) {
+                // Fallback: try GET for backward compatibility with older auth servers
+                response = fetchUrl(endpoint);
+            }
             if (response == null || response.isEmpty()) {
                 generateFallbackTokens(); return;
             }
@@ -77,15 +92,18 @@ public class DualServerIdentity {
             if (identityToken == null) identityToken = extractJsonField(response, "token");
             if (identityToken != null) {
                 DualServerTokenManager.setF2PTokens(sessionToken, identityToken);
-                
-                // Capture optional metadata from Sanasol backend
+
+                // Capture optional metadata from auth server
                 String sUuid = extractJsonField(response, "serverUuid");
                 if (sUuid != null) DualAuthHelper.setServerUuid(sUuid);
-                
+
                 String sId = extractJsonField(response, "serverId");
                 if (sId != null) DualAuthHelper.setServerId(sId);
 
-                LOGGER.info("F2P tokens fetched successfully (UUID: " + DualAuthHelper.getServerUuid() + ", ID: " + DualAuthHelper.getServerId() + ")");
+                String sName = extractJsonField(response, "serverName");
+                if (sName != null) DualAuthHelper.setServerName(sName);
+
+                LOGGER.info("F2P tokens fetched successfully (UUID: " + DualAuthHelper.getServerUuid() + ", Name: " + DualAuthHelper.getServerName() + ")");
             } else generateFallbackTokens();
         } catch (Exception e) {
             LOGGER.log(Level.WARNING, "Failed to fetch F2P tokens: " + e.getMessage());
@@ -341,6 +359,29 @@ public class DualServerIdentity {
             conn.setConnectTimeout(HTTP_TIMEOUT);
             conn.setReadTimeout(HTTP_TIMEOUT);
             conn.setRequestProperty("Accept", "application/json");
+            if (conn.getResponseCode() != 200) return null;
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                StringBuilder sb = new StringBuilder(); String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+                return sb.toString();
+            }
+        } catch (Exception e) { return null; } finally { if (conn != null) conn.disconnect(); }
+    }
+
+    private static String postJson(String urlString, String jsonBody) {
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(urlString);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("Accept", "application/json");
+            conn.setConnectTimeout(HTTP_TIMEOUT);
+            conn.setReadTimeout(HTTP_TIMEOUT);
+            conn.setDoOutput(true);
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(jsonBody.getBytes(StandardCharsets.UTF_8));
+            }
             if (conn.getResponseCode() != 200) return null;
             try (BufferedReader r = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
                 StringBuilder sb = new StringBuilder(); String line;

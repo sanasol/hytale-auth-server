@@ -761,9 +761,28 @@ public class DualAuthHelper {
 
     private static String cachedServerUuid = null;
 
+    /**
+     * Get the server's UUID (audience).
+     * Tries in order:
+     * 1. AuthConfig.getServerAudience() via reflection (real server UUID)
+     * 2. HYTALE_SERVER_AUDIENCE env var
+     * 3. HYTALE_SERVER_ID env var
+     * 4. Fallback UUID
+     */
     public static String getServerUuid() {
         if (cachedServerUuid != null)
             return cachedServerUuid;
+        // Try to get real server audience from AuthConfig via reflection
+        try {
+            Class<?> authConfigClass = Class.forName("com.hypixel.hytale.server.core.auth.AuthConfig");
+            Method getAudience = authConfigClass.getMethod("getServerAudience");
+            String audience = (String) getAudience.invoke(null);
+            if (audience != null && !audience.isEmpty()) {
+                cachedServerUuid = audience;
+                return cachedServerUuid;
+            }
+        } catch (Exception ignored) {}
+        // Fallback to env vars
         String env = System.getenv("HYTALE_SERVER_AUDIENCE");
         if (env == null || env.isEmpty())
             env = System.getenv("HYTALE_SERVER_ID");
@@ -793,10 +812,31 @@ public class DualAuthHelper {
 
     private static String cachedServerName = null;
 
+    /**
+     * Get the server's display name.
+     * Tries in order:
+     * 1. HytaleServer.get().getServerName() via reflection (real name from config.json)
+     * 2. HYTALE_SERVER_NAME env var
+     * 3. Server-{uuid-prefix} fallback
+     */
     public static String getServerName() {
         if (cachedServerName != null)
             return cachedServerName;
-        // Try to get from environment first
+        // Try to get real server name from HytaleServer via reflection
+        try {
+            Class<?> serverClass = Class.forName("com.hypixel.hytale.server.core.HytaleServer");
+            Method getMethod = serverClass.getMethod("get");
+            Object server = getMethod.invoke(null);
+            if (server != null) {
+                Method getNameMethod = serverClass.getMethod("getServerName");
+                String name = (String) getNameMethod.invoke(server);
+                if (name != null && !name.isEmpty()) {
+                    cachedServerName = name;
+                    return cachedServerName;
+                }
+            }
+        } catch (Exception ignored) {}
+        // Try env var
         String envName = System.getenv("HYTALE_SERVER_NAME");
         if (envName != null && !envName.isEmpty()) {
             cachedServerName = envName;

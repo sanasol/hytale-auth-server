@@ -79,6 +79,11 @@ public class DualAuthEarlyPlugin implements ClassTransformer {
             initialize();
         }
 
+        // If javaagent is already handling transformations, skip entirely
+        if (DualAuthAgent.isInstalled()) {
+            return null;
+        }
+
         // Check if this is a target class
         if (!isTargetClass(className)) {
             return null; // null = no transformation
@@ -102,6 +107,12 @@ public class DualAuthEarlyPlugin implements ClassTransformer {
     private synchronized void initialize() {
         if (initialized) return;
         initialized = true;
+
+        // Skip if javaagent already installed — prevents double transformation
+        if (DualAuthAgent.isInstalled()) {
+            System.out.println("[DualAuth-Early] Agent already active via -javaagent. Skipping early plugin initialization.");
+            return;
+        }
 
         System.out.println("[DualAuth-Early] Initializing DualAuth Early Plugin...");
 
