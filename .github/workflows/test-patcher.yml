@@ -1705,6 +1705,7 @@ jobs:
             'java -Xmx2G -javaagent:dualauth-agent.jar -jar HytaleServer.jar --assets Assets.zip --bind 0.0.0.0:5530 --universe universe_agent_only --auth-mode authenticated --disable-sentry --bare'
 
           mkdir -p earlyplugins
+          cp dualauth-agent.jar earlyplugins/
           cp dummy-early-plugin.jar earlyplugins/
           run_scenario \
             agent_with_early_flag \
@@ -2026,7 +2027,7 @@ jobs:
               echo "Server is ready!"
               break
             fi
-            if grep -qE "NoSuchFieldError|NoSuchMethodError|ClassNotFoundException|VerifyError|LinkageError|NoClassDefFoundError|Exception in thread" server_early_mock.log 2>/dev/null; then
+            if grep -qE "NoSuchFieldError|NoSuchMethodError|ClassNotFoundException|VerifyError|LinkageError|NoClassDefFoundError" server_early_mock.log 2>/dev/null; then
               echo "Early-plugin server failed to boot cleanly"
               cat server_early_mock.log
               exit 1
@@ -2042,6 +2043,17 @@ jobs:
               tail -30 server_early_mock.log
               exit 1
             fi
+          fi
+
+          if grep -q "Exception in thread: Thread\[#[0-9][0-9]*,DualAuth-Warmup" server_early_mock.log 2>/dev/null; then
+            echo "::error::DualAuth warmup thread crashed in early-plugin mode"
+            python3 - <<'PY'
+            from pathlib import Path
+            text = Path('server_early_mock.log').read_text(errors='replace')
+            idx = text.find('Exception in thread: Thread[#')
+            print(text[max(0, idx-300):idx+1200])
+            PY
+            exit 1
           fi
 
       - name: Get F2P Player Token
