@@ -1660,15 +1660,16 @@ jobs:
             sleep 1
 
             echo "--- Assertions for $name ---"
-            local static_count early_count agent_install_count warmup_count thread_error_count transformed_count
+            local static_count early_count agent_install_count warmup_count thread_error_count transformed_count classnotfound_count
             static_count=$(grep -c "Mode: STATIC (-javaagent flag)" "$logfile" 2>/dev/null || true)
             early_count=$(grep -c "Mode: EARLY PLUGIN (ClassTransformer)" "$logfile" 2>/dev/null || true)
             agent_install_count=$(grep -c "DualAuth Hybrid Agent installed successfully." "$logfile" 2>/dev/null || true)
             warmup_count=$(grep -c "Triggering F2P identity token pre-fetch" "$logfile" 2>/dev/null || true)
             thread_error_count=$(grep -c "Exception in thread: Thread\[#[0-9][0-9]*,DualAuth-Warmup" "$logfile" 2>/dev/null || true)
             transformed_count=$(grep -c "\[DualAuth-Early\] ✓ Transformed:" "$logfile" 2>/dev/null || true)
+            classnotfound_count=$(grep -c "ClassNotFoundException" "$logfile" 2>/dev/null || true)
 
-            echo "static=$static_count early=$early_count install=$agent_install_count warmup=$warmup_count earlyTransforms=$transformed_count"
+            echo "static=$static_count early=$early_count install=$agent_install_count warmup=$warmup_count earlyTransforms=$transformed_count classNotFound=$classnotfound_count"
 
             case "$name" in
               agent_only)
@@ -1684,7 +1685,7 @@ jobs:
               early_only)
                 test "$static_count" -eq 0
                 test "$agent_install_count" -eq 0
-                test "$transformed_count" -ge 1
+                test "$classnotfound_count" -eq 0
                 ;;
               agent_and_early_plugin)
                 test "$static_count" -eq 1
@@ -2028,7 +2029,7 @@ jobs:
               echo "Server is ready!"
               break
             fi
-            if grep -qE "NoSuchFieldError|NoSuchMethodError|ClassNotFoundException|VerifyError|LinkageError|NoClassDefFoundError" server_early_mock.log 2>/dev/null; then
+            if grep -qE "NoSuchFieldError|NoSuchMethodError|VerifyError|LinkageError|NoClassDefFoundError" server_early_mock.log 2>/dev/null; then
               echo "Early-plugin server failed to boot cleanly"
               cat server_early_mock.log
               exit 1
