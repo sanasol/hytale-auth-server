@@ -1710,7 +1710,7 @@ jobs:
             agent_with_early_flag \
             server_agent_with_early_flag.log \
             5531 \
-            'java -Xmx2G -javaagent:dualauth-agent.jar -jar HytaleServer.jar --assets Assets.zip --bind 0.0.0.0:5531 --universe universe_agent_with_early_flag --auth-mode authenticated --disable-sentry --bare --early-plugins earlyplugins'
+            'java -Xmx2G -javaagent:dualauth-agent.jar -jar HytaleServer.jar --assets Assets.zip --bind 0.0.0.0:5531 --universe universe_agent_with_early_flag --auth-mode authenticated --disable-sentry --bare --early-plugins earlyplugins --accept-early-plugins'
 
           mkdir -p earlyplugins
           cp dualauth-agent.jar earlyplugins/
@@ -1719,7 +1719,7 @@ jobs:
             early_only \
             server_early_only.log \
             5532 \
-            'java -Xmx2G -jar HytaleServer.jar --assets Assets.zip --bind 0.0.0.0:5532 --universe universe_early_only --auth-mode authenticated --disable-sentry --bare --early-plugins earlyplugins'
+            'java -Xmx2G -jar HytaleServer.jar --assets Assets.zip --bind 0.0.0.0:5532 --universe universe_early_only --auth-mode authenticated --disable-sentry --bare --early-plugins earlyplugins --accept-early-plugins'
 
           mkdir -p earlyplugins
           cp dualauth-agent.jar earlyplugins/
@@ -1728,7 +1728,7 @@ jobs:
             agent_and_early_plugin \
             server_agent_and_early_plugin.log \
             5533 \
-            'java -Xmx2G -javaagent:dualauth-agent.jar -jar HytaleServer.jar --assets Assets.zip --bind 0.0.0.0:5533 --universe universe_agent_and_early_plugin --auth-mode authenticated --disable-sentry --bare --early-plugins earlyplugins'
+            'java -Xmx2G -javaagent:dualauth-agent.jar -jar HytaleServer.jar --assets Assets.zip --bind 0.0.0.0:5533 --universe universe_agent_and_early_plugin --auth-mode authenticated --disable-sentry --bare --early-plugins earlyplugins --accept-early-plugins'
 
       - name: Upload init matrix logs
         if: always()
@@ -2013,6 +2013,7 @@ jobs:
             --auth-mode authenticated \
             --disable-sentry \
             --early-plugins earlyplugins \
+            --accept-early-plugins \
             2>&1 | tee server_early_mock.log &
 
           SERVER_PID=$!
