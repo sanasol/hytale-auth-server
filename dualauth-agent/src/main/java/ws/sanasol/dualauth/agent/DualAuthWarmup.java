@@ -11,8 +11,9 @@ public class DualAuthWarmup implements Runnable {
             DualServerTokenManager.ensureF2PTokens();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-        } catch (Exception e) {
-            System.err.println("Error during async warm-up: " + e.getMessage());
+        } catch (Throwable t) {
+            System.err.println("Error during async warm-up: " + t);
+            t.printStackTrace(System.err);
         }
     }
 

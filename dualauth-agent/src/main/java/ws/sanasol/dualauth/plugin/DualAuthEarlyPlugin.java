@@ -234,6 +234,11 @@ public class DualAuthEarlyPlugin implements ClassTransformer {
         // This is critical: DualAuthWarmup.start() in plugin CL stores F2P tokens
         // in the plugin CL's DualServerTokenManager, but advice code runs in TransformingCL.
         // We must also trigger warmup in TransformingCL so F2P tokens are available there.
+        if (!verifyInjectedRuntimeClasses(contextCL)) {
+            System.err.println("[DualAuth-Early] WARNING: Skipping warmup because injected runtime classes are not fully available in TransformingCL");
+            System.err.println("[DualAuth-Early] F2P tokens will be fetched lazily on first real use");
+            return;
+        }
         triggerWarmupInTargetClassLoader(contextCL);
     }
 
@@ -251,6 +256,28 @@ public class DualAuthEarlyPlugin implements ClassTransformer {
             System.err.println("[DualAuth-Early] WARNING: Failed to trigger warmup in TransformingCL: " + e.getMessage());
             System.err.println("[DualAuth-Early] F2P server identity tokens may not be available");
         }
+    }
+
+    private boolean verifyInjectedRuntimeClasses(ClassLoader targetCL) {
+        String[] requiredClasses = new String[] {
+            "ws.sanasol.dualauth.agent.DualAuthWarmup",
+            "ws.sanasol.dualauth.server.DualServerTokenManager",
+            "ws.sanasol.dualauth.server.DualServerIdentity",
+            "ws.sanasol.dualauth.context.DualAuthHelper"
+        };
+
+        for (String className : requiredClasses) {
+            try {
+                Class<?> cls = targetCL.loadClass(className);
+                System.out.println("[DualAuth-Early] Verified runtime class: " + cls.getName());
+            } catch (Throwable t) {
+                System.err.println("[DualAuth-Early] Missing runtime class in TransformingCL: " + className);
+                System.err.println("[DualAuth-Early] Verification failure: " + t);
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private boolean tryReparentClassLoader(ClassLoader target, ClassLoader newParent) {
