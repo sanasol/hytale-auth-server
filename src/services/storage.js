@@ -310,6 +310,12 @@ async function setServerName(audience, name) {
 
   try {
     await redis.set(`${KEYS.SERVER_NAME}${audience}`, name);
+	
+	// ADDED: Register the server as "alive" in activeServerSet
+	// even if there are no players yet. TEST: TRY COMMENTING OUT.
+    const expiry = Date.now() + (config.sessionTtl * 1000);
+    await redis.zadd('active:servers', expiry, audience);
+	
     console.log(`Server name set: ${audience} -> "${name}"`);
     return true;
   } catch (e) {
@@ -326,6 +332,11 @@ async function setServerIp(audience, ip) {
 
   try {
     await redis.set(`${KEYS.SERVER_NAME}${audience}:ip`, ip);
+	
+	// ADDED: Keep the server active in the list. TEST: TRY COMMENTING OUT.
+    const expiry = Date.now() + (config.sessionTtl * 1000);
+    await redis.zadd('active:servers', expiry, audience);
+	
     console.log(`Server IP set: ${audience} -> "${ip}"`);
     return true;
   } catch (e) {
@@ -367,8 +378,10 @@ async function removePlayerFromAllServers(playerUuid) {
     const remaining = await redis.scard(`${KEYS.SERVER_PLAYERS}${currentServer}`);
     if (remaining === 0) {
       await redis.del(`${KEYS.SERVER_PLAYERS}${currentServer}`);
-      await redis.zrem('active:servers', currentServer);
-      console.log(`Removed empty server: ${currentServer}`);
+	  // Removed ZREM to keep the server visible in the server list even with 0 players.
+	  // The server will now only disappear if it stops heartbeating/updating for 10 hours.
+      // await redis.zrem('active:servers', currentServer);
+      console.log(`Server is empty, but we keep it in active:servers for TTL duration: ${currentServer}`);
     }
 
     // Remove player's server tracking (but keep in active:players - they're still in game)
@@ -1200,10 +1213,21 @@ async function trackActivePlayer(uuid, serverAudience) {
     const now = Date.now();
     const expiry = now + (config.sessionTtl * 1000);
 
-    // Add to sorted sets with expiry timestamp as score
-    await redis.zadd('active:players', expiry, uuid);
-    if (serverAudience && serverAudience !== 'hytale-client') {
-      await redis.zadd('active:servers', expiry, serverAudience);
+	// 1. Retrieve the username
+    const username = await getUsername(uuid);
+    
+    // Check if the username exists and is not just empty space
+    if (username && username.trim() !== '') {
+      
+      const lowerName = username.toLowerCase();
+      
+      // Identify service/server entries to prevent them from appearing in the player list
+      const isServer = lowerName.includes('server');
+
+      // Add to the active players list ONLY if it's not a server entity
+      if (!isServer) {
+        await redis.zadd('active:players', expiry, uuid);
+      }
     }
 
     // Clean expired entries periodically (1% chance per call)
