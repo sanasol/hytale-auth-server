@@ -41,6 +41,8 @@ import java.util.jar.JarFile;
  */
 public class DualAuthEarlyPlugin implements ClassTransformer {
 
+    private static final String AGENT_ACTIVE_PROPERTY = "dualauth.agent.active";
+
     private static final Set<String> TARGET_CLASSES = Set.of(
         "com.hypixel.hytale.server.core.auth.JWTValidator",
         "com.hypixel.hytale.server.core.auth.SessionServiceClient",
@@ -79,8 +81,10 @@ public class DualAuthEarlyPlugin implements ClassTransformer {
             initialize();
         }
 
-        // If javaagent is already handling transformations, skip entirely
-        if (DualAuthAgent.isInstalled()) {
+        // If javaagent/bootstrap install already claimed ownership, skip entirely.
+        // ServiceLoader may load this transformer in a different classloader, so relying
+        // only on DualAuthAgent.isInstalled() is insufficient.
+        if (isAnotherModeAlreadyActive()) {
             return null;
         }
 
@@ -106,21 +110,25 @@ public class DualAuthEarlyPlugin implements ClassTransformer {
 
     private synchronized void initialize() {
         if (initialized) return;
-        initialized = true;
 
-        // Skip if javaagent already installed — prevents double transformation
-        if (DualAuthAgent.isInstalled()) {
+        // Skip if javaagent/bootstrap install already installed. This must use a global
+        // System property because the early plugin can be loaded in a different classloader
+        // from the bootstrap-loaded DualAuthAgent class.
+        if (isAnotherModeAlreadyActive()) {
             System.out.println("[DualAuth-Early] Agent already active via -javaagent. Skipping early plugin initialization.");
+            initialized = true;
             return;
         }
+
+        claimEarlyPluginMode();
+        initialized = true;
 
         System.out.println("[DualAuth-Early] Initializing DualAuth Early Plugin...");
 
         // 1. Set experimental mode for newer Java
         System.setProperty("net.bytebuddy.experimental", "true");
 
-        // 2. Mark as active (prevents DualAuthBootstrap from also loading)
-        System.setProperty("dualauth.agent.active", "early-plugin");
+        // 2. Mark as active was already done before initialization to avoid races.
 
         // 3. Initialize ClassFileLocator from our JAR
         try {
@@ -150,6 +158,21 @@ public class DualAuthEarlyPlugin implements ClassTransformer {
         System.out.println("║   Official URL: " + padRight(DualAuthConfig.OFFICIAL_SESSION_URL, 45) + "║");
         System.out.println("║   Trust All Issuers: " + padRight(String.valueOf(DualAuthConfig.TRUST_ALL_ISSUERS), 40) + "║");
         System.out.println("╚══════════════════════════════════════════════════════════════╝");
+    }
+
+    private boolean isAnotherModeAlreadyActive() {
+        String active = System.getProperty(AGENT_ACTIVE_PROPERTY);
+        if (active != null && !active.isEmpty() && !"early-plugin".equals(active)) {
+            return true;
+        }
+        return DualAuthAgent.isInstalled();
+    }
+
+    private void claimEarlyPluginMode() {
+        String existing = System.getProperty(AGENT_ACTIVE_PROPERTY);
+        if (existing == null || existing.isEmpty()) {
+            System.setProperty(AGENT_ACTIVE_PROPERTY, "early-plugin");
+        }
     }
 
     /**

@@ -32,6 +32,7 @@ public class DualServerTokenManager {
     // F2P slots (auto-fetched from endpoint)
     private static volatile String f2pSessionToken = null;
     private static volatile String f2pIdentityToken = null;
+    private static final Object F2P_REFRESH_LOCK = new Object();
 
     // Dynamic caches for federated issuers
     private static final ConcurrentHashMap<String, String> issuerSessionCache = new ConcurrentHashMap<>();
@@ -408,8 +409,12 @@ public class DualServerTokenManager {
      */
     public static void ensureF2PTokens() {
         if (f2pSessionToken == null) {
-            LOGGER.info("F2P tokens not available, triggering refresh...");
-            DualServerIdentity.refreshF2PTokens();
+            synchronized (F2P_REFRESH_LOCK) {
+                if (f2pSessionToken == null) {
+                    LOGGER.info("F2P tokens not available, triggering refresh...");
+                    DualServerIdentity.refreshF2PTokens();
+                }
+            }
         }
     }
 
