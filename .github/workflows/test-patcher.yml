@@ -1538,6 +1538,210 @@ jobs:
           path: server/server_plugin.log
           retention-days: 7
 
+  test-init-modes:
+    name: Test Init Modes Matrix
+    needs: build-agent
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ !inputs.skip_boot_test }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+
+      - name: Download Agent & Server
+        uses: actions/download-artifact@v4
+        with:
+          path: server
+          merge-multiple: true
+
+      - name: Cache Assets.zip
+        id: cache-assets-init-modes
+        uses: actions/cache@v4
+        with:
+          path: server/Assets.zip
+          key: hytale-assets-${{ needs.build-agent.outputs.server_jar_hash }}
+
+      - name: Download Assets
+        if: steps.cache-assets-init-modes.outputs.cache-hit != 'true'
+        working-directory: server
+        run: |
+          echo "Downloading Assets.zip (not cached)..."
+          curl -sfL "$ASSETS_URL" -o Assets.zip
+          ls -lh Assets.zip
+
+      - name: Create Dummy Early Plugin Fixture
+        working-directory: server
+        run: |
+          mkdir -p fixture-src/ci/fixture fixture-classes fixture-earlyplugins META-INF/services
+          cat > fixture-src/ci/fixture/DummyEarlyPlugin.java <<'EOF'
+          package ci.fixture;
+
+          import com.hypixel.hytale.plugin.early.ClassTransformer;
+
+          public class DummyEarlyPlugin implements ClassTransformer {
+              @Override
+              public int priority() {
+                  return 1;
+              }
+
+              @Override
+              public byte[] transform(String className, String internalName, byte[] classBytes) {
+                  if (className.equals("com.hypixel.hytale.server.core.command.system.CommandManager")) {
+                      System.out.println("[CI-DummyEarly] Saw CommandManager");
+                  }
+                  return null;
+              }
+          }
+          EOF
+          mkdir -p META-INF/services
+          printf 'ci.fixture.DummyEarlyPlugin\n' > META-INF/services/com.hypixel.hytale.plugin.early.ClassTransformer
+          javac -cp HytaleServer.jar -d fixture-classes fixture-src/ci/fixture/DummyEarlyPlugin.java
+          mkdir -p fixture-classes/META-INF/services
+          cp META-INF/services/com.hypixel.hytale.plugin.early.ClassTransformer fixture-classes/META-INF/services/
+          jar cf dummy-early-plugin.jar -C fixture-classes .
+          ls -lh dummy-early-plugin.jar
+
+      - name: Run initialization matrix scenarios
+        working-directory: server
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+
+          run_scenario() {
+            local name="$1"
+            local logfile="$2"
+            local bind_port="$3"
+            shift 3
+
+            echo ""
+            echo "=== Running scenario: $name ==="
+
+            rm -rf mods earlyplugins "universe_${name}"
+            mkdir -p "universe_${name}"
+
+            bash -lc "$* 2>&1 | tee ${logfile}" &
+            SERVER_PID=$!
+
+            TIMEOUT=45
+            ELAPSED=0
+            while kill -0 "$SERVER_PID" 2>/dev/null; do
+              sleep 2
+              ELAPSED=$((ELAPSED + 2))
+
+              if grep -qE "NoSuchFieldError|NoSuchMethodError|ClassNotFoundException|VerifyError|LinkageError|NoClassDefFoundError|Exception in thread" "$logfile" 2>/dev/null; then
+                echo "::error::Failure detected in scenario $name"
+                grep -E "NoSuchFieldError|NoSuchMethodError|ClassNotFoundException|VerifyError|LinkageError|NoClassDefFoundError|Exception in thread" "$logfile" || true
+                kill "$SERVER_PID" 2>/dev/null || true
+                sleep 1
+                kill -9 "$SERVER_PID" 2>/dev/null || true
+                return 1
+              fi
+
+              if grep -qi "Server Booted" "$logfile" 2>/dev/null; then
+                break
+              fi
+
+              if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
+                break
+              fi
+            done
+
+            kill "$SERVER_PID" 2>/dev/null || true
+            sleep 1
+            kill -9 "$SERVER_PID" 2>/dev/null || true
+            pkill -9 -f HytaleServer.jar 2>/dev/null || true
+            sleep 1
+
+            echo "--- Assertions for $name ---"
+            local static_count early_count agent_install_count warmup_count thread_error_count transformed_count
+            static_count=$(grep -c "Mode: STATIC (-javaagent flag)" "$logfile" 2>/dev/null || true)
+            early_count=$(grep -c "Mode: EARLY PLUGIN (ClassTransformer)" "$logfile" 2>/dev/null || true)
+            agent_install_count=$(grep -c "DualAuth Hybrid Agent installed successfully." "$logfile" 2>/dev/null || true)
+            warmup_count=$(grep -c "Triggering F2P identity token pre-fetch" "$logfile" 2>/dev/null || true)
+            thread_error_count=$(grep -c "Exception in thread: Thread\[#[0-9][0-9]*,DualAuth-Warmup" "$logfile" 2>/dev/null || true)
+            transformed_count=$(grep -c "\[DualAuth-Early\] ✓ Transformed:" "$logfile" 2>/dev/null || true)
+
+            echo "static=$static_count early=$early_count install=$agent_install_count warmup=$warmup_count earlyTransforms=$transformed_count"
+
+            case "$name" in
+              agent_only)
+                test "$static_count" -eq 1
+                test "$early_count" -eq 0
+                test "$agent_install_count" -eq 1
+                ;;
+              agent_with_early_flag)
+                test "$static_count" -eq 1
+                test "$agent_install_count" -eq 1
+                test "$early_count" -le 1
+                ;;
+              early_only)
+                test "$static_count" -eq 0
+                test "$early_count" -eq 1
+                ;;
+              agent_and_early_plugin)
+                test "$static_count" -eq 1
+                test "$agent_install_count" -eq 1
+                test "$early_count" -le 1
+                ;;
+            esac
+
+            test "$warmup_count" -le 1
+            test "$thread_error_count" -eq 0
+
+            echo "Scenario $name passed"
+          }
+
+          run_scenario \
+            agent_only \
+            server_agent_only.log \
+            5530 \
+            'java -Xmx2G -javaagent:dualauth-agent.jar -jar HytaleServer.jar --assets Assets.zip --bind 0.0.0.0:5530 --universe universe_agent_only --auth-mode authenticated --disable-sentry --bare'
+
+          mkdir -p earlyplugins
+          cp dummy-early-plugin.jar earlyplugins/
+          run_scenario \
+            agent_with_early_flag \
+            server_agent_with_early_flag.log \
+            5531 \
+            'java -Xmx2G -javaagent:dualauth-agent.jar -jar HytaleServer.jar --assets Assets.zip --bind 0.0.0.0:5531 --universe universe_agent_with_early_flag --auth-mode authenticated --disable-sentry --bare --early-plugins earlyplugins'
+
+          mkdir -p earlyplugins
+          cp dualauth-agent.jar earlyplugins/
+          cp dummy-early-plugin.jar earlyplugins/
+          run_scenario \
+            early_only \
+            server_early_only.log \
+            5532 \
+            'java -Xmx2G -jar HytaleServer.jar --assets Assets.zip --bind 0.0.0.0:5532 --universe universe_early_only --auth-mode authenticated --disable-sentry --bare --early-plugins earlyplugins'
+
+          mkdir -p earlyplugins
+          cp dualauth-agent.jar earlyplugins/
+          cp dummy-early-plugin.jar earlyplugins/
+          run_scenario \
+            agent_and_early_plugin \
+            server_agent_and_early_plugin.log \
+            5533 \
+            'java -Xmx2G -javaagent:dualauth-agent.jar -jar HytaleServer.jar --assets Assets.zip --bind 0.0.0.0:5533 --universe universe_agent_and_early_plugin --auth-mode authenticated --disable-sentry --bare --early-plugins earlyplugins'
+
+      - name: Upload init matrix logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: init-mode-logs
+          path: |
+            server/server_agent_only.log
+            server/server_agent_with_early_flag.log
+            server/server_early_only.log
+            server/server_agent_and_early_plugin.log
+          retention-days: 7
+
   test-offline-boot:
     name: Test Offline Mode Boot
     needs: build-agent
@@ -1746,17 +1950,182 @@ jobs:
             exit 0
           fi
 
-      - name: Upload Offline Mode Log
+  test-mock-client-early-plugin:
+    name: Test Mock Client Connection (early-plugin mode)
+    needs: build-agent
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: ${{ !inputs.skip_boot_test }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python Dependencies
+        run: |
+          pip install aioquic cryptography
+
+      - name: Download Agent & Server
+        uses: actions/download-artifact@v4
+        with:
+          path: server
+          merge-multiple: true
+
+      - name: Cache Assets.zip
+        id: cache-assets-early-client
+        uses: actions/cache@v4
+        with:
+          path: server/Assets.zip
+          key: hytale-assets-${{ needs.build-agent.outputs.server_jar_hash }}
+
+      - name: Download Assets
+        if: steps.cache-assets-early-client.outputs.cache-hit != 'true'
+        working-directory: server
+        run: |
+          echo "Downloading Assets.zip (not cached)..."
+          curl -sfL "$ASSETS_URL" -o Assets.zip
+          ls -lh Assets.zip
+
+      - name: Start Server In Early Plugin Mode
+        working-directory: server
+        run: |
+          mkdir -p earlyplugins universe_early_mock
+          cp dualauth-agent.jar earlyplugins/
+          export HYTALE_AUTH_DOMAIN="$HYTALE_AUTH_DOMAIN"
+
+          java -Xmx2G \
+            -Ddualauth.debug=true \
+            -jar HytaleServer.jar \
+            --assets Assets.zip \
+            --bind 0.0.0.0:5534 \
+            --universe universe_early_mock \
+            --auth-mode authenticated \
+            --disable-sentry \
+            --early-plugins earlyplugins \
+            2>&1 | tee server_early_mock.log &
+
+          SERVER_PID=$!
+          echo $SERVER_PID > server_early_mock.pid
+
+          TIMEOUT=60
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            if grep -qi "Server Booted" server_early_mock.log 2>/dev/null; then
+              echo "Server is ready!"
+              break
+            fi
+            if grep -qE "NoSuchFieldError|NoSuchMethodError|ClassNotFoundException|VerifyError|LinkageError|NoClassDefFoundError|Exception in thread" server_early_mock.log 2>/dev/null; then
+              echo "Early-plugin server failed to boot cleanly"
+              cat server_early_mock.log
+              exit 1
+            fi
+            sleep 3
+            ELAPSED=$((ELAPSED + 3))
+            echo "... waiting ($ELAPSED/$TIMEOUT)"
+          done
+
+          if [ $ELAPSED -ge $TIMEOUT ]; then
+            if ! grep -qi "Server Booted" server_early_mock.log 2>/dev/null; then
+              echo "Server did not boot within timeout"
+              tail -30 server_early_mock.log
+              exit 1
+            fi
+          fi
+
+      - name: Get F2P Player Token
+        run: |
+          TEST_UUID=$(python3 -c "import uuid; print(uuid.uuid4())")
+          TEST_USERNAME="CIEarlyPluginPlayer"
+
+          RESPONSE=$(curl -sf -X POST "$HYTALE_AUTH_URL/game-session/new" \
+            -H "Content-Type: application/json" \
+            -d "{\"uuid\": \"$TEST_UUID\", \"username\": \"$TEST_USERNAME\"}" 2>/dev/null || echo "{}")
+
+          PLAYER_TOKEN=$(echo "$RESPONSE" | python3 -c "import sys, json; d=json.load(sys.stdin); print(d.get('identityToken') or d.get('token', ''))" 2>/dev/null || echo "")
+
+          if [ -z "$PLAYER_TOKEN" ]; then
+            echo "::error::Could not get early-plugin test token"
+            echo "Response: $RESPONSE"
+            exit 1
+          fi
+
+          TOKEN_UUID=$(echo "$PLAYER_TOKEN" | cut -d. -f2 | python3 -c "
+          import sys, base64, json
+          payload = sys.stdin.read().strip()
+          payload += '=' * (4 - len(payload) % 4)
+          try:
+              data = json.loads(base64.urlsafe_b64decode(payload))
+              print(data.get('sub', ''))
+          except:
+              print('')
+          " 2>/dev/null || echo "")
+
+          if [ -n "$TOKEN_UUID" ]; then
+            TEST_UUID="$TOKEN_UUID"
+          fi
+
+          echo "TEST_UUID=$TEST_UUID" >> $GITHUB_ENV
+          echo "TEST_USERNAME=$TEST_USERNAME" >> $GITHUB_ENV
+          echo "PLAYER_TOKEN=$PLAYER_TOKEN" >> $GITHUB_ENV
+
+      - name: Run Mock Client Smoke Test (early-plugin mode)
+        run: |
+          LOG_LINES_BEFORE=$(wc -l < server/server_early_mock.log 2>/dev/null | tr -d ' ')
+
+          python3 .github/scripts/mock-client.py \
+            --host 127.0.0.1 \
+            --port 5534 \
+            --uuid "$TEST_UUID" \
+            --username "$TEST_USERNAME" \
+            --token "$PLAYER_TOKEN" \
+            --timeout 5 || true
+
+          sleep 2
+
+          NEW_LOGS=$(tail -n +"$LOG_LINES_BEFORE" server/server_early_mock.log)
+          if echo "$NEW_LOGS" | grep -qiE "Server session token not available|authentication unavailable|UUID mismatch|Invalid identity token"; then
+            echo "::error::Early-plugin mock client smoke test failed"
+            echo "$NEW_LOGS" | grep -iE "SEVERE|error|unavailable|mismatch|Invalid" | head -10
+            exit 1
+          elif echo "$NEW_LOGS" | grep -qiE "Successfully obtained authorization grant|Sending AuthGrant"; then
+            echo "Early-plugin mock client smoke test passed"
+          else
+            echo "::warning::Early-plugin smoke test inconclusive"
+            echo "$NEW_LOGS" | tail -20
+          fi
+
+      - name: Stop early-plugin server
+        if: always()
+        run: |
+          if [ -f server/server_early_mock.pid ]; then
+            kill $(cat server/server_early_mock.pid) 2>/dev/null || true
+            sleep 1
+            kill -9 $(cat server/server_early_mock.pid) 2>/dev/null || true
+          fi
+          pkill -9 -f HytaleServer.jar 2>/dev/null || true
+
+      - name: Upload early-plugin mock client logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: offline-mode-boot-log
-          path: server/server_offline.log
+          name: mock-client-early-plugin-logs
+          path: server/server_early_mock.log
           retention-days: 7
 
   release:
     name: Deploy Release
-    needs: [build-agent, test-server-boot, test-mock-client, test-plugin-mode, test-offline-boot]
+    needs: [build-agent, test-server-boot, test-mock-client, test-plugin-mode, test-init-modes, test-offline-boot, test-mock-client-early-plugin]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     permissions:
