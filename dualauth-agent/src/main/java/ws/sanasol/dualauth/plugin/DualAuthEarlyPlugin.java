@@ -263,8 +263,7 @@ public class DualAuthEarlyPlugin implements ClassTransformer {
             "ws.sanasol.dualauth.agent.DualAuthWarmup",
             "ws.sanasol.dualauth.server.DualServerTokenManager",
             "ws.sanasol.dualauth.server.DualServerIdentity",
-            "ws.sanasol.dualauth.context.DualAuthHelper",
-            "ws.sanasol.dualauth.libs.google.gson.Gson"
+            "ws.sanasol.dualauth.context.DualAuthHelper"
         };
 
         for (String className : requiredClasses) {
@@ -450,8 +449,6 @@ public class DualAuthEarlyPlugin implements ClassTransformer {
         // DualAuthConfig + DualAuthWarmup from agent package (no ByteBuddy refs)
         if (entryName.startsWith("ws/sanasol/dualauth/agent/DualAuthConfig")) return true;
         if (entryName.startsWith("ws/sanasol/dualauth/agent/DualAuthWarmup")) return true;
-        // Shaded runtime libraries used by injected classes
-        if (entryName.startsWith("ws/sanasol/dualauth/libs/google/gson/")) return true;
         return false;
     }
 

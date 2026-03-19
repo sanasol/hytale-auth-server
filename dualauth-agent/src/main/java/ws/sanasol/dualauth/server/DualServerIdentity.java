@@ -37,7 +37,7 @@ public class DualServerIdentity {
     // Unified cache for server tokens by issuer (TTL from config)
     private static final ConcurrentHashMap<String, CachedServerTokens> serverTokenCache = new ConcurrentHashMap<>();
     private static final long SERVER_TOKEN_TTL = DualAuthConfig.KEYS_CACHE_TTL_MS;
-    
+
     private static class CachedServerTokens {
         final String identityToken;
         final String sessionToken;
@@ -77,7 +77,7 @@ public class DualServerIdentity {
                 "serverUuid", serverUuid,
                 "serverName", serverName
             );
-            String jsonBody = new com.google.gson.Gson().toJson(requestData);
+            String jsonBody = buildSimpleJson(requestData);
 
             String response = postJson(endpoint, jsonBody);
             if (response == null || response.isEmpty()) {
@@ -251,8 +251,8 @@ public class DualServerIdentity {
                     "serverUuid", serverUuid,
                     "serverName", serverName
                 );
-                
-                String jsonBody = new com.google.gson.Gson().toJson(requestData);
+
+                String jsonBody = buildSimpleJson(requestData);
                 
                 // 3. Execute HTTP request
                 URL url = new URL(autoAuthEndpoint);
@@ -291,11 +291,8 @@ public class DualServerIdentity {
                 }
                 
                 // 6. Parse response
-                @SuppressWarnings("unchecked")
-                Map<String, Object> response = new com.google.gson.Gson().fromJson(responseBody, Map.class);
-                
-                String identityToken = (String) response.get("identityToken");
-                String sessionToken = (String) response.get("sessionToken");
+                String identityToken = extractJsonField(responseBody, "identityToken");
+                String sessionToken = extractJsonField(responseBody, "sessionToken");
                 
                 if (identityToken == null) {
                     if (Boolean.getBoolean("dualauth.debug")) {
@@ -389,6 +386,49 @@ public class DualServerIdentity {
                 return sb.toString();
             }
         } catch (Exception e) { return null; } finally { if (conn != null) conn.disconnect(); }
+    }
+
+    private static String buildSimpleJson(Map<String, Object> fields) {
+        StringBuilder sb = new StringBuilder();
+        sb.append('{');
+        boolean first = true;
+        for (Map.Entry<String, Object> entry : fields.entrySet()) {
+            if (!first) sb.append(',');
+            first = false;
+            sb.append('"').append(escapeJson(entry.getKey())).append('"').append(':');
+            Object value = entry.getValue();
+            if (value == null) {
+                sb.append("null");
+            } else {
+                sb.append('"').append(escapeJson(String.valueOf(value))).append('"');
+            }
+        }
+        sb.append('}');
+        return sb.toString();
+    }
+
+    private static String escapeJson(String value) {
+        StringBuilder sb = new StringBuilder(value.length() + 8);
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '\\' -> sb.append("\\\\");
+                case '"' -> sb.append("\\\"");
+                case '\b' -> sb.append("\\b");
+                case '\f' -> sb.append("\\f");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+                }
+            }
+        }
+        return sb.toString();
     }
 
     private static String extractJsonField(String json, String fieldName) {
