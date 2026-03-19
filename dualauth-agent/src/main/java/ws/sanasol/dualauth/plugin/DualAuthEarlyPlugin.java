@@ -263,7 +263,8 @@ public class DualAuthEarlyPlugin implements ClassTransformer {
             "ws.sanasol.dualauth.agent.DualAuthWarmup",
             "ws.sanasol.dualauth.server.DualServerTokenManager",
             "ws.sanasol.dualauth.server.DualServerIdentity",
-            "ws.sanasol.dualauth.context.DualAuthHelper"
+            "ws.sanasol.dualauth.context.DualAuthHelper",
+            "ws.sanasol.dualauth.libs.google.gson.Gson"
         };
 
         for (String className : requiredClasses) {
@@ -408,7 +409,7 @@ public class DualAuthEarlyPlugin implements ClassTransformer {
     /**
      * Collect DualAuth runtime class bytes from the agent JAR.
      * Only includes classes referenced by advice code at runtime (see isRuntimeClass).
-     * Excludes: plugin/, agent infrastructure, all relocated libs (bytebuddy, google/tink).
+     * Includes shaded runtime deps needed by injected classes in early-plugin mode.
      */
     private Map<String, byte[]> collectRuntimeClasses(File jarFile) throws Exception {
         Map<String, byte[]> classMap = new HashMap<>();
@@ -421,7 +422,7 @@ public class DualAuthEarlyPlugin implements ClassTransformer {
                 if (!name.endsWith(".class")) continue;
                 if (!name.startsWith("ws/sanasol/dualauth/")) continue;
                 // Only inject runtime classes referenced by advice code at runtime.
-                // Skip everything that references ByteBuddy or relocated libs.
+                // Also include shaded runtime libs needed by those classes.
                 if (!isRuntimeClass(name)) continue;
 
                 String className = name.substring(0, name.length() - 6).replace('/', '.');
@@ -436,7 +437,7 @@ public class DualAuthEarlyPlugin implements ClassTransformer {
     /**
      * Check if a JAR entry is a runtime class that should be injected into TransformingCL.
      * Only includes classes actually referenced by Advice code at runtime.
-     * Excludes: plugin/ (already loaded), libs/ (relocated deps), agent infrastructure (uses ByteBuddy).
+     * Excludes: plugin/ (already loaded) and ByteBuddy-heavy agent infrastructure.
      */
     private static boolean isRuntimeClass(String entryName) {
         // Whitelist: packages containing classes referenced by advice code
@@ -449,6 +450,8 @@ public class DualAuthEarlyPlugin implements ClassTransformer {
         // DualAuthConfig + DualAuthWarmup from agent package (no ByteBuddy refs)
         if (entryName.startsWith("ws/sanasol/dualauth/agent/DualAuthConfig")) return true;
         if (entryName.startsWith("ws/sanasol/dualauth/agent/DualAuthWarmup")) return true;
+        // Shaded runtime libraries used by injected classes
+        if (entryName.startsWith("ws/sanasol/dualauth/libs/google/gson/")) return true;
         return false;
     }
 
