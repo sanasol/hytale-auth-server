@@ -2055,12 +2055,7 @@ jobs:
 
           if grep -q "Exception in thread: Thread\[#[0-9][0-9]*,DualAuth-Warmup" server_early_mock.log 2>/dev/null; then
             echo "::error::DualAuth warmup thread crashed in early-plugin mode"
-            python3 - <<'PY'
-            from pathlib import Path
-            text = Path('server_early_mock.log').read_text(errors='replace')
-            idx = text.find('Exception in thread: Thread[#')
-            print(text[max(0, idx-300):idx+1200])
-            PY
+            python3 -c "from pathlib import Path; text = Path('server_early_mock.log').read_text(errors='replace'); idx = text.find('Exception in thread: Thread[#'); print(text[max(0, idx-300):idx+1200])"
             exit 1
           fi
 
