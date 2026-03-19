@@ -1683,7 +1683,8 @@ jobs:
                 ;;
               early_only)
                 test "$static_count" -eq 0
-                test "$early_count" -eq 1
+                test "$agent_install_count" -eq 0
+                test "$transformed_count" -ge 1
                 ;;
               agent_and_early_plugin)
                 test "$static_count" -eq 1
@@ -2043,6 +2044,12 @@ jobs:
               tail -30 server_early_mock.log
               exit 1
             fi
+          fi
+
+          if ! grep -q "Mode: EARLY PLUGIN (ClassTransformer)" server_early_mock.log 2>/dev/null; then
+            echo "::error::Early-plugin banner not found in log"
+            tail -60 server_early_mock.log
+            exit 1
           fi
 
           if grep -q "Exception in thread: Thread\[#[0-9][0-9]*,DualAuth-Warmup" server_early_mock.log 2>/dev/null; then
