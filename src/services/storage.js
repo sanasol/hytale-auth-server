@@ -1520,9 +1520,10 @@ async function getPaginatedServers(page, limit, activeOnly = true) {
       };
     }));
 
-    // If activeOnly, filter out servers that ended up with no active players
+    // If activeOnly, filter out servers that ended up with no active players,
+    // but keep servers that are still tracked as active server sessions.
     if (activeOnly) {
-      servers = servers.filter(s => s.players.length > 0);
+      servers = servers.filter(s => s.players.length > 0 || activeServerSet.has(s.audience));
     }
 
     return {
