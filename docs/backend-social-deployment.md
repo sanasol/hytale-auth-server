@@ -52,7 +52,11 @@ use Guid.Empty. These represent unavailable metadata, not invented owners/dates.
 
 Local evidence logs remain in Downloads/HytaleWsTest-A/Logs and
 /tmp/HytaleWsTest-B/Logs. Do not publish full logs: they can contain session material,
-addresses and invite codes. Test launcher scripts/credentials remain outside Git. Both clients were closed normally;
+addresses and invite codes. Test launcher scripts/credentials remain outside Git.
+B closed normally. A stopped responding to quit actions during cleanup despite
+logging SDL_QUIT; its local Java server received SIGTERM and logged config save
+and Shutdown completed before the stuck client process was killed. This native
+exit issue is not diagnosed. No production game server was stopped;
 the launcher selection and save directory were restored to Sanasol[F2P] and
 Downloads/Test1. The temporary local feature-flag server and test Redis were stopped.
 
