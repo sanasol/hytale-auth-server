@@ -1,6 +1,10 @@
 # Social usage metrics
 
-The Servers admin panel reads `/admin/api/social-usage?days=30` (route in `src/app.js`). `socialMetrics.read()` reads one totals hash and 1–365 explicitly named daily hashes, without enumerating the database. Daily UTC hashes expire 365 days after their day's start; cumulative counters and baseline offsets persist.
+The Metrics admin page reads `/admin/api/social-usage?days=30` (route in `src/app.js`). `socialMetrics.read()` reads one totals hash and 1–365 explicitly named daily hashes, without enumerating the database. Daily UTC hashes expire 365 days after their day's start; cumulative counters and baseline offsets persist.
+
+## Admin charts
+
+Social usage lives on `/admin/page/metrics#social-usage`; Servers links to it. Four summary cards separate current stored friendships/parties from additions during the selected period. Fourteen daily bar charts are grouped into Friends, Parties, World invitations, Connections, and Favorites & likes. The independent daily selector supports 7, 30, 90, and 365 days. Each chart exposes period and cumulative totals in a disclosure table. Unknown days before tracking are gaps, not zero activity; failed refreshes clear stale values. HTTP authorization, client connection reports, ICE transport, and multiplayer world entry remain separate measurements.
 
 ## Measurement semantics
 

@@ -393,16 +393,7 @@ function handleServersPage(req, res) {
   <div id="mainContent" class="hidden">
     ${navHtml('servers')}
     <div class="container">
-      <div class="card">
-        <div class="card-header"><span class="card-title">Social usage</span>
-          <select id="socialDays" onchange="loadSocialUsage()"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="365">365 days</option></select>
-          <button class="btn btn-secondary" onclick="loadSocialUsage()">Refresh usage</button>
-          <a href="/admin/page/metrics">Live clients / yearly online history</a>
-        </div>
-        <p id="socialCurrent">Loading…</p>
-        <p style="color:#888">Daily totals use UTC. Join World HTTP authorization is not a confirmed game connection. Direct/relay comes from client ice_result; world entry comes from world_joined. Telemetry is optional and client-reported; missing reports are not failures. ICE counts endpoint reports, not unique joins. History before tracking began is unavailable.</p>
-        <div id="socialUsage" style="overflow:auto;max-height:600px"></div>
-      </div>
+      <p style="margin-bottom:20px"><a href="/admin/page/metrics#social-usage" style="color:#00d4ff">Social usage charts are in Metrics</a></p>
       <div class="card">
         <div class="card-header">
           <span class="card-title">Active Servers</span>
@@ -419,40 +410,6 @@ function handleServersPage(req, res) {
     ${sharedScripts}
 
     let currentPage = 1;
-
-    async function loadSocialUsage() {
-      const box = document.getElementById('socialUsage'), current = document.getElementById('socialCurrent');
-      try {
-        const response = await authFetch('/admin/api/social-usage?days=' + document.getElementById('socialDays').value);
-        if (!response.ok) throw Error('Usage unavailable');
-        const data = await response.json();
-        current.textContent = 'Currently stored: ' + (data.baselineKnown ? data.current.friendEdges + ' friendships, ' + data.current.parties + ' parties.' : 'initial totals pending verification.') + ' Event counters since: ' + (data.since || 'first event') + '.';
-        const fields = [
-          ['friendRequestsSent','Friend requests sent'], ['friendRequestsRejected','Friend requests rejected'], ['friendsAccepted','Friendships added'], ['friendsRemoved','Friendships removed'],
-          ['blocksCreated','Blocks'], ['blocksRemoved','Unblocks'], ['partiesCreated','Parties created'], ['partiesClosed','Parties closed'],
-          ['partyMembersJoined','Party joins'], ['partyMembersLeft','Party leaves'],
-          ['partyInvitesSent','Party invitations sent'], ['partyInvitesAccepted','Party invitations accepted'], ['partyInvitesRejected','Party invitations rejected'], ['partyInvitesCanceled','Party invitations canceled'],
-          ['worldInvitesSent','World invitations sent'], ['worldInvitesAccepted','World invitations accepted'], ['worldInvitesRejected','World invitations rejected'], ['worldInvitesCanceled','World invitations canceled'],
-          ['serverFavoritesAdded','Server favorites added'], ['serverFavoritesRemoved','Server favorites removed'], ['serverLikesAdded','Server likes added'], ['serverLikesRemoved','Server likes removed'],
-          ['clientConnectSuccess','Client-reported connections succeeded (includes local)'], ['clientConnectFailure','Client-reported connections failed (includes local)'],
-          ['clientP2PConnectSuccess','Client-reported P2P connections succeeded'], ['clientP2PConnectFailure','Client-reported P2P connections failed'],
-          ['clientWorldJoined','Client-reported multiplayer worlds joined'], ['iceDirect','ICE nominated direct'], ['iceRelay','ICE nominated relay'], ['iceFailed','ICE failed'], ['iceUnknown','ICE outcome unknown'],
-          ['worldJoinHttpSuccess','Join World HTTP authorized'], ['worldJoinHttpDenied','Join World HTTP denied'], ['worldJoinHttpErrors','Join World HTTP errors']
-        ];
-        box.replaceChildren();
-        const table = document.createElement('table'); table.style.width = '100%';
-        const row = cells => { const tr = document.createElement('tr'); for(const value of cells) { const td = document.createElement('td'); td.textContent = value; td.style.padding = '6px'; tr.append(td); } table.append(tr); };
-        row(['Event','Selected period','Since tracking began']);
-        for(const [key,label] of fields) row([label,data.daily.reduce((n,d)=>n+Number(d[key]||0),0),data.totals[key]||0]);
-        box.append(table);
-        const title = document.createElement('h4'); title.textContent = 'Daily history (UTC)'; box.append(title);
-        const daily = document.createElement('table'); daily.style.width = '100%';
-        const dailyRow = values => { const tr = document.createElement('tr'); for(const value of values) { const td=document.createElement('td'); td.textContent=value;td.style.padding='6px';tr.append(td); } daily.append(tr); };
-        dailyRow(['Date','Friends added','Parties created','World invites sent / accepted','Join authorized / denied / errors']);
-        for(const day of [...data.daily].reverse().filter(day => !data.since || day.date >= data.since.slice(0,10) || fields.some(([key]) => day[key]))) dailyRow([day.date,day.friendsAccepted||0,day.partiesCreated||0,[day.worldInvitesSent||0,day.worldInvitesAccepted||0].join(' / '),[day.worldJoinHttpSuccess||0,day.worldJoinHttpDenied||0,day.worldJoinHttpErrors||0].join(' / ')]);
-        box.append(daily);
-      } catch (error) { current.textContent='Social usage unavailable; counts are unknown.'; box.replaceChildren(); }
-    }
 
 
     async function loadServers(page) {
@@ -543,7 +500,6 @@ function handleServersPage(req, res) {
       document.getElementById('loginOverlay').classList.add('hidden');
       document.getElementById('mainContent').classList.remove('hidden');
       loadServers(1);
-      loadSocialUsage();
     }
 
     (async () => {
@@ -967,6 +923,13 @@ function handleLogsPage(req, res) {
  * Metrics page with charts
  */
 function handleMetricsPage(req, res) {
+    const socialGroups = [
+      {"id":"friends","title":"Friends","charts":[{"id":"friendships","title":"Friendships","note":"Each mutual friendship counts once.","fields":[["friendsAccepted","Added","green"],["friendsRemoved","Removed","red"]]},{"id":"requests","title":"Friend requests","note":"Requests sent and explicitly rejected.","fields":[["friendRequestsSent","Sent","blue"],["friendRequestsRejected","Rejected","red"]]},{"id":"blocks","title":"Blocks","note":"Changes to blocked-user lists.","fields":[["blocksCreated","Blocked","red"],["blocksRemoved","Unblocked","green"]]}]},
+      {"id":"parties","title":"Parties","charts":[{"id":"parties","title":"Party lifecycle","note":"A party closes when its last member leaves.","fields":[["partiesCreated","Created","green"],["partiesClosed","Closed","red"]]},{"id":"members","title":"Party membership","note":"Invite-driven joins and explicit leaves; founders excluded.","fields":[["partyMembersJoined","Joined","green"],["partyMembersLeft","Left","red"]]},{"id":"partyInvites","title":"Party invitations","note":"Acceptance means joining the party, not entering a world.","fields":[["partyInvitesSent","Sent","blue"],["partyInvitesAccepted","Accepted","green"],["partyInvitesRejected","Rejected","red"],["partyInvitesCanceled","Canceled","gray"]]}]},
+      {"id":"worlds","title":"World invitations","charts":[{"id":"worldInvites","title":"World invitations","note":"Accepting an invitation does not confirm entry into the world.","fields":[["worldInvitesSent","Sent","blue"],["worldInvitesAccepted","Accepted","green"],["worldInvitesRejected","Rejected","red"],["worldInvitesCanceled","Canceled","gray"]]}]},
+      {"id":"connections","title":"Connections","charts":[{"id":"joinRequests","title":"Join World requests","note":"Backend authorization only; repeated requests count separately.","fields":[["worldJoinHttpSuccess","Authorized","green"],["worldJoinHttpDenied","Denied","amber"],["worldJoinHttpErrors","Server error","red"]]},{"id":"clientConnections","title":"Client connections","note":"All server connections, including local single-player hosting.","fields":[["clientConnectSuccess","Succeeded","green"],["clientConnectFailure","Failed","red"]]},{"id":"p2p","title":"P2P connections","note":"Client-reported outcomes for peer-to-peer connections only.","fields":[["clientP2PConnectSuccess","Succeeded","green"],["clientP2PConnectFailure","Failed","red"]]},{"id":"ice","title":"ICE transport","note":"Reports from either endpoint; nomination is not confirmed world entry.","fields":[["iceDirect","Direct","blue"],["iceRelay","Relay","purple"],["iceFailed","Failed","red"],["iceUnknown","Unknown","gray"]]},{"id":"worldEntry","title":"Multiplayer world entries","note":"Client-reported entries; not linked to a specific invitation.","fields":[["clientWorldJoined","Entered world","green"]]}]},
+      {"id":"servers","title":"Favorites & likes","charts":[{"id":"favorites","title":"Server favorites","note":"Actual additions and removals; repeated clicks that change nothing are excluded.","fields":[["serverFavoritesAdded","Added","green"],["serverFavoritesRemoved","Removed","red"]]},{"id":"likes","title":"Server likes","note":"Actual additions and removals to personal liked-server lists.","fields":[["serverLikesAdded","Liked","green"],["serverLikesRemoved","Unliked","red"]]}]}
+    ];
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -990,8 +953,33 @@ function handleMetricsPage(req, res) {
     .hw-bar-track { flex: 1; height: 16px; background: rgba(255,255,255,0.05); border-radius: 3px; margin: 0 8px; overflow: hidden; min-width: 60px; }
     .hw-bar-fill { height: 100%; background: linear-gradient(90deg, #00d4ff, #0099cc); border-radius: 3px; transition: width 0.3s; }
     .hw-bar-value { width: 75px; color: #666; text-align: right; flex-shrink: 0; font-family: monospace; }
-    .hw-container.wide { grid-column: span 2; }
+    .hw-container.wide { grid-column: 1 / -1; }
     .hw-container.wide .hw-bar-label { width: 180px; }
+
+    #social-usage { scroll-margin-top: 20px; margin: 28px 0; }
+    .usage-heading, .usage-controls, .usage-categories { display:flex; align-items:center; flex-wrap:wrap; gap:10px; }
+    .usage-heading { justify-content:space-between; margin-bottom:16px; }
+    .usage-heading h2 { font-size:1.35rem; }
+    .usage-note { color:#b5bfd0; font-size:0.86rem; line-height:1.6; margin:8px 0 16px; max-width:85ch; }
+    .usage-controls select { background:#16213e; color:#e0e0e0; border:1px solid #607088; border-radius:5px; padding:8px; }
+    .usage-categories { margin:18px 0; }
+    .usage-categories button[aria-pressed="true"] { background:#214861; color:#fff; border-color:#00d4ff; }
+    .usage-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20px; }
+    .usage-grid[hidden] { display:none; }
+    .usage-chart { min-width:0; }
+    .usage-chart h3 { font-size:1rem; font-weight:600; }
+    .usage-chart .chart-wrapper { height:230px; }
+    .usage-chart details { margin-top:14px; font-size:0.85rem; }
+    .usage-chart summary { cursor:pointer; color:#b5bfd0; }
+    .usage-chart table { width:100%; margin-top:10px; border-collapse:collapse; }
+    .usage-chart th, .usage-chart td { padding:7px 4px; text-align:right; border-bottom:1px solid #ffffff15; }
+    .usage-chart th:first-child { text-align:left; }
+    .usage-totals { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+    .usage-total { padding:15px; border-left:2px solid #607088; background:#00000020; }
+    .usage-total strong { display:block; font-size:1.6rem; margin:6px 0; font-variant-numeric:tabular-nums; }
+    .usage-total span, .usage-total small { color:#b5bfd0; font-size:0.82rem; }
+    #social-usage :focus-visible { outline:2px solid #00d4ff; outline-offset:4px; }
+    @media(max-width:760px) { .usage-grid { grid-template-columns:1fr; } .usage-totals { grid-template-columns:repeat(2,minmax(0,1fr)); } .top-nav { flex-wrap:wrap; } .top-nav .nav-links { flex-wrap:wrap; } }
   </style>
 </head>
 <body>
@@ -1011,7 +999,7 @@ function handleMetricsPage(req, res) {
     <div class="container">
       <!-- Time range controls -->
       <div class="controls" style="margin-bottom:20px">
-        <span style="color:#888">Time Range:</span>
+        <span style="color:#888">Online &amp; performance:</span>
         <button class="btn btn-secondary range-btn" data-range="5m">5m</button>
         <button class="btn btn-secondary range-btn" data-range="15m">15m</button>
         <button class="btn btn-secondary range-btn active" data-range="1h">1h</button>
@@ -1028,8 +1016,8 @@ function handleMetricsPage(req, res) {
       </div>
 
       <!-- Main time-series charts -->
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));gap:20px">
-        <div class="chart-container" style="grid-column: span 2">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:20px">
+        <div class="chart-container" style="grid-column: 1 / -1">
           <div class="chart-header"><span class="chart-title">Live clients — authenticated WebSocket observations</span></div>
           <p id="onlineSummary" style="color:#aaa">Loading direct online counts…</p>
           <p style="color:#888">Includes menus. Accounts are deduplicated; sockets count separate clients. Network loss expires within 50s. Historical samples every 15s; gaps stay unknown. Collection starts with this deployment.</p>
@@ -1041,9 +1029,38 @@ function handleMetricsPage(req, res) {
         </div>
       </div>
 
+      <section id="social-usage" aria-labelledby="socialHeading">
+        <div class="usage-heading">
+          <h2 id="socialHeading">Social usage</h2>
+          <div class="usage-controls">
+            <label for="socialDays">Daily history</label>
+            <select id="socialDays" onchange="loadSocialUsage()"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option><option value="365">365 days</option></select>
+            <button class="btn btn-secondary" onclick="loadSocialUsage()">Refresh social usage</button>
+          </div>
+        </div>
+        <div class="usage-totals">
+          <div class="usage-total"><span>Stored friendships</span><strong id="socialFriends">—</strong><small>Current, each pair counted once</small></div>
+          <div class="usage-total"><span>Stored parties</span><strong id="socialParties">—</strong><small>Current, including offline parties</small></div>
+          <div class="usage-total"><span>Friendships added</span><strong id="socialAdded">—</strong><small>Selected daily period</small></div>
+          <div class="usage-total"><span>Parties created</span><strong id="socialCreated">—</strong><small>Selected daily period</small></div>
+        </div>
+        <p class="usage-note" id="socialStatus" role="status">Loading social usage…</p>
+        <div class="usage-categories" role="group" aria-label="Social metric category">
+          ${socialGroups.map((g,i) => `<button class="btn btn-secondary" data-social-category="${g.id}" aria-pressed="${i === 0}" aria-controls="social-panel-${g.id}" onclick="showSocialCategory('${g.id}')">${g.title}</button>`).join('')}
+        </div>
+        ${socialGroups.map((g,i) => `<div class="usage-grid" id="social-panel-${g.id}" ${i ? 'hidden' : ''}>
+          ${g.charts.map(c => `<article class="chart-container usage-chart">
+            <h3>${c.title}</h3><p class="usage-note">${c.note}</p>
+            <div class="chart-wrapper"><canvas id="social-chart-${c.id}" role="img" aria-label="${c.title}: daily UTC event counts. Exact values in totals below."></canvas></div>
+            <details><summary>Period &amp; all-time totals</summary><table><thead><tr><th scope="col">Event</th><th scope="col">Period</th><th scope="col">Since tracking</th></tr></thead><tbody id="social-totals-${c.id}"></tbody></table></details>
+          </article>`).join('')}
+        </div>`).join('')}
+        <p class="usage-note">Daily counts use UTC; today is incomplete. Client reports are optional: missing reports are not failed connections. Open a chart’s totals for cumulative counts since tracking began.</p>
+      </section>
+
       <!-- Performance Distribution -->
       <h3 class="section-title">Performance Distribution (current heartbeats)</h3>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));gap:20px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:20px">
         <div class="chart-container">
           <div class="chart-header"><span class="chart-title">FPS & Frame Time Distribution</span></div>
           <div class="chart-wrapper"><canvas id="fpsChart"></canvas></div>
@@ -1097,7 +1114,7 @@ function handleMetricsPage(req, res) {
 
       <!-- Event Metrics -->
       <h3 class="section-title">Event Metrics</h3>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));gap:20px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:20px">
         <div class="chart-container">
           <div class="chart-header"><span class="chart-title">Total Playtime Over Time (hours)</span></div>
           <div class="chart-wrapper"><canvas id="playtimeLineChart"></canvas></div>
@@ -1543,6 +1560,58 @@ function handleMetricsPage(req, res) {
       } catch (e) { console.error('Analytics stats error:', e); }
     }
 
+    const socialGroups = ${JSON.stringify(socialGroups)};
+    const socialCharts = {};
+    let socialRequest = 0;
+    const socialColors = {blue:'#68caff',green:'#62d9a0',red:'#ff8585',amber:'#ffc166',purple:'#bca0ff',gray:'#aab5c7'};
+    function showSocialCategory(id) {
+      document.querySelectorAll('[data-social-category]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.socialCategory === id)));
+      for (const group of socialGroups) {
+        document.getElementById('social-panel-' + group.id).hidden = group.id !== id;
+        if(group.id === id) for(const chart of group.charts) socialCharts[chart.id]?.resize();
+      }
+    }
+    async function loadSocialUsage() {
+      const request = ++socialRequest, days = Number(document.getElementById('socialDays').value);
+      const status = document.getElementById('socialStatus');
+      status.textContent = 'Loading ' + days + ' days of social usage…';
+      try {
+        const response = await authFetch('/admin/api/social-usage?days=' + days);
+        if(!response.ok) throw Error('Social usage unavailable');
+        const data = await response.json();
+        if(request !== socialRequest) return;
+        const sum = key => data.daily.reduce((n,row) => n + Number(row[key] || 0), 0);
+        document.getElementById('socialFriends').textContent = data.baselineKnown ? data.current.friendEdges.toLocaleString() : '—';
+        document.getElementById('socialParties').textContent = data.baselineKnown ? data.current.parties.toLocaleString() : '—';
+        document.getElementById('socialAdded').textContent = sum('friendsAccepted').toLocaleString();
+        document.getElementById('socialCreated').textContent = sum('partiesCreated').toLocaleString();
+        const since = data.since?.slice(0,10);
+        status.textContent = (since ? 'Tracking since ' + since + '. Days before tracking are unknown, not zero.' : 'No events recorded yet. Daily history will appear after the first event.') + (!data.baselineKnown ? ' Current database totals are not verified yet.' : '') + ' Selected period: ' + days + ' UTC calendar days.';
+        for(const group of socialGroups) for(const spec of group.charts) {
+          if(!socialCharts[spec.id]) socialCharts[spec.id] = new Chart(document.getElementById('social-chart-' + spec.id).getContext('2d'), {
+            type:'bar', data:{labels:[],datasets:spec.fields.map(([key,label,color]) => ({label,data:[],backgroundColor:socialColors[color],maxBarThickness:28}))},
+            options:{...chartConfig,animation:false,interaction:{mode:'index',intersect:false},plugins:{legend:{display:true,labels:{color:'#b5bfd0',boxWidth:10}},tooltip:{callbacks:{title:items => items[0]?.label + ' UTC'}}},scales:{...chartConfig.scales,y:{...chartConfig.scales.y,ticks:{color:'#b5bfd0',precision:0},title:{display:true,text:'Events / day',color:'#b5bfd0'}},x:{...chartConfig.scales.x,offset:true,ticks:{color:'#b5bfd0',maxTicksLimit:8,maxRotation:0}}}}
+          });
+          const chart = socialCharts[spec.id];
+          chart.data.labels = data.daily.map(row => row.date);
+          spec.fields.forEach(([key],index) => { chart.data.datasets[index].data = data.daily.map(row => !since || (row.date < since && !row[key]) ? null : Number(row[key] || 0)); });
+          chart.update('none');
+          const body = document.getElementById('social-totals-' + spec.id); body.replaceChildren();
+          for(const [key,label] of spec.fields) {
+            const row = document.createElement('tr');
+            [label,sum(key).toLocaleString(),Number(data.totals[key] || 0).toLocaleString()].forEach((value,i) => { const cell=document.createElement(i ? 'td' : 'th'); if(!i) cell.scope='row'; cell.textContent=value; row.append(cell); });
+            body.append(row);
+          }
+        }
+      } catch(error) {
+        if(request !== socialRequest) return;
+        status.textContent = 'Social usage unavailable. Refresh to retry; values are unknown.';
+        for(const id of ['socialFriends','socialParties','socialAdded','socialCreated']) document.getElementById(id).textContent='—';
+        for(const chart of Object.values(socialCharts)) { chart.data.labels=[];chart.data.datasets.forEach(ds => {ds.data=[];});chart.update('none'); }
+        for(const group of socialGroups) for(const spec of group.charts) document.getElementById('social-totals-' + spec.id).replaceChildren();
+      }
+    }
+
     async function loadActivityChart() {
       if (!charts.activity) return;
       const summary = document.getElementById('onlineSummary');
@@ -1623,6 +1692,7 @@ function handleMetricsPage(req, res) {
     async function refreshCharts() {
       await Promise.all([
         loadActivityChart(),
+        loadSocialUsage(),
         loadTimeSeries('requests', charts.requests),
         loadTimeSeries('total_playtime_hours', charts.playtimeLine),
         // Multi-line charts
