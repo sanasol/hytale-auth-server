@@ -1,6 +1,6 @@
 # Implementing the Hytale 0.6.8 backend
 
-Investigation: 2026-10-06. This document separates **client contract recovered from shipped code** from **proposed server behavior**. It is not a claim that a replacement backend has been implemented or tested with two players.
+Investigation and implementation: 2026-10-06. The recovered client contract below now backs a deployed social API, WebSocket signaling gateway and coturn relay. See [deployment and runtime checks](backend-social-deployment.md) for verified behavior and remaining limits.
 
 The matching Windows release client has SHA-256 `05f476a25b967005b5480c46152c57811c0bc62aacfabbbff5a98d5e66043ba5`. Its distribution's paired server manifest identifies release0.6.8/revision `d2feeb3997f2efc9b4fe23282a3ece38f0618047`, matching the installed Mac game's version. Windows addresses below do not apply to the Mac binary. The Mac inventory independently corroborates endpoint/event spellings.
 
@@ -20,7 +20,7 @@ sequenceDiagram
   B->>WS: /ws + session Bearer
   WS-->>B: gateway.connected(connection_id)
   A->>API: POST /friend-requests/by-username
-  API-->>WS: Persisted request event (proposed internal interface)
+  API-->>WS: Redis social:v1:events
   WS-->>B: gateway.notification(friend.request.received)
   B->>API: POST /friend-requests/accept
   WS-->>A: gateway.notification(friend.request.accepted)
@@ -103,13 +103,13 @@ gameMode, serverHost, serverPort, inviteCode
 
 - `status` and `activity` serialize as strings. Client construction emits lowercase `online`; activity is `playing` or `menus`.
 - The inspected consumers treat exact lowercase `offline` or an empty status as offline. A capitalized or numeric replacement is not equivalent.
-- `showOnline`, `showLocation`, `showActivity`, `allowInvites` serialize as numbers. Their full enum meaning is not established.
+- `showOnline`, `showLocation`, `showActivity`, `allowInvites` serialize as numbers. Recovered enum: 0 = Everyone, 1 = Friends, 2 = Nobody; defaults are 0. See backend-release-social-implementation.txt.
 - `allowJoin` is boolean; `allowFriendRequests` is optional boolean, omitted when it has no value.
 - `since` and notification `created_at` use quoted JSON dates, not numeric epochs. Full accepted date ranges/format variants remain untested.
 
-The current backend discards most heartbeat fields and returns empty friend presence. A functional implementation must persist enough data to answer joins and issue presence events. Never expose private invite codes/host addresses merely because the client sends them: apply the selected visibility/join policy to the requesting identity.
+The implemented backend persists rich heartbeat fields and emits friend presence events. Never expose private invite codes/host addresses merely because the client sends them: apply the selected visibility/join policy to the requesting identity.
 
-Proposed state: latest heartbeat + timestamp + privacy settings + explicit offline override, keyed by authenticated UUID. Define presence expiry and disconnect grace as our backend policy; the official TTL is not recovered. Socket disconnect does not by itself prove the game stopped; multiple sessions and reconnect must be considered.
+Implemented state: latest heartbeat + timestamp + privacy settings + explicit offline override, keyed by authenticated UUID. Presence expires after 300 seconds; the real client sends heartbeats about every 120 seconds. This is our policy, not a recovered official TTL. Socket disconnect does not by itself prove the game stopped; multiple sessions and reconnect must be considered.
 
 ## WebSocket rules that affect compatibility
 
@@ -169,7 +169,7 @@ Compiled defaults: `enable_ice_framework=true`, `enable_turn_credentials=true`, 
 
 For relay-dependent NAT combinations, JSON-only credentials or a WS forwarder cannot work: deploy a real reachable TURN service and mint valid temporary credentials for it. Test forced relay and actual packet flow; a successful credentials response is not acceptance evidence. Direct connections can succeed without TURN.
 
-## State transitions to implement (our proposal)
+## Implemented state transitions (our policy)
 
 - Friend request: authenticate sender → resolve recipient → enforce block/privacy/duplicate rules → persist pending request → notify recipient. Accept must remove pending and create one symmetric friendship before notifying both views. Reject/remove/block update the same shared state, with corresponding events. Use atomic updates to avoid two inconsistent relationship records.
 - Presence: preserve host/world/join data → calculate requester-visible projection → emit `friend.presence.updated` when it changes. Privacy updates must also update that projection.
@@ -189,4 +189,4 @@ Do not add a universal successful fallback for unimplemented paths. A false200 p
 6. Real game join: two clients on different networks, direct ICE and forced TURN relay, mutual game authentication and actual world interaction. Verify both graceful and abrupt disconnect.
 7. Reconnect: reconnect backoff, new connection identity, refreshed lists, stale peer cleanup, expired access token.
 
-Steps1–7 are not completed merely by this static research. Runtime behavior and exact server business semantics cannot be proven from serializers alone. The recovered contract is sufficient to start a real friends/presence/WS implementation without inventing endpoint names or mixing protocol layers; remaining ambiguities are explicitly listed in the evidence ledgers.
+The checked subset and remaining gates are recorded in backend-social-deployment.md; the list above is not a claim of complete coverage. Steps1–7 are not completed merely by static research. Runtime behavior and exact server business semantics cannot be proven from serializers alone. The recovered contract is sufficient to start a real friends/presence/WS implementation without inventing endpoint names or mixing protocol layers; remaining ambiguities are explicitly listed in the evidence ledgers.

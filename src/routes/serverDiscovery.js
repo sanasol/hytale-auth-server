@@ -125,7 +125,8 @@ function transformSantaleServer(server, interactions) {
 
   return {
     audience: server.is_f2p === false ? 1 : 0,
-    createdAt: server.created_at || null,
+    // Upstream omits creation dates; .NET requires a date, use the unknown-date sentinel.
+    createdAt: Number.isFinite(Date.parse(server.created_at)) ? new Date(server.created_at).toISOString() : '1970-01-01T00:00:00.000Z',
     description: server.description || server.short_description || '',
     favorites: votes + (favorited ? 1 : 0),
     host: server.hostname,
@@ -133,7 +134,8 @@ function transformSantaleServer(server, interactions) {
     isLiked: liked,
     likes: votes + (liked ? 1 : 0),
     name: server.name,
-    ownerProfileId: null,
+    // The source has no Hytale owner identity; Guid.Empty represents unknown.
+    ownerProfileId: '00000000-0000-0000-0000-000000000000',
     port: server.port,
     regions: mapSantaleRegions(server),
     serverType: mapSantaleServerType(server),

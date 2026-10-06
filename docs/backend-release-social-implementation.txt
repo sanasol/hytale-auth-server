@@ -1,0 +1,36 @@
+Implementation contract supplement: Windows0.6.8 matching release; NativeAOT static evidence. No game/backend edits.
+
+PRIVACY ENUM — EXACT
+All four numeric fields showOnline/showLocation/showActivity/allowInvites use same UI choices:
+0 = Everyone; 1 = Friends; 2 = Nobody.
+UI function0x14030c300: everyone label0x140311169 -> option value r9d=0 at0x1403111aa; friends label0x1403111ef -> r9d=1 at0x140311230; nobody label0x140311278 -> r9d=2 at0x1403112b9. Same collection rdi supplied to showOnline0x14031130f, showActivity0x140311358, showLocation0x1403113a1, allowInvites0x14031142e. Evidence release-social-privacy-ui.asm.
+Normalization0x14027ca00 maps0->0,1->1,2->2; unknown values map0. Checked raw native jump table, not assumed.
+Factory0x14027c450 defaults showOnline/showLocation/showActivity/allowInvites=0, allowJoin=true, allowFriendRequests=true. Existing server default1 is more restrictive than native default0; do not silently overwrite already saved user settings.
+Settings conversion0x14027c950 defaults absent allowFriendRequests=true.
+AppearOffline update0x14027c810: true sets showOnline=2; false sets showOnline=1 (Friends), preserving other settings; it then calls PUT /presence/appear-offline. This is observed client cache behavior, not inference.
+
+GET /presence/friends WIRE SHAPE
+{"friends":[{"uuid":"UUID","status":"online","activity":"menus","serverName":"name","worldName":"world","gameMode":"mode","canJoin":false,"isWorldOwner":false}]}
+For absent optional string metadata omit keys; don't fabricate name/world/mode. This is a shape template, not real user's data.
+Outer serializer0x14096fa20 obtains key from presence context slot+0xa8=friends and calls array serializer0x14096f320. Array writes '[' and each entry via0x14096ecc0, then ']'.
+Entry serializer0x14096ecc0 writes uuid as GUID string, status/activity/serverName/worldName/gameMode as strings (skips null), canJoin/isWorldOwner as boolean. Exact key slots in context0x140974cb0: uuid+0x28,status+0x38,activity+0x48,serverName+0x58,worldName+0x68,gameMode+0x78,canJoin+0x88,isWorldOwner+0x98.
+No serverUuid, serverHost, serverPort or inviteCode properties in this response entry. Those exist in heartbeat/join-world schemas, not friend presence snapshot.
+Consumers0x140acabe0 and0x140937e20 recognise lowercase offline. Client heartbeat constructor0x140272f70 emits online and activity menus|playing.
+Generated metadata sets property flag+0xa6=1 for outer friends (0x14096f9d3), entry uuid(0x14096e3da) and status(0x14096e51d). This is consistent with generated required-property marker; full runtime member-name symbol proof not performed. Emit those fields always rather than depend on permissive missing-field behavior. Optional strings may be omitted. Emit boolean flags explicitly.
+
+PARTY INFO
+{"partyId":"opaque-party-id","leaderUuid":"UUID","members":["UUID"],"maxSize":4,"currentSize":1}
+maxSize4 is EXAMPLE ONLY, not recovered default; use real configured/current size.
+Serializer0x1409626d0: partyId managed string, leaderUuid GUID, members via0x140921b60, maxSize/currentSize numbers. Members array helper0x140921b60 steps16-byte GUID elements, writes quoted strings via0x1410d9bb0. MEMBERS ARE UUID STRINGS, NOT OBJECTS.
+Context0x140966c80 confirms keys partyId,leaderUuid,members,maxSize,currentSize. All five properties have flag+0xa6=1 in initializer0x140961fa0; emit all five.
+
+PARTY NOTIFICATION DATA — EXACT JSON ALIASES
+party.invite.canceled: {invite_uuid,party_id}, initializer0x1409890f0
+party.invite.received: {invite_uuid,inviter_uuid,party_id,expires_at}, initializer0x140989b10
+party.leader.changed: {party_id,new_leader_uuid}, initializer0x14098a970
+party.member.joined: {party_id,player_uuid,member_count}, initializer0x14098b390
+party.member.left: {party_id,player_uuid,member_count}, initializer0x14098bf60
+Send all listed keys. UUIDs as strings, member_count number, expires_at date string consistent with previous date serializer proof; do not nest member objects. Exact allowed missing/null behavior not established.
+Wrap notifications using gateway.notification outer message and inner event {id,type,timestamp,data}; schema0x1409872e0. Friend/party event type is inner type. Timestamp exact scalar contract remains parent investigation scope; don't infer from this note.
+
+Evidence files all .temp/rea-hytale/release-social-*.asm. Core .txt report has source hash and other routes. No unknown enum ranges or fabricated required fields added.

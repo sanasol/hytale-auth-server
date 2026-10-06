@@ -1,0 +1,22 @@
+Matching release0.6.8 compatibility supplement, Windows binary SHA05f476a25b967005b5480c46152c57811c0bc62aacfabbbff5a98d5e66043ba5
+
+NOTIFICATION ENVELOPE
+{"type":"gateway.notification","data":{"id":"opaque-string-id","type":"friend.request.received","timestamp":"2026-10-06T12:00:00Z","data":{"requester_uuid":"UUID","created_at":"2026-10-06T12:00:00Z"}}}
+Example values only. id is CLR managed string, NOT typed Guid and NOT numeric. UUID text is an acceptable string choice, but no mandatory UUID format inferred.
+GatewayNotificationEvent serializer0x140987870: id encoded slot+0x128 at0x1409878f6, managed string object+8 at0x1409878fd, UTF16+0xc/length+8, stringwriter0x1410d4e30 at0x14098793f.
+timestamp slot+0x138 at0x140987ae0, reads date value object+0x18/+0x20, datewriter0x1410cba30 at0x140987b45 (indented variant0x1410cbf30 at0x140987b6d). Datewriter wraps in quotes. It is DATE STRING, NOT epoch seconds/milliseconds.
+Formatter0x1410dff60 passes format0xff4f (ASCII O roundtrip) to0x140ec52b0 at0x1410dffab then trimming helper0x1410e0020. Supports roundtrip-style ISO text; use ordinary UTC ISO date string, no numeric epoch.
+
+WORLD INVITATION NOTIFICATION DATA
+world.invite.received initializer0x1409936b0: invite_uuid,inviter_uuid,server_name,world_name,expires_at
+world.invite.accepted initializer0x1409924e0: invite_uuid,accepted_by_uuid
+world.invite.rejected initializer0x1409946f0: invite_uuid,rejected_by_uuid
+world.invite.canceled initializer0x140992f00: invite_uuid
+These are explicit JSON aliases in generated property metadata. Use uuid strings, names strings, expires_at date string. No server_uuid property in world.invite.received WS payload; REST invite model separately has serverUuid.
+
+BLOCKS RESPONSE
+{"blocks":[{"blockedUuid":"UUID","createdAt":"2026-10-06T12:00:00Z"}]}
+blocks elements are OBJECTS, NOT UUID strings.
+List serializer0x1409291a0 calls array serializer0x140928300 at0x1409295a6; array serializer calls Block serializer0x140927f00.
+Block serializer writes object '{', blockedUuid context slot+0x28 as GUID via0x1410cf370 at0x140927fa1; createdAt slot+0x38 as date value using same datewriter family. Fields are directly corroborated by initializer0x140927c50 and friends context0x140933020.
+No source/prod changes. ASM evidence release-social-envelope-serialize.asm, release-social-block*-*.asm, release-social-world-*-props.asm, release-social-roundtrip-formatter.asm.

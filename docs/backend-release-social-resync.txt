@@ -1,0 +1,21 @@
+Reconnect/resync evidence — matching0.6.8 Windows client, read-only native analysis.
+
+No explicit refresh/sync message found in COMPLETE inspected top-level gateway dispatcher0x140997fe0 or notification dispatcher0x140998c70. Top-level recognized: gateway.connected, gateway.close, gateway.notification, peer.session.ack, peer.error. Inner notification cases list friend/party/world/account/peer events and chat. Unknown inner event logs Unhandled notification type; inventing friend.refresh/social.sync would not trigger full list reload in inspected dispatcher.
+Connection setup0x140aec320 creates client WS, sets Authorization and User-Agent, constructs wss://socket-gateway.<domain>/ws and connects. Inspected setup contains no cursor query, last_event header or resume token. Do not claim full client-wide absence merely from string search, but inspected connect path has no usable cursor negotiation.
+
+Accepted event shape confirmed from initializer0x140981ed0:
+{"type":"gateway.notification","data":{"id":"string","type":"friend.request.accepted","timestamp":"ISO date","data":{"player_uuid":"OTHER PLAYER UUID","accepted_at":"friendship since ISO date"}}}
+player_uuid identifies peer, not recipient. Date serializer evidenced earlier. Feed actual friendship time, not reconnect time, since handler copies accepted_at into Friend.Since.
+
+Accepted handler0x140937640:
+1) Reads payload+8 player_uuid and parses GUID (0x140937690..6e9); malformed gets invalid player_uuid warning.
+2) Tests friend list at service+0x90 for same UUID using predicate delegate and Any call0x141935160 at0x14093771d.
+3) New UUID: allocates Friend at0x14093772a..736, copies UUID into Friend+0x2c at0x140937739..73d, accepted_at into Friend+0x40 at0x140937742..746; appends array and replaces list0x14093780b..815.
+4) Removes matching pending request from list+0xa0 at0x140937829..866, notifies scope5 at0x140937873, invokes0x140935b90 at0x14093787b (subsequent refresh routine; exact source name not assumed).
+5) Duplicate UUID: branch0x140937724 ->0x140937885, explicit log 'Gateway FriendRequestAccepted for {Uuid} is duplicate; ignoring' at0x140937951. Does not append or replace existing Friend.Since. If matching pending request remains, removes it at0x1409379c3..a0f and notifies scope4 at0x140937a1c. Otherwise returns.
+Thus duplicate acceptance is locally idempotent for friend membership, with useful pending-request cleanup. No duplicate friend rows from replay through this handler. This is not proof other notification handlers are idempotent.
+
+Minimal compatibility inference for observed missing-accept issue:
+After successful gateway.connected, emit accepted notifications for authenticated user's CURRENT persisted friendships (peer UUID + stored since), through ordinary notification envelope. Existing client entries skip as duplicate; missing client entries are appended. Then ordinary presence snapshot/notifications provide online metadata. This is additive resync, NOT complete state reconciliation: it cannot delete locally stale friendships removed while disconnected, and does not replay pending incoming requests/blocks/party membership. Don't claim global resync solved by this alone. A durable ordered event replay can cover missed deletions but no client cursor/ack mechanism was observed in connection path, so server must choose replay policy independently. Snapshot must be read from current authorized state, not blindly send historical accept events for relationships later deleted.
+
+Files: release-social-accepted-handler.asm, release-social-connect.asm, release-social-notification-dispatch.asm, release-social-gatewayconnected-callback.asm, release-social-connectionid-callback.asm. No source/prod changes.

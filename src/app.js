@@ -60,6 +60,9 @@ async function handleRequest(req, res) {
   // Parse JSON body
   const body = await middleware.parseBody(req);
 
+  // Social routes authenticate before legacy context extraction can persist names.
+  if (await routes.social.handleSocialRoutes(req, res, urlPath, body)) return;
+
   // Extract user context
   const { uuid, name, tokenScope } = middleware.extractUserContext(body, req.headers);
 
@@ -176,9 +179,6 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     return;
   }
 
-  if (await routes.social.handleSocialRoutes(req, res, urlPath, body, uuid)) {
-    return;
-  }
 
   // Health check
   if (urlPath === '/health' || urlPath === '/') {
@@ -907,6 +907,7 @@ async function startServer() {
 
   // Connect to Redis
   await connectRedis();
+  setInterval(() => require('./services/social').expirePresence().catch(e => console.error('Presence expiry:', e.message)), 5000).unref();
 
   // Cleanup old log submissions (30 day retention)
   routes.logSubmissions.cleanupOldSubmissions().catch(err => {

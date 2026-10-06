@@ -7,6 +7,19 @@ const KEYS = config.redisKeys;
 // Local cache for usernames (reduces Redis roundtrips for frequent lookups)
 const uuidUsernameCache = new Map();
 
+// Keep a case-insensitive reverse index consistent across all username writers.
+async function indexUsername(uuid, name) {
+  await redis.eval(`
+    local previous = redis.call('GET', KEYS[1])
+    if previous and string.lower(previous) ~= string.lower(ARGV[2]) then
+      redis.call('SREM', 'social:v1:names:' .. string.lower(previous), ARGV[1])
+    end
+    redis.call('SET', KEYS[1], ARGV[2])
+    redis.call('SADD', 'social:v1:names:' .. string.lower(ARGV[2]), ARGV[1])
+    return 1
+  `, 1, `${KEYS.USERNAME}${uuid}`, uuid, name);
+}
+
 // ============================================================================
 // SESSION MANAGEMENT
 // ============================================================================
@@ -38,7 +51,7 @@ async function registerSession(sessionToken, uuid, username, serverAudience = nu
       }
 
       if (username && username !== 'Player') {
-        await redis.set(`${KEYS.USERNAME}${uuid}`, username);
+        await indexUsername(uuid, username);
         uuidUsernameCache.set(uuid, username);
       }
 
@@ -667,7 +680,7 @@ async function persistUsername(uuid, name) {
 
   if (isConnected()) {
     try {
-      await redis.set(`${KEYS.USERNAME}${uuid}`, name);
+      await indexUsername(uuid, name);
 
       const userKey = `${KEYS.USER}${uuid}`;
       let userData = {};
@@ -712,7 +725,7 @@ async function saveUserData(uuid, data) {
     await redis.set(`${KEYS.USER}${uuid}`, JSON.stringify(data));
     console.log('saveUserData: saved to Redis for', uuid);
     if (data.username) {
-      await redis.set(`${KEYS.USERNAME}${uuid}`, data.username);
+      await indexUsername(uuid, data.username);
       uuidUsernameCache.set(uuid, data.username);
     }
   } catch (e) {
