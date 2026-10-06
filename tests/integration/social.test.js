@@ -5,6 +5,7 @@ const { randomUUID } = require('crypto');
 if (!process.env.REDIS_URL || !process.env.DATA_DIR) throw Error('Explicit disposable REDIS_URL and DATA_DIR required');
 const s = require('../../src/services/social');
 const invites = require('../../src/services/socialInvites');
+const socialMetrics = require('../../src/services/socialMetrics');
 const auth = require('../../src/services/auth');
 const { handleSocialRoutes } = require('../../src/routes/social');
 const { connect } = require('../../src/services/redis');
@@ -22,6 +23,7 @@ test('social routes: two users, concurrency, privacy, invites, profiles, expiry 
   };
   const ok = async (...args) => { const r=await call(...args); assert.ok(r.status>=200&&r.status<300,`${args[2]}: ${r.status} ${JSON.stringify(r.body)}`); return r.body; };
   try {
+    const initialMetrics=(await socialMetrics.read(1)).totals;
     for(let i=0;i<ids.length;i++) await s.redis.set(`username:${ids[i]}`,names[i]);
     // Losing the WATCH connection must not reconnect and commit an unguarded write.
     const duplicate = s.redis.duplicate;
@@ -45,15 +47,23 @@ test('social routes: two users, concurrency, privacy, invites, profiles, expiry 
     assert.equal((await call(a,'POST','/friend-requests',{targetUuid:b},tokens[a]+'x')).status,401);
     await ok(a,'POST','/friend-requests/by-username',{targetUsername:names[1]});
     assert.equal((await ok(b,'GET','/friend-requests/incoming')).requests[0].requesterUuid,a);
+    const beforeAccept=(await socialMetrics.read(1)).totals.friendsAccepted;
     await Promise.all([ok(b,'POST','/friend-requests/accept',{requesterUuid:a}),ok(b,'POST','/friend-requests/accept',{requesterUuid:a})]);
+    assert.equal((await socialMetrics.read(1)).totals.friendsAccepted,beforeAccept+1);
     assert.equal((await ok(a,'GET','/friends')).friends[0].uuid,b);
     assert.equal((await ok(b,'GET','/friends')).friends[0].uuid,a);
     assert.equal((await s.user(a)).friendChanges[b].type,'friend.request.accepted');
     await ok(b,'POST','/presence/heartbeat',{status:'online',activity:'playing',serverUuid:b,serverName:'Host',worldName:'World',serverHost:'127.0.0.1',serverPort:5520,inviteCode:'opaque-code'});
     assert.equal((await ok(a,'GET','/presence/friends')).friends[0].canJoin,true);
+    const beforeJoin=(await socialMetrics.read(1)).totals;
     assert.equal((await ok(a,'POST','/presence/join-world',{targetUuid:b})).inviteCode,'opaque-code');
     await ok(b,'PUT','/presence/settings',{showLocation:2});
     assert.equal((await call(a,'POST','/presence/join-world',{targetUuid:b})).status,403);
+    const afterJoin=(await socialMetrics.read(1)).totals;
+    assert.equal(afterJoin.worldJoinHttpSuccess,beforeJoin.worldJoinHttpSuccess+1);
+    assert.equal(afterJoin.worldJoinHttpDenied,beforeJoin.worldJoinHttpDenied+1);
+    assert.equal((await call(a,'POST','/presence/join-world',{targetUuid:b},tokens[a]+'x')).status,401);
+    assert.equal((await socialMetrics.read(1)).totals.worldJoinHttpDenied,beforeJoin.worldJoinHttpDenied+2);
     await ok(b,'PUT','/presence/settings',{showLocation:1});
     await ok(b,'PUT','/presence/appear-offline',{appearOffline:true});
     assert.equal((await ok(a,'GET','/presence/friends')).friends[0].status,'offline');
@@ -156,6 +166,12 @@ test('social routes: two users, concurrency, privacy, invites, profiles, expiry 
     assert.equal((await call(b,'POST','/friend-requests',{targetUuid:a})).status,403);
     assert.equal((await call(c,'POST','/world-invites/accept',{inviteUuid:w.inviteUuid})).status,404);
     assert.equal((await call(a,'POST','/friends/unknown')).status,501);
+    const finalMetrics=(await socialMetrics.read(1)).totals;
+    for (const [name,count] of Object.entries({friendsAccepted:1,friendsRemoved:1,partiesCreated:1,partiesClosed:1,
+      partyMembersJoined:2,partyMembersLeft:3,partyInvitesSent:6,partyInvitesAccepted:2,partyInvitesRejected:1,partyInvitesCanceled:1,
+      worldInvitesSent:4,worldInvitesAccepted:2,worldInvitesRejected:1,worldInvitesCanceled:1})) {
+      assert.equal(finalMetrics[name]-initialMetrics[name],count,name);
+    }
   } finally {
     await s.redis.del(...ids.flatMap(id=>[s.key(id),`username:${id}`,`user:${id}`]),...partyIds.map(id=>s.key(`party:${id}`)));
     await s.redis.zrem(`${s.PREFIX}expiry`,...ids);

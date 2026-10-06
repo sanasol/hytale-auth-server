@@ -1,7 +1,9 @@
 const crypto = require('crypto');
 const https = require('https');
 
-const storage = require('../services/storage');
+const interactions = require('../services/serverInteractions');
+const auth = require('../services/auth');
+const social = require('../services/social');
 const { sendJson, sendNoContent } = require('../utils/response');
 
 const DEFAULT_SOURCE_URL = 'https://santale.top/api/all-servers';
@@ -174,14 +176,14 @@ function sortListings(listings, sort) {
   return sorted;
 }
 
-async function getListings(url, uuid) {
+async function getListings(url, uuid, page = 1) {
   const configuredSource = process.env.SERVER_DISCOVERY_SOURCE_URL;
   const sourceIsConfigured = Boolean(configuredSource);
   const sourceUrl = new URL(configuredSource || DEFAULT_SOURCE_URL);
 
   if (!sourceIsConfigured) {
     sourceUrl.searchParams.set('per_page', process.env.SERVER_DISCOVERY_PER_PAGE || '100');
-    sourceUrl.searchParams.set('page', '1');
+    sourceUrl.searchParams.set('page', String(page));
     const sort = url.searchParams.get('sort') || 'players';
     sourceUrl.searchParams.set('sort', sort === 'featured' ? 'votes' : 'players');
   } else {
@@ -192,16 +194,19 @@ async function getListings(url, uuid) {
 
   const upstream = await fetchJson(sourceUrl.toString());
   if (Array.isArray(upstream) && upstream.every(isOfficialListingShape)) {
-    return { listings: upstream };
+    const data = await interactions.get(uuid);
+    await interactions.remember(upstream);
+    return { listings: upstream.map(x => interactions.flags(x, data)) };
   }
 
   const sourceItems = upstream.data || [];
   if (!sourceIsConfigured && Array.isArray(sourceItems) && sourceItems.every(isSantaleListingShape)) {
-    const interactions = await storage.getServerDiscoveryInteractions(uuid);
-    const listings = sourceItems.map((server) => transformSantaleServer(server, interactions));
+    const data = await interactions.get(uuid);
+    const listings = sourceItems.map((server) => transformSantaleServer(server, data));
+    await interactions.remember(listings);
     const filtered = filterListings(listings, url);
     const offset = Math.max(Number(url.searchParams.get('offset') || 0), 0);
-    return { listings: sortListings(filtered, url.searchParams.get('sort') || 'players').slice(offset) };
+    return { listings: sortListings(filtered, url.searchParams.get('sort') || 'players').slice(offset), pages: Number(upstream.last_page) || 1 };
   }
 
   if (sourceIsConfigured && Array.isArray(upstream) && !upstream.every(isOfficialListingShape)) {
@@ -217,33 +222,66 @@ async function getListings(url, uuid) {
   };
 }
 
-async function handleServerDiscoveryRoutes(req, res, url, urlPath, uuid) {
-  if (urlPath === '/servers/listings' && req.method === 'GET') {
-    try {
-      const result = await getListings(url);
-      if (result.unsupported) {
-        sendJson(res, 501, {
-          error: result.error,
-          observed_shape: 'top-level JSON array of {audience,createdAt,description,favorites,host,isFavorited,isLiked,likes,name,ownerProfileId,port,regions,serverType,uuid}',
-        });
-      } else {
-        sendJson(res, 200, result.listings);
+// Legacy favorites may predate the catalog cache. Resolve missing cards once, with
+// bounded upstream work; cached favorites remain usable during source outages.
+async function resolveListings(ids) {
+  let listings = await interactions.cached(ids);
+  if (listings.length === ids.length) return listings;
+  const missing = ids.filter(id => !listings.some(x => x.uuid === id));
+  const misses = await social.redis.mget(...missing.map(id => `discovery:v1:missing:${id}`));
+  if (misses.every(Boolean)) return listings;
+  const url = new URL('https://discovery/servers/listings');
+  const first = await getListings(url);
+  if (first.unsupported) throw Object.assign(new Error(first.error), { status: 502 });
+  const deadline = Date.now() + 10000;
+  let complete = (first.pages || 1) <= 1;
+  for (let page = 2; page <= Math.min(first.pages || 1, 30); page += 4) {
+    listings = await interactions.cached(ids);
+    if (listings.length === ids.length || Date.now() > deadline) break;
+    await Promise.all(Array.from({ length: Math.min(4, Math.min(first.pages, 30) - page + 1) }, (_, i) => getListings(url, undefined, page + i)));
+    complete = page + 3 >= first.pages;
+  }
+  listings = await interactions.cached(ids);
+  if (complete) {
+    for (const id of ids.filter(id => !listings.some(x => x.uuid === id))) await social.redis.set(`discovery:v1:missing:${id}`, '1', 'EX', 300);
+  }
+  return listings;
+}
+
+async function handleServerDiscoveryRoutes(req, res, url, urlPath) {
+  const list = urlPath === '/servers/listings' && req.method === 'GET';
+  const own = req.method === 'GET' && urlPath.match(/^\/me\/interactions\/(like|favorite)$/);
+  const mutation = ['POST', 'DELETE'].includes(req.method) && urlPath.match(/^\/servers\/([^/]+)\/interaction\/(like|favorite)$/);
+  if (!list && !own && !mutation) return false;
+  const claims = auth.verifyToken(/^Bearer (.+)$/.exec(req.headers.authorization || '')?.[1]);
+  const valid = claims && social.validId(claims.uuid) && Number.isFinite(claims.exp) && claims.exp > Date.now() / 1000 && claims.scope === 'hytale:server';
+  if (!valid && !list) { sendJson(res, 401, { error: 'Valid session token required' }); return true; }
+  const uuid = valid ? claims.uuid.toLowerCase() : undefined;
+  try {
+    if (list) {
+      const result = await getListings(url, uuid);
+      sendJson(res, result.unsupported ? 501 : 200, result.unsupported ? { error: result.error } : result.listings);
+    } else if (own) {
+      const data = await interactions.get(uuid), ids = data[interactions.field(own[1])];
+      let listings = await interactions.cached(ids);
+      if (listings.length !== ids.length) {
+        try { listings = await resolveListings(ids); }
+        catch (error) { if (!listings.length) throw error; }
       }
-    } catch (e) {
-      console.error('server discovery listings failed:', e.message);
-      sendJson(res, 502, { error: 'server discovery source unavailable' });
+      const offset = Number(url.searchParams.get('offset') || 0);
+      if (!Number.isInteger(offset) || offset < 0) social.fail(400, 'Invalid offset');
+      sendJson(res, 200, listings.slice(offset).map(x => interactions.flags(x, data)));
+    } else {
+      const serverId = social.requireId(mutation[1]);
+      if (req.method === 'POST' && !(await resolveListings([serverId])).length) social.fail(404, 'Server listing not found');
+      await interactions.update(uuid, serverId, mutation[2], req.method === 'POST');
+      sendNoContent(res);
     }
-    return true;
+  } catch (error) {
+    console.error('server discovery failed:', error.message);
+    sendJson(res, error.status || 503, { error: error.message });
   }
-
-  const interactionMatch = urlPath.match(/^\/servers\/([^/]+)\/interaction\/(like|favorite)$/);
-  if (interactionMatch && req.method === 'POST') {
-    await storage.addServerDiscoveryInteraction(uuid, interactionMatch[1], interactionMatch[2]);
-    sendNoContent(res);
-    return true;
-  }
-
-  return false;
+  return true;
 }
 
 module.exports = {

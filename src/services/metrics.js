@@ -347,6 +347,7 @@ async function queryVictoriaMetricsInstant(query) {
  * Get metrics data from VictoriaMetrics
  */
 async function getMetricsFromVM(metric, range = '1h') {
+  if (metric in require('./onlineMetrics').SERIES) return require('./onlineMetrics').history(metric, range);
   const now = Date.now();
   let startTime, step;
 
@@ -356,6 +357,9 @@ async function getMetricsFromVM(metric, range = '1h') {
     case '1h': startTime = now - 60 * 60 * 1000; step = '1m'; break;
     case '6h': startTime = now - 6 * 60 * 60 * 1000; step = '5m'; break;
     case '24h': startTime = now - 24 * 60 * 60 * 1000; step = '15m'; break;
+    case '30d': startTime = now - 30 * 86400000; step = '6h'; break;
+    case '90d': startTime = now - 90 * 86400000; step = '12h'; break;
+    case '365d': startTime = now - 365 * 86400000; step = '1d'; break;
     case '7d': startTime = now - 7 * 24 * 60 * 60 * 1000; step = '1h'; break;
     default: startTime = now - 60 * 60 * 1000; step = '1m';
   }
@@ -391,10 +395,10 @@ async function getMetricsFromVM(metric, range = '1h') {
  */
 async function recordCurrentStats() {
   try {
-    const stats = await storage.getKeyCounts();
-    setGauge('active_players', stats.activePlayers);
-    setGauge('active_servers', stats.servers);
-    setGauge('active_sessions', stats.sessions);
+    const now = Date.now();
+    const [players, servers] = await Promise.all([redis.zcount('active:players', now, '+inf'), redis.zcount('active:servers', now, '+inf')]);
+    setGauge('active_players', players);
+    setGauge('active_servers', servers);
     setGauge('redis_connected', isConnected() ? 1 : 0);
   } catch (e) {
     // Non-critical
@@ -638,7 +642,7 @@ async function getPrometheusMetrics() {
   }
 
   // Gauges
-  lines.push('# HELP hytale_active_players Current active players');
+  lines.push('# HELP hytale_active_players Legacy accounts with an unexpired auth activity window; NOT live clients');
   lines.push('# TYPE hytale_active_players gauge');
   lines.push(`hytale_active_players ${gauges.active_players || 0}`);
 
@@ -646,9 +650,7 @@ async function getPrometheusMetrics() {
   lines.push('# TYPE hytale_active_servers gauge');
   lines.push(`hytale_active_servers ${gauges.active_servers || 0}`);
 
-  lines.push('# HELP hytale_active_sessions Current active sessions');
-  lines.push('# TYPE hytale_active_sessions gauge');
-  lines.push(`hytale_active_sessions ${gauges.active_sessions || 0}`);
+
 
   lines.push('# HELP hytale_redis_connected Redis connection status');
   lines.push('# TYPE hytale_redis_connected gauge');
@@ -703,57 +705,7 @@ async function getPrometheusMetrics() {
   lines.push('# TYPE hytale_total_playtime_hours gauge');
   lines.push(`hytale_total_playtime_hours ${gauges.total_playtime_hours || 0}`);
 
-  // Hardware stats (from all players who ever sent telemetry)
-  const hwStats = await getHardwareStats(false);
-  if (hwStats) {
-    lines.push('# HELP hytale_hardware_players_total Total players with hardware telemetry');
-    lines.push('# TYPE hytale_hardware_players_total gauge');
-    lines.push(`hytale_hardware_players_total ${hwStats.total}`);
-
-    lines.push('# HELP hytale_hardware_os Players by operating system');
-    lines.push('# TYPE hytale_hardware_os gauge');
-    for (const [os, count] of Object.entries(hwStats.os).slice(0, MAX_LABEL_VALUES)) {
-      const safeOs = os.replace(/"/g, '\\"');
-      lines.push(`hytale_hardware_os{os="${safeOs}"} ${count}`);
-    }
-
-    lines.push('# HELP hytale_hardware_gpu_vendor Players by GPU vendor');
-    lines.push('# TYPE hytale_hardware_gpu_vendor gauge');
-    for (const [vendor, count] of Object.entries(hwStats.gpu_vendor).slice(0, MAX_LABEL_VALUES)) {
-      const safeVendor = vendor.replace(/"/g, '\\"');
-      lines.push(`hytale_hardware_gpu_vendor{vendor="${safeVendor}"} ${count}`);
-    }
-
-    lines.push('# HELP hytale_hardware_resolution Players by screen resolution');
-    lines.push('# TYPE hytale_hardware_resolution gauge');
-    for (const [res, count] of Object.entries(hwStats.resolution).slice(0, MAX_LABEL_VALUES)) {
-      lines.push(`hytale_hardware_resolution{resolution="${res}"} ${count}`);
-    }
-
-    lines.push('# HELP hytale_hardware_memory Players by system memory');
-    lines.push('# TYPE hytale_hardware_memory gauge');
-    for (const [mem, count] of Object.entries(hwStats.memory_gb).slice(0, MAX_LABEL_VALUES)) {
-      lines.push(`hytale_hardware_memory{memory="${mem}"} ${count}`);
-    }
-
-    lines.push('# HELP hytale_hardware_cpu_cores Players by CPU core count');
-    lines.push('# TYPE hytale_hardware_cpu_cores gauge');
-    for (const [cores, count] of Object.entries(hwStats.cpu_cores).slice(0, MAX_LABEL_VALUES)) {
-      lines.push(`hytale_hardware_cpu_cores{cores="${cores}"} ${count}`);
-    }
-
-    lines.push('# HELP hytale_hardware_refresh_rate Players by monitor refresh rate');
-    lines.push('# TYPE hytale_hardware_refresh_rate gauge');
-    for (const [rate, count] of Object.entries(hwStats.refresh_rate).slice(0, MAX_LABEL_VALUES)) {
-      lines.push(`hytale_hardware_refresh_rate{rate="${rate}"} ${count}`);
-    }
-
-    lines.push('# HELP hytale_hardware_display_mode Players by display mode');
-    lines.push('# TYPE hytale_hardware_display_mode gauge');
-    for (const [mode, count] of Object.entries(hwStats.display_mode).slice(0, MAX_LABEL_VALUES)) {
-      lines.push(`hytale_hardware_display_mode{mode="${mode}"} ${count}`);
-    }
-  }
+  // Hardware remains an explicit admin report; never enumerate players on each scrape.
 
   // Download stats
   const downloadStats = await storage.getDownloadStats();

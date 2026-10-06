@@ -1,4 +1,5 @@
 const s = require('../services/social');
+const socialMetrics = require('../services/socialMetrics');
 const invites = require('../services/socialInvites');
 const auth = require('../services/auth');
 const storage = require('../services/storage');
@@ -11,6 +12,7 @@ async function handleSocialRoutes(req, res, path, body) {
   const token = /^Bearer (.+)$/.exec(req.headers.authorization || '')?.[1];
   const claims = auth.verifyToken(token);
   if (!claims || !s.validId(claims.uuid) || !Number.isFinite(claims.exp) || claims.exp <= Date.now() / 1000 || claims.scope !== 'hytale:server') {
+    if (req.method === 'POST' && path === '/presence/join-world') await socialMetrics.record('worldJoinHttpDenied');
     sendJson(res, 401, { errorCode: 'unauthorized', message: 'Valid session token required' }); return true;
   }
   const id = claims.uuid.toLowerCase(), method = req.method;
@@ -62,8 +64,10 @@ async function handleSocialRoutes(req, res, path, body) {
         result = { iceServers: [{ urls, username, credential: createHmac('sha1', secret).update(username).digest('base64') }], expiresAt: new Date(exp * 1000).toISOString() };
       } else s.fail(501, 'Social operation not implemented');
     } else s.fail(405, 'Method not allowed');
+    if (method === 'POST' && path === '/presence/join-world') await socialMetrics.record('worldJoinHttpSuccess');
     if (result === undefined) sendNoContent(res); else sendJson(res, 200, result);
   } catch (error) {
+    if (method === 'POST' && path === '/presence/join-world') await socialMetrics.record(error.status && error.status < 500 ? 'worldJoinHttpDenied' : 'worldJoinHttpErrors');
     if (!error.status) console.error('Social request failed:', error.message);
     sendJson(res, error.status || 503, { errorCode: String(error.status || 503), message: error.status ? error.message : 'Social service unavailable' });
   }

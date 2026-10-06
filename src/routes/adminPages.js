@@ -394,6 +394,16 @@ function handleServersPage(req, res) {
     ${navHtml('servers')}
     <div class="container">
       <div class="card">
+        <div class="card-header"><span class="card-title">Social usage</span>
+          <select id="socialDays" onchange="loadSocialUsage()"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="365">365 days</option></select>
+          <button class="btn btn-secondary" onclick="loadSocialUsage()">Refresh usage</button>
+          <a href="/admin/page/metrics">Live clients / yearly online history</a>
+        </div>
+        <p id="socialCurrent">Loading…</p>
+        <p style="color:#888">Daily totals use UTC. Join World HTTP authorization is not a confirmed game connection. Direct/relay comes from client ice_result; world entry comes from world_joined. Telemetry is optional and client-reported; missing reports are not failures. ICE counts endpoint reports, not unique joins. History before tracking began is unavailable.</p>
+        <div id="socialUsage" style="overflow:auto;max-height:600px"></div>
+      </div>
+      <div class="card">
         <div class="card-header">
           <span class="card-title">Active Servers</span>
           <div>
@@ -409,6 +419,41 @@ function handleServersPage(req, res) {
     ${sharedScripts}
 
     let currentPage = 1;
+
+    async function loadSocialUsage() {
+      const box = document.getElementById('socialUsage'), current = document.getElementById('socialCurrent');
+      try {
+        const response = await authFetch('/admin/api/social-usage?days=' + document.getElementById('socialDays').value);
+        if (!response.ok) throw Error('Usage unavailable');
+        const data = await response.json();
+        current.textContent = 'Currently stored: ' + (data.baselineKnown ? data.current.friendEdges + ' friendships, ' + data.current.parties + ' parties.' : 'initial totals pending verification.') + ' Event counters since: ' + (data.since || 'first event') + '.';
+        const fields = [
+          ['friendRequestsSent','Friend requests sent'], ['friendRequestsRejected','Friend requests rejected'], ['friendsAccepted','Friendships added'], ['friendsRemoved','Friendships removed'],
+          ['blocksCreated','Blocks'], ['blocksRemoved','Unblocks'], ['partiesCreated','Parties created'], ['partiesClosed','Parties closed'],
+          ['partyMembersJoined','Party joins'], ['partyMembersLeft','Party leaves'],
+          ['partyInvitesSent','Party invitations sent'], ['partyInvitesAccepted','Party invitations accepted'], ['partyInvitesRejected','Party invitations rejected'], ['partyInvitesCanceled','Party invitations canceled'],
+          ['worldInvitesSent','World invitations sent'], ['worldInvitesAccepted','World invitations accepted'], ['worldInvitesRejected','World invitations rejected'], ['worldInvitesCanceled','World invitations canceled'],
+          ['serverFavoritesAdded','Server favorites added'], ['serverFavoritesRemoved','Server favorites removed'], ['serverLikesAdded','Server likes added'], ['serverLikesRemoved','Server likes removed'],
+          ['clientConnectSuccess','Client-reported connections succeeded (includes local)'], ['clientConnectFailure','Client-reported connections failed (includes local)'],
+          ['clientP2PConnectSuccess','Client-reported P2P connections succeeded'], ['clientP2PConnectFailure','Client-reported P2P connections failed'],
+          ['clientWorldJoined','Client-reported multiplayer worlds joined'], ['iceDirect','ICE nominated direct'], ['iceRelay','ICE nominated relay'], ['iceFailed','ICE failed'], ['iceUnknown','ICE outcome unknown'],
+          ['worldJoinHttpSuccess','Join World HTTP authorized'], ['worldJoinHttpDenied','Join World HTTP denied'], ['worldJoinHttpErrors','Join World HTTP errors']
+        ];
+        box.replaceChildren();
+        const table = document.createElement('table'); table.style.width = '100%';
+        const row = cells => { const tr = document.createElement('tr'); for(const value of cells) { const td = document.createElement('td'); td.textContent = value; td.style.padding = '6px'; tr.append(td); } table.append(tr); };
+        row(['Event','Selected period','Since tracking began']);
+        for(const [key,label] of fields) row([label,data.daily.reduce((n,d)=>n+Number(d[key]||0),0),data.totals[key]||0]);
+        box.append(table);
+        const title = document.createElement('h4'); title.textContent = 'Daily history (UTC)'; box.append(title);
+        const daily = document.createElement('table'); daily.style.width = '100%';
+        const dailyRow = values => { const tr = document.createElement('tr'); for(const value of values) { const td=document.createElement('td'); td.textContent=value;td.style.padding='6px';tr.append(td); } daily.append(tr); };
+        dailyRow(['Date','Friends added','Parties created','World invites sent / accepted','Join authorized / denied / errors']);
+        for(const day of [...data.daily].reverse().filter(day => !data.since || day.date >= data.since.slice(0,10) || fields.some(([key]) => day[key]))) dailyRow([day.date,day.friendsAccepted||0,day.partiesCreated||0,[day.worldInvitesSent||0,day.worldInvitesAccepted||0].join(' / '),[day.worldJoinHttpSuccess||0,day.worldJoinHttpDenied||0,day.worldJoinHttpErrors||0].join(' / ')]);
+        box.append(daily);
+      } catch (error) { current.textContent='Social usage unavailable; counts are unknown.'; box.replaceChildren(); }
+    }
+
 
     async function loadServers(page) {
       const list = document.getElementById('serversList');
@@ -497,9 +542,8 @@ function handleServersPage(req, res) {
     async function init() {
       document.getElementById('loginOverlay').classList.add('hidden');
       document.getElementById('mainContent').classList.remove('hidden');
-      loadStats();
       loadServers(1);
-      setInterval(loadStats, 30000);
+      loadSocialUsage();
     }
 
     (async () => {
@@ -974,6 +1018,9 @@ function handleMetricsPage(req, res) {
         <button class="btn btn-secondary range-btn" data-range="6h">6h</button>
         <button class="btn btn-secondary range-btn" data-range="24h">24h</button>
         <button class="btn btn-secondary range-btn" data-range="7d">7d</button>
+        <button class="btn btn-secondary range-btn" data-range="30d">30d</button>
+        <button class="btn btn-secondary range-btn" data-range="90d">90d</button>
+        <button class="btn btn-secondary range-btn" data-range="365d">365d</button>
         <button class="btn" onclick="refreshCharts()" style="margin-left:auto">Refresh</button>
         <label style="color:#888;font-size:0.85em;display:flex;align-items:center;gap:5px">
           <input type="checkbox" id="autoRefresh" checked onchange="toggleAuto()"> Auto (30s)
@@ -983,7 +1030,9 @@ function handleMetricsPage(req, res) {
       <!-- Main time-series charts -->
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));gap:20px">
         <div class="chart-container" style="grid-column: span 2">
-          <div class="chart-header"><span class="chart-title">Activity Overview (Players / Servers / Sessions)</span></div>
+          <div class="chart-header"><span class="chart-title">Live clients — authenticated WebSocket observations</span></div>
+          <p id="onlineSummary" style="color:#aaa">Loading direct online counts…</p>
+          <p style="color:#888">Includes menus. Accounts are deduplicated; sockets count separate clients. Network loss expires within 50s. Historical samples every 15s; gaps stay unknown. Collection starts with this deployment.</p>
           <div class="chart-wrapper" style="height:250px"><canvas id="activityChart"></canvas></div>
         </div>
         <div class="chart-container">
@@ -1075,6 +1124,7 @@ function handleMetricsPage(req, res) {
       </div>
 
       <!-- Hardware stats - horizontal bar charts (3 cols x 3 rows) -->
+      <button class="btn btn-secondary" onclick="loadHardwareStats(); loadAnalyticsStats()">Load legacy hardware / telemetry report</button>
       <h3 class="section-title">Hardware Statistics
         (<span id="hwTotal">0</span> active / <span id="hwTotalAll">0</span> total players)
         <label style="font-size:12px;margin-left:10px;font-weight:normal;">
@@ -1212,9 +1262,9 @@ function handleMetricsPage(req, res) {
         data: {
           labels: [],
           datasets: [
-            { label: 'Players', data: [], borderColor: '#00d4ff', backgroundColor: '#00d4ff33', fill: false, tension: 0.4, pointRadius: 2, borderWidth: 2 },
-            { label: 'Servers', data: [], borderColor: '#b388ff', backgroundColor: '#b388ff33', fill: false, tension: 0.4, pointRadius: 2, borderWidth: 2 },
-            { label: 'Sessions', data: [], borderColor: '#ffaa00', backgroundColor: '#ffaa0033', fill: false, tension: 0.4, pointRadius: 2, borderWidth: 2 }
+            { label: 'Accounts (mean)', data: [], borderColor: '#00d4ff', backgroundColor: '#00d4ff33', fill: false, tension: 0.4, pointRadius: 2, borderWidth: 2 },
+            { label: 'Accounts (peak)', data: [], borderColor: '#b388ff', backgroundColor: '#b388ff33', fill: false, tension: 0.4, pointRadius: 2, borderWidth: 2 },
+            { label: 'Client sockets (mean)', data: [], borderColor: '#ffaa00', backgroundColor: '#ffaa0033', fill: false, tension: 0.4, pointRadius: 2, borderWidth: 2 }
           ]
         },
         options: {
@@ -1343,7 +1393,7 @@ function handleMetricsPage(req, res) {
         // VictoriaMetrics returns points as {timestamp, value}
         const labels = d.points.map(p => {
           const dt = new Date(p.timestamp);
-          return currentRange === '7d' ? dt.toLocaleDateString() : dt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+          return ['7d','30d','90d','365d'].includes(currentRange) ? dt.toLocaleDateString() : dt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
         });
         const values = d.points.map(p => p.value || 0);
         chart.data.labels = labels;
@@ -1495,27 +1545,36 @@ function handleMetricsPage(req, res) {
 
     async function loadActivityChart() {
       if (!charts.activity) return;
+      const summary = document.getElementById('onlineSummary');
       try {
-        const [playersRes, serversRes, sessionsRes] = await Promise.all([
-          authFetch('/admin/api/metrics/timeseries?metric=players&range=' + currentRange),
-          authFetch('/admin/api/metrics/timeseries?metric=servers&range=' + currentRange),
-          authFetch('/admin/api/metrics/timeseries?metric=sessions&range=' + currentRange)
+        const responses = await Promise.all([
+          authFetch('/admin/api/metrics/timeseries?metric=online_users&range=' + currentRange),
+          authFetch('/admin/api/metrics/timeseries?metric=connections&range=' + currentRange),
+          authFetch('/admin/api/activity')
         ]);
-        const [playersData, serversData, sessionsData] = await Promise.all([
-          playersRes.json(), serversRes.json(), sessionsRes.json()
-        ]);
-
-        const labels = playersData.points.map(p => {
-          const dt = new Date(p.timestamp);
-          return currentRange === '7d' ? dt.toLocaleDateString() : dt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+        if (responses.some(r => !r.ok)) throw Error('Online metrics unavailable');
+        const [users, sockets, current] = await Promise.all(responses.map(r => r.json()));
+        document.querySelectorAll('[data-stat]').forEach(el => { el.textContent = el.dataset.stat === 'players' ? current.onlineUsers : '—'; });
+        const count = n => n == null ? 'unknown' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 });
+        summary.textContent = 'Now: ' + count(current.onlineUsers) + ' accounts / ' + count(current.connections) + ' clients. Selected period: mean ' + count(users.summary.average) + ', peak ' + count(users.summary.peak) + ', observed account-hours ' + count(users.summary.observedHours) + ', client-hours ' + count(sockets.summary.observedHours) + '. Sample coverage: ' + count(users.summary.coveragePercent) + '%.';
+        // Explicit null slots prevent chart interpolation through missed scrapes.
+        const times = [];
+        for (let ts = users.startTime; ts <= users.endTime; ts += users.stepSeconds*1000) times.push(ts);
+        charts.activity.data.labels = times.map(ts => {
+          const dt = new Date(ts);
+          return ['7d','30d','90d','365d'].includes(currentRange) ? dt.toLocaleDateString() : dt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
         });
-
-        charts.activity.data.labels = labels;
-        charts.activity.data.datasets[0].data = playersData.points.map(p => p.value || 0);
-        charts.activity.data.datasets[1].data = serversData.points.map(p => p.value || 0);
-        charts.activity.data.datasets[2].data = sessionsData.points.map(p => p.value || 0);
+        [users.points, users.peaks, sockets.points].forEach((points, i) => {
+          const values = new Map(points.map(p => [p.timestamp, p.value]));
+          charts.activity.data.datasets[i].data = times.map(ts => values.get(ts) ?? null);
+        });
         charts.activity.update('none');
-      } catch (e) { console.error('Activity chart error:', e); }
+      } catch (e) {
+        summary.textContent = 'Online metrics unavailable — no zero count inferred.';
+        charts.activity.data.datasets.forEach(d => { d.data = []; });
+        charts.activity.update('none');
+        console.error('Activity chart error:', e);
+      }
     }
 
     async function loadFpsAndFrameTimeChart() {
@@ -1528,7 +1587,7 @@ function handleMetricsPage(req, res) {
         const [fpsData, ftData] = await Promise.all([fpsRes.json(), ftRes.json()]);
         const labels = fpsData.points.map(p => {
           const dt = new Date(p.timestamp);
-          return currentRange === '7d' ? dt.toLocaleDateString() : dt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+          return ['7d','30d','90d','365d'].includes(currentRange) ? dt.toLocaleDateString() : dt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
         });
         charts.fpsLine.data.labels = labels;
         charts.fpsLine.data.datasets[0].data = fpsData.points.map(p => p.value || 0);
@@ -1549,7 +1608,7 @@ function handleMetricsPage(req, res) {
         const [avgData, p50Data, p90Data, p99Data] = await Promise.all([avgRes.json(), p50Res.json(), p90Res.json(), p99Res.json()]);
         const labels = avgData.points.map(p => {
           const dt = new Date(p.timestamp);
-          return currentRange === '7d' ? dt.toLocaleDateString() : dt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+          return ['7d','30d','90d','365d'].includes(currentRange) ? dt.toLocaleDateString() : dt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
         });
         // Convert seconds to minutes for display
         charts.sessionDurationLine.data.labels = labels;
@@ -1574,8 +1633,7 @@ function handleMetricsPage(req, res) {
         loadTimeSeries('memory_avg', charts.memoryLine),
         loadTimeSeries('world_load_avg', charts.worldLoadLine),
         loadSnapshot(),
-        loadHardwareStats(),
-        loadAnalyticsStats()
+        // Legacy hardware/telemetry reports are loaded explicitly below.
       ]);
     }
 
@@ -1626,11 +1684,11 @@ function handleMetricsPage(req, res) {
     async function init() {
       document.getElementById('loginOverlay').classList.add('hidden');
       document.getElementById('mainContent').classList.remove('hidden');
-      loadStats();
+      // Global database inventory scans are not part of the metrics page.
       initCharts();
       refreshCharts();
       toggleAuto();
-      setInterval(loadStats, 30000);
+
     }
 
     (async () => {
@@ -2099,7 +2157,7 @@ function handleSettingsPage(req, res) {
 
     async function loadDownloadHistory() {
       try {
-        const hours = currentRange === '24h' ? 24 : currentRange === '7d' ? 168 : 720;
+        const hours = currentRange === '24h' ? 24 : ['7d','30d','90d','365d'].includes(currentRange) ? 168 : 720;
         const res = await authFetch('/admin/api/settings/download-history?hours=' + hours);
         const data = await res.json();
 

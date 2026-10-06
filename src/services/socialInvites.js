@@ -20,25 +20,30 @@ async function getParty(id) {
 async function createParty(id, size = 4) {
   if (!Number.isInteger(size) || size < 2 || size > 16) s.fail(400, 'maxSize must be 2..16');
   const partyId = randomUUID();
-  return s.change([id, partyKey(partyId)], r => {
+  return s.change([id, partyKey(partyId)], (r, emit, metric) => {
     if (r[id].partyId) s.fail(409, 'Already in a party');
     const p = { partyId, leaderUuid: id, members: [id], maxSize: size };
+    metric('partiesCreated'); metric('partiesDelta');
     r[id].partyId = partyId; r[partyKey(partyId)].party = p;
     return { ...p, currentSize: 1 };
   });
 }
 async function leave(id) {
   const p = await getParty(id);
-  await s.change([id, partyKey(p.partyId)], (r, emit) => {
+  await s.change([id, partyKey(p.partyId)], (r, emit, metric) => {
     const party = r[partyKey(p.partyId)].party;
     if (r[id].partyId !== p.partyId) s.fail(409, 'Party changed');
+    metric('partyMembersLeft');
     delete r[id].partyId; party.members = party.members.filter(x => x !== id);
     for (const member of party.members) emit(member, 'party.member.left', { party_id: p.partyId, player_uuid: id, member_count: party.members.length });
     if (party.leaderUuid === id) {
       party.leaderUuid = party.members[0] || null;
       for (const member of party.members) emit(member, 'party.leader.changed', { party_id: p.partyId, new_leader_uuid: party.leaderUuid });
     }
-    if (!party.members.length) delete r[partyKey(p.partyId)].party;
+    if (!party.members.length) {
+      delete r[partyKey(p.partyId)].party;
+      metric('partiesClosed'); metric('partiesDelta', -1);
+    }
   });
 }
 async function send(id, body, kind) {
@@ -52,7 +57,7 @@ async function send(id, body, kind) {
   if (!Number.isInteger(seconds) || seconds < 1 || seconds > 3600) s.fail(400, 'Invalid invite expiry');
   if (kind === 'world' && (typeof body.inviteCode !== 'string' || !body.inviteCode || body.inviteCode.length > 16384)) s.fail(400, 'Invalid invite code');
   const ids = [id, target, ...(partyId ? [partyKey(partyId)] : [])];
-  return s.change(ids, (r, emit) => {
+  return s.change(ids, (r, emit, metric) => {
     const a = r[id], b = r[target]; prune(a); prune(b);
     if (s.blocked(a, b, id, target) || !s.permits(b.settings.allowInvites, !!b.friends[id])) s.fail(403, 'Invitations disabled');
     if (Object.keys(a.sent).length >= 100 || Object.keys(b.invites).length >= 100) s.fail(429, 'Too many invitations');
@@ -68,6 +73,7 @@ async function send(id, body, kind) {
       createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + seconds * 1000).toISOString(),
       ...(kind === 'party' ? { partyId } : { inviteCode: body.inviteCode, serverUuid: a.presence.serverUuid || s.EMPTY_UUID, serverName: a.presence.serverName || null, worldName: a.presence.worldName || null, isP2P: true }) };
     a.sent[inv.inviteUuid] = b.invites[inv.inviteUuid] = inv;
+    metric(`${kind}InvitesSent`);
     emit(target, `${kind}.invite.received`, { invite_uuid: inv.inviteUuid, inviter_uuid: id, invited_player_uuid: target, party_id: partyId,
       expires_at: inv.expiresAt, created_at: inv.createdAt, server_uuid: inv.serverUuid, server_name: inv.serverName, world_name: inv.worldName, is_p2p: inv.isP2P });
     return publicInvite(inv);
@@ -78,7 +84,7 @@ async function respond(id, inviteId, action, kind) {
   const self = await s.user(id), initial = (action === 'cancel' ? self.sent : self.invites)[inviteId];
   if (!initial || initial.kind !== kind) s.fail(404, 'Invitation not found');
   const ids = [id, initial.inviterUuid, initial.invitedPlayerUuid, ...(initial.partyId ? [partyKey(initial.partyId)] : [])];
-  return s.change(ids, (r, emit) => {
+  return s.change(ids, (r, emit, metric) => {
     const sender = r[initial.inviterUuid], recipient = r[initial.invitedPlayerUuid];
     const inv = sender.sent[inviteId];
     if (!inv || !recipient.invites[inviteId] || (action === 'accept' && !alive(inv))) s.fail(404, 'Invitation expired or canceled');
@@ -89,6 +95,7 @@ async function respond(id, inviteId, action, kind) {
       if (!p || !p.members.includes(inv.inviterUuid)) s.fail(410, 'Party no longer available');
       if (recipient.partyId) s.fail(409, 'Already in a party');
       if (p.members.length >= p.maxSize) s.fail(409, 'Party is full');
+      metric('partyMembersJoined');
       p.members.push(id); recipient.partyId = p.partyId;
       for (const member of p.members) emit(member, 'party.member.joined', { party_id: p.partyId, player_uuid: id, member_count: p.members.length });
       result = publicInvite(inv);
@@ -100,6 +107,7 @@ async function respond(id, inviteId, action, kind) {
       recipient.peerGrants = { ...recipient.peerGrants, [inv.inviterUuid]: Date.now() + 300000 };
       sender.peerGrants = { ...sender.peerGrants, [id]: Date.now() + 300000 };
     }
+    metric(`${kind}Invites${{accept:'Accepted', reject:'Rejected', cancel:'Canceled'}[action]}`);
     delete sender.sent[inviteId]; delete recipient.invites[inviteId];
     if (kind === 'world') emit(action === 'cancel' ? inv.invitedPlayerUuid : inv.inviterUuid, `world.invite.${action === 'cancel' ? 'canceled' : action === 'accept' ? 'accepted' : 'rejected'}`, { invite_uuid: inviteId, ...(action === 'accept' ? { accepted_by_uuid: id } : action === 'reject' ? { rejected_by_uuid: id } : {}) });
     else if (action !== 'accept') emit(inv.invitedPlayerUuid, 'party.invite.canceled', { invite_uuid: inviteId, party_id: inv.partyId });

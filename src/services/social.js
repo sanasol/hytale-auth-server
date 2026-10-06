@@ -1,6 +1,7 @@
 const { randomUUID } = require('crypto');
 const { redis } = require('./redis');
 const storage = require('./storage');
+const socialMetrics = require('./socialMetrics');
 const config = require('../config');
 const PREFIX = 'social:v1:';
 const CHANNEL = `${PREFIX}events`;
@@ -36,7 +37,8 @@ async function change(ids, fn) {
       const records = Object.fromEntries(ids.map((id, i) => [id, decode(values[i], legacy[i])]));
       const events = [];
       const emit = (recipient, type, data) => events.push({ recipient, type, data });
-      const result = fn(records, emit);
+      const counts = {};
+      const result = fn(records, emit, (name, delta) => socialMetrics.increment(counts, name, delta));
       // Reconnect has no resume cursor. Keep the latest relationship change per peer.
       for (const event of events.filter(e => e.type.startsWith('friend.'))) {
         const record = records[event.recipient], peer = event.data.player_uuid || event.data.requester_uuid;
@@ -51,6 +53,7 @@ async function change(ids, fn) {
       for (const id of ids) tx.set(key(id), JSON.stringify(records[id]));
       // State and publication commit together; gateway replays relationship changes.
       for (const event of events) tx.publish(CHANNEL, JSON.stringify(event));
+      socialMetrics.append(tx, counts);
       const committed = await tx.exec();
       if (committed) {
         if (committed.some(([error]) => error)) throw new Error('Social transaction failed');
@@ -98,7 +101,7 @@ async function relationship(id, target, action) {
   target = requireId(target);
   if (target === id) fail(400, 'Cannot target yourself');
   if (!await storage.getUsername(target)) fail(404, 'Player not found');
-  return change([id, target], (r, emit) => {
+  return change([id, target], (r, emit, metric) => {
     const a = r[id], b = r[target], now = new Date().toISOString();
     if (action === 'request') {
       if (blocked(a, b, id, target) || b.settings.allowFriendRequests === false) fail(403, 'Friend requests disabled');
@@ -106,20 +109,28 @@ async function relationship(id, target, action) {
       if (Object.keys(a.outgoing).length >= 200 || Object.keys(b.incoming).length >= 200) fail(429, 'Too many requests');
       const request = { requesterUuid: id, targetUuid: target, createdAt: now };
       a.outgoing[target] = b.incoming[id] = request;
+      metric('friendRequestsSent');
       emit(target, 'friend.request.received', { requester_uuid: id, created_at: now });
     } else if (action === 'accept') {
       if (a.friends[target]) return;
       if (!a.incoming[target] || blocked(a, b, id, target)) fail(404, 'Request not found');
       if (Object.keys(a.friends).length >= 500 || Object.keys(b.friends).length >= 500) fail(409, 'Friend limit reached');
       a.friends[target] = b.friends[id] = now;
+      metric('friendsAccepted'); metric('friendEdgesDelta');
       delete a.incoming[target]; delete b.outgoing[id]; delete a.outgoing[target]; delete b.incoming[id];
       emit(target, 'friend.request.accepted', { player_uuid: id, accepted_at: now });
       emit(id, 'friend.request.accepted', { player_uuid: target, accepted_at: now });
     } else if (action === 'reject') {
+      if (a.incoming[target]) metric('friendRequestsRejected');
       delete a.incoming[target]; delete b.outgoing[id];
       emit(target, 'friend.request.rejected', { player_uuid: id });
-    } else if (action === 'unblock') delete a.blocks[target];
+    } else if (action === 'unblock') {
+      if (a.blocks[target]) metric('blocksRemoved');
+      delete a.blocks[target];
+    }
     else {
+      if (a.friends[target] || b.friends[id]) { metric('friendsRemoved'); metric('friendEdgesDelta', -1); }
+      if (action === 'block' && !a.blocks[target]) metric('blocksCreated');
       delete a.friends[target]; delete b.friends[id];
       delete a.incoming[target]; delete b.outgoing[id]; delete a.outgoing[target]; delete b.incoming[id];
       a.favorites = a.favorites.filter(x => x !== target); b.favorites = b.favorites.filter(x => x !== id);

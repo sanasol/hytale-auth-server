@@ -1133,8 +1133,10 @@ async function handleMetricsTimeSeries(req, res, url) {
   const metric = url.searchParams.get('metric') || 'players';
   const range = url.searchParams.get('range') || '1h';
 
-  const data = await metrics.getMetricsFromVM(metric, range);
-  sendJson(res, 200, data);
+  try {
+    const data = await metrics.getMetricsFromVM(metric, range);
+    sendJson(res, 200, data);
+  } catch (error) { sendJson(res, error.status || 503, { error: error.message }); }
 }
 
 /**
@@ -1269,8 +1271,7 @@ async function handleSavePatchesCdn(req, res, body) {
  */
 async function handleActivityWindows(req, res) {
   const activity = await storage.getActivityWindows();
-  const dbStats = await storage.getDatabaseStats();
-  sendJson(res, 200, { ...activity, database: dbStats });
+  sendJson(res, activity.available ? 200 : 503, activity);
 }
 
 /**

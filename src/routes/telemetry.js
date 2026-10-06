@@ -8,15 +8,17 @@ const { sendJson } = require('../utils/response');
  * Processes heartbeat, session_start, session_end, and event telemetry
  */
 async function handleTelemetry(req, res, body, headers) {
-  // Extract player UUID from authorization token
-  let playerUuid = null;
-  if (headers && headers.authorization) {
-    const token = headers.authorization.replace('Bearer ', '');
-    const tokenData = auth.parseToken(token);
-    if (tokenData && tokenData.uuid) {
-      playerUuid = tokenData.uuid;
-    }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) { sendJson(res,400,{error:'JSON object required'}); return; }
+  const token = /^Bearer (.+)$/.exec(headers?.authorization || '')?.[1];
+  const claims = auth.verifyToken(token);
+  if (!claims || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claims.uuid || '') || !Number.isFinite(claims.exp) || claims.exp <= Date.now()/1000) {
+    sendJson(res,401,{error:'Valid signed client token required'}); return;
   }
+  const playerUuid = claims.uuid.toLowerCase();
+  try {
+    const tracked = await require('../services/telemetryMetrics').record(playerUuid, body);
+    if (tracked === false) { sendJson(res,200,{success:true,received:true,counted:false}); return; }
+  } catch { sendJson(res,503,{error:'Telemetry storage unavailable; retry'}); return; }
 
   const telemetryType = body.type;
 

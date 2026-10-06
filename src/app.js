@@ -450,6 +450,14 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     }
   }
 
+  if (urlPath === '/admin/api/social-usage' && req.method === 'GET') {
+    const days = Number(url.searchParams.get('days') || 30);
+    if (!Number.isInteger(days) || days < 1 || days > 365) { sendJson(res, 400, { error: 'days must be 1..365' }); return; }
+    try { sendJson(res, 200, await require('./services/socialMetrics').read(days)); }
+    catch { sendJson(res, 503, { error: 'Social metrics unavailable' }); }
+    return;
+  }
+
   // ====== Optimized Admin APIs ======
 
   // Log submissions admin APIs
