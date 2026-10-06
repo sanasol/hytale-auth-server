@@ -184,6 +184,8 @@ async function getListings(url, uuid, page = 1) {
   if (!sourceIsConfigured) {
     sourceUrl.searchParams.set('per_page', process.env.SERVER_DISCOVERY_PER_PAGE || '100');
     sourceUrl.searchParams.set('page', String(page));
+    sourceUrl.searchParams.set('online', 'true');
+    sourceUrl.searchParams.set('f2p', 'true');
     const sort = url.searchParams.get('sort') || 'players';
     sourceUrl.searchParams.set('sort', sort === 'featured' ? 'votes' : 'players');
   } else {
@@ -202,7 +204,9 @@ async function getListings(url, uuid, page = 1) {
   const sourceItems = upstream.data || [];
   if (!sourceIsConfigured && Array.isArray(sourceItems) && sourceItems.every(isSantaleListingShape)) {
     const data = await interactions.get(uuid);
-    const listings = sourceItems.map((server) => transformSantaleServer(server, data));
+    const listings = sourceItems
+      .filter(server => server.is_online === true && server.is_f2p === true)
+      .map((server) => transformSantaleServer(server, data));
     await interactions.remember(listings);
     const filtered = filterListings(listings, url);
     const offset = Math.max(Number(url.searchParams.get('offset') || 0), 0);

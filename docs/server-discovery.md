@@ -1,6 +1,6 @@
 # Server browser persistence (client 0.6.8)
 
-Discover uses `https://santale.top/api/all-servers` by default. The adapter currently requests the first 100 entries, transforms their IDs deterministically and applies Hytale filters locally. It is not the full 2396-entry upstream catalog (2396 / 24 pages observed 2026-10-06). `SERVER_DISCOVERY_SOURCE_URL` can supply an official-shaped JSON array instead.
+Discover uses `https://santale.top/api/all-servers` by default. The adapter requests `online=true&f2p=true` before upstream pagination, rejects records unless both flags are explicitly true, then takes the first 100 eligible entries, transforms their IDs deterministically and applies Hytale filters locally. It is not the full 2396-entry upstream catalog (2396 / 24 pages observed 2026-10-06). `SERVER_DISCOVERY_SOURCE_URL` can supply an official-shaped JSON array instead.
 
 Favorites and likes are account data: `GET /me/interactions/{favorite|like}?offset=N`, `POST /servers/{uuid}/interaction/{favorite|like}`, `DELETE` on the same path. Mutations and personalized reads require a valid session JWT. State lives in `social:v1:user:{uuid}.serverInteractions` and uses the shared isolated WATCH transaction. Existing `user:{uuid}.favoriteServers/likedServers` migrate on the first mutation; reads retain legacy compatibility. The old storage helpers remain for compatibility but are no longer called by this route.
 
