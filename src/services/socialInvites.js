@@ -4,7 +4,12 @@ const s = require('./social');
 const alive = inv => Date.parse(inv.expiresAt) > Date.now();
 const partyKey = id => `party:${id}`;
 const prune = u => { for (const f of ['invites', 'sent']) for (const [id, inv] of Object.entries(u[f])) if (!alive(inv)) delete u[f][id]; };
-const publicInvite = inv => { const { kind, inviteCode, ...result } = inv; return result; };
+const publicInvite = inv => {
+  const { kind, inviteCode, ...result } = inv;
+  // Native WorldInviteResponse uses non-nullable Guid, including old stored invites.
+  if (kind === 'world') result.serverUuid ||= s.EMPTY_UUID;
+  return result;
+};
 async function getParty(id) {
   const u = await s.user(id);
   if (!u.partyId) s.fail(404, 'Not in a party');
@@ -51,11 +56,17 @@ async function send(id, body, kind) {
     const a = r[id], b = r[target]; prune(a); prune(b);
     if (s.blocked(a, b, id, target) || !s.permits(b.settings.allowInvites, !!b.friends[id])) s.fail(403, 'Invitations disabled');
     if (Object.keys(a.sent).length >= 100 || Object.keys(b.invites).length >= 100) s.fail(429, 'Too many invitations');
-    if (partyId && (a.partyId !== partyId || !r[partyKey(partyId)].party?.members.includes(id))) s.fail(409, 'Party changed');
+    if (partyId) {
+      const party = r[partyKey(partyId)].party;
+      if (a.partyId !== partyId || !party?.members.includes(id)) s.fail(409, 'Party changed');
+      if (party.leaderUuid !== id) s.fail(403, 'Only the party leader can invite');
+      if (b.partyId === partyId || party.members.includes(target)) s.fail(409, 'Already in this party');
+      if (party.members.length >= party.maxSize) s.fail(409, 'Party is full');
+    }
     if (kind === 'world' && (!a.presence || a.presence.updatedAt < Date.now() - 300000 || a.presence.status !== 'online')) s.fail(409, 'World is offline');
     const inv = { kind, inviteUuid: randomUUID(), inviterUuid: id, invitedPlayerUuid: target,
       createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + seconds * 1000).toISOString(),
-      ...(kind === 'party' ? { partyId } : { inviteCode: body.inviteCode, serverUuid: a.presence.serverUuid || null, serverName: a.presence.serverName || null, worldName: a.presence.worldName || null, isP2P: true }) };
+      ...(kind === 'party' ? { partyId } : { inviteCode: body.inviteCode, serverUuid: a.presence.serverUuid || s.EMPTY_UUID, serverName: a.presence.serverName || null, worldName: a.presence.worldName || null, isP2P: true }) };
     a.sent[inv.inviteUuid] = b.invites[inv.inviteUuid] = inv;
     emit(target, `${kind}.invite.received`, { invite_uuid: inv.inviteUuid, inviter_uuid: id, invited_player_uuid: target, party_id: partyId,
       expires_at: inv.expiresAt, created_at: inv.createdAt, server_uuid: inv.serverUuid, server_name: inv.serverName, world_name: inv.worldName, is_p2p: inv.isP2P });
@@ -70,7 +81,7 @@ async function respond(id, inviteId, action, kind) {
   return s.change(ids, (r, emit) => {
     const sender = r[initial.inviterUuid], recipient = r[initial.invitedPlayerUuid];
     const inv = sender.sent[inviteId];
-    if (!inv || !recipient.invites[inviteId] || !alive(inv)) s.fail(404, 'Invitation expired or canceled');
+    if (!inv || !recipient.invites[inviteId] || (action === 'accept' && !alive(inv))) s.fail(404, 'Invitation expired or canceled');
     if (action === 'accept' && s.blocked(sender, recipient, inv.inviterUuid, inv.invitedPlayerUuid)) s.fail(403, 'Invitation blocked');
     let result;
     if (action === 'accept' && kind === 'party') {
@@ -80,7 +91,7 @@ async function respond(id, inviteId, action, kind) {
       if (p.members.length >= p.maxSize) s.fail(409, 'Party is full');
       p.members.push(id); recipient.partyId = p.partyId;
       for (const member of p.members) emit(member, 'party.member.joined', { party_id: p.partyId, player_uuid: id, member_count: p.members.length });
-      result = { ...p, currentSize: p.members.length };
+      result = publicInvite(inv);
     } else if (action === 'accept') {
       const p = sender.presence;
       if (!p || p.status !== 'online' || p.updatedAt < Date.now() - 300000) s.fail(410, 'World is offline');

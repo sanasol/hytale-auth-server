@@ -4,6 +4,7 @@ const storage = require('./storage');
 const config = require('../config');
 const PREFIX = 'social:v1:';
 const CHANNEL = `${PREFIX}events`;
+const EMPTY_UUID = '00000000-0000-0000-0000-000000000000';
 const DEFAULT_SETTINGS = { allowFriendRequests: true, allowInvites: 0, allowJoin: true, showActivity: 0, showLocation: 0, showOnline: 0 };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const empty = () => ({ friends: {}, incoming: {}, outgoing: {}, blocks: {}, favorites: [], invites: {}, sent: {}, settings: { ...DEFAULT_SETTINGS } });
@@ -22,10 +23,12 @@ async function user(id) { const [value, legacy] = await redis.mget(key(id), `${c
 
 // A dedicated connection keeps WATCH isolated from other requests/workers.
 async function change(ids, fn) {
-  const db = redis.duplicate({ lazyConnect: true });
-  await db.connect();
+  // WATCH belongs to one TCP connection; never continue it after reconnect.
+  const db = redis.duplicate({ lazyConnect: true, retryStrategy: null, enableOfflineQueue: false, autoResendUnfulfilledCommands: false });
+  db.on('error', () => {});
   ids = [...new Set(ids)];
   try {
+    await db.connect();
     for (let attempt = 0; attempt < 8; attempt++) {
       await db.watch(...ids.map(key));
       const values = await db.mget(...ids.map(key));
@@ -55,6 +58,10 @@ async function change(ids, fn) {
       }
     }
     fail(409, 'Concurrent update; retry');
+  } catch (error) {
+    if (error.status) throw error;
+    // EXEC may have committed before its reply was lost. Do not replay it here.
+    fail(503, 'Social storage unavailable; refresh state before retrying');
   } finally { db.disconnect(); }
 }
 async function resolveName(name) {
@@ -189,8 +196,8 @@ async function join(id, target) {
   if (!b.friends[id] || !projection(b, a, target, id).canJoin) fail(403, 'World is not joinable');
   return joinData(b.presence);
 }
-function joinData(p) { return { serverUuid: p.serverUuid || null, host: p.serverHost || null, port: p.serverPort || 0, serverName: p.serverName || null, worldName: p.worldName || null, inviteCode: p.inviteCode || null }; }
-module.exports = { redis, PREFIX, CHANNEL, DEFAULT_SETTINGS, validId, requireId, fail, key, user, change, resolveName, relationship, projection, notifyPresence, presence, friends, join, joinData, blocked, permits };
+function joinData(p) { return { serverUuid: p.serverUuid || EMPTY_UUID, host: p.serverHost || null, port: p.serverPort || 0, serverName: p.serverName || null, worldName: p.worldName || null, inviteCode: p.inviteCode || null }; }
+module.exports = { redis, PREFIX, CHANNEL, EMPTY_UUID, DEFAULT_SETTINGS, validId, requireId, fail, key, user, change, resolveName, relationship, projection, notifyPresence, presence, friends, join, joinData, blocked, permits };
 
 async function expirePresence() {
   const ids = await redis.zrangebyscore(`${PREFIX}expiry`, 0, Date.now(), 'LIMIT', 0, 100);

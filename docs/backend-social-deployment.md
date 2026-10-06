@@ -43,7 +43,7 @@ use Guid.Empty. These represent unavailable metadata, not invented owners/dates.
 - B was relaunched with local-only HYTALE_LIVECONFIG_URL and ice_force_relay=true.
   At18:03:14 client logged `ICE selected Relayed` and `ICE connecting over a Relayed
   path ... via relay 208.69.78.130:3478`; at18:03:21 it reached OnWorldJoined.
-  A received B's `TURN relay test 1006` chat. No production feature flag changed.
+  A received B's `TURN relay test 1006` chat. The relay override was local only.
 - The server browser rendered featured entries and server listings after the null-field fixes.
 - Two independent aioice connections also exchanged packets using only relay candidates.
 - Graceful game exit removed B from the host world. Gateway restart reconnected
@@ -59,15 +59,19 @@ Downloads/Test1. The temporary local feature-flag server and test Redis were sto
 ## Limits and remaining coverage
 
 Both real clients ran on the same Mac/network, including the forced-relay test.
-Different-ISP and prolonged relay/load behavior remain untested. Party/world-invite
-APIs are covered, but a complete two-client party UI matrix was not exercised.
+Different-ISP and prolonged relay/load behavior remain untested. Party UI creation, invitation, acceptance, rejection, member leave, leader leave
+and leadership transfer were exercised in two real clients. Pending invitation
+survived a Kvrocks restart and was then accepted successfully. The party also
+survived a client restart and gateway reconnect. Capacity, cancellation, expiry
+and unauthorized invitations are covered by the disposable database test.
 Discord account mapping (`/friends/resolve-discord`) is explicitly501.
 
 The gateway is a single instance with ephemeral sessions. Reconnect replays current
 friends/requests and the latest relationship changes for1000 peers; older removals
 need a fresh HTTP snapshot/client restart. There is no generic acknowledged durable
-notification stream. Official party leader policy is unknown; this implementation
-transfers leadership to the first remaining member.
+notification stream. Native UI allows invitations only from the leader; the backend enforces the same
+rule. Leadership transfers to the first remaining member; the native UI updates
+its crown and allows the successor to invite.
 
 Pre-existing client warnings about accessory attachment targets, news image host
 allowlist and local server telemetry/live-config403 are outside the social/ICE fix.
@@ -79,3 +83,53 @@ Auth runtime: /var/www/traefik/hytale-auth; gateway/turn: /var/www/traefik/socke
 The infra repository's gateway README contains ports, limits, deployment and rollback.
 TURN_SECRET_FILE points at the mounted auth-data/turn-secret, which matches coturn's
 private static-auth-secret. Never commit that file, credentials or test JWTs.
+
+## Party UI and recovery follow-up
+
+Release 0.6.8 hides party controls unless `enable_parties` is true. This flag is
+now enabled in production live config, verified by launching B without a local
+config override. Native registry at 0x14093e840 and sidebar 0x140209950 establish
+the flag gate. Existing HTTP endpoints alone did not expose the UI.
+
+The UI acceptance test exposed a contract error: `/party/invites/accept` must
+return PartyInvite, not PartyInfo. Native wrappers at 0x14095fa80/0x14095f970 use
+the same response type, requiring inviteUuid, inviterUuid, invitedPlayerUuid,
+partyId, expiresAt and createdAt. The successful callback then fetches the party
+and pending invitations. Returning PartyInfo committed membership but broke
+recipient deserialization and left its UI stale. The corrected response was
+verified in both clients, including accepting an invitation after DB restart.
+
+A gateway reconnect was observed fetching party, incoming/sent party invitations,
+incoming/sent world invitations and friends. Closing sockets with 1013 when
+Redis/PubSub disconnects forces this native resynchronization. Gateway readiness
+now requires an acknowledged subscription. A real Redis restart is a runnable
+regression in the gateway test. Social WATCH transactions use a dedicated
+connection with reconnect/replay disabled: an ambiguous EXEC failure returns503,
+never an automatic second mutation. The integration test kills the WATCH TCP
+connection and checks that no unguarded write occurs.
+
+Production Kvrocks now enables WAL sync before acknowledging writes. Nine social
+records and both test users' stable state survived container recreation. Daily
+checkpoint archives retain seven days; a checkpoint was restored in an isolated
+Kvrocks container and its social hashes matched. See the infra repository's
+socket-gateway/BACKUPS.txt for the tested procedure. Copies remain on the same VPS;
+an independent backup destination is still needed for disk/host loss.
+
+A small post-change sample of 100 sequential database SETs measured median1.76ms,
+p955.60ms. This is not a system load benchmark or an availability guarantee.
+
+The world-invite UI test found another response mismatch: WorldInviteResponse
+requires a non-nullable serverUuid (native serializer 0x1409a0582 → Guid writer
+0x1410cf370). The send request contains only targetUuid and inviteCode, so a local
+host can legitimately have no server UUID in presence. World send/list and join
+responses now use Guid.Empty for that absent value, including invitations already
+stored with null. The integration test covers both new and legacy invitations.
+After the fix, B rejected an invitation through the UI, then accepted a fresh one
+at18:46:22 and reached OnWorldJoined at18:46:30. A saw B join and received its
+chat message. Expired invitations cannot be accepted, but their rightful owner
+can reject/cancel them to clear stale native notifications; foreign actions
+still return404. This expiry cleanup has a runnable integration regression.
+
+A separate sample from the test Mac to production HTTPS /friends completed20
+requests: median75ms, p95165ms, max191ms. It verifies ordinary response latency for
+the test account, not concurrent load capacity.

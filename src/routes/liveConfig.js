@@ -6,6 +6,7 @@ const LIVE_CONFIG_FLAGS = {
   enable_new_server_discovery: { type: 'boolean', value: true },
   enable_news_tiles: { type: 'boolean', value: true },
   enable_social_layer: { type: 'boolean', value: true },
+  enable_parties: { type: 'boolean', value: true },
 };
 
 const NEWS_TILES = {
