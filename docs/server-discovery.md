@@ -13,3 +13,9 @@ Static evidence: Windows 0.6.8 SHA256 `05f476a25b967005b5480c46152c57811c0bc62aa
 Validation: disposable Redis integration test `tests/integration/serverInteractions.test.js` checks legacy migration, concurrent like/favorite updates, identity isolation, JWT rejection, personalized Discover flags, persistence from a separate connection, offline-source favorites, offset, idempotent removal and UUID validation.
 
 Manual UI check after deploy: in account A favorite a Discover server; reopen Favorites and restart the client; verify it remains. Account B must not inherit it. Remove it and restart again. Join a server and verify Recently Played plus the local file. Add a Private server, restart and inspect `Servers.json`. The latter two validate native local persistence, not backend synchronization. Do not infer the origin of generic card artwork from these endpoint findings.
+
+Production UI verification 2026-10-06: WsTestB1006 starred Avalon Hytale Survival
+in Discover; Favorites displayed it. After fully quitting and restarting the
+native client it remained starred in Discover and appeared in Favorites.
+Removing the star emptied Favorites. Both changes reached the durable usage
+counters (one add, one remove). The test left no favorite behind.

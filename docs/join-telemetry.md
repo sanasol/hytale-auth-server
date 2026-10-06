@@ -55,3 +55,17 @@ Assembly evidence: `.temp/rea-hytale/join-telemetry-*.asm` and `join-telemetry-x
 Actual HytaleWsTest-A telemetry at 2026-10-06T15:44:13 and 16:34:57 contains `server_connect success:true,is_p2p:false`, followed by `world_joined is_singleplayer:true`. Thus **server_connect success also includes local-server connections**. Exclude `world_joined is_singleplayer:true` from multiplayer-world counts; do not describe all server_connect successes as multiplayer joins. No ice_result packet was found in the inspected HytaleWsTest-A/B or Test1 telemetry files.
 
 Native metadata contains IceOutcomeReason-associated names `Nominated`, `AllPairsFailed`, `NoCandidates`, `SignalingUnavailable` near file offset 0x1ca057d. This does not establish the entire enum or numeric mapping: additional shared names may live elsewhere. A complete success/failure whitelist is not claimed. The `relay_required` getter `0x1402d5ee0` tests reason numeric 1 and check_count > 0; `used_relay` getter `0x1402d5f00` tests a present selected-candidate enum equal to numeric 0. Preserve the native booleans rather than inferring them from reason names.
+
+## Deployed verification, 2026-10-06
+
+The research descriptions above refer to the pre-change implementation. The
+current route verifies signed identity tokens and counts through telemetryMetrics.
+Replayed the isolated test client's actual local-world server_connect and
+world_joined packets from its 18:33 session against
+`https://telemetry.sanasol.ws/telemetry/client`: first submissions returned200;
+identical retries returned200 with `counted:false`. Local-world entry is excluded
+from multiplayer-world counts. These are replayed genuine client packets, not a
+new multiplayer end-to-end test after deployment. Direct/relay classification
+also uses actual saved testB ice_result records with `reason:Nominated` and
+`used_relay:false/true`; the earlier negative search was limited to its then
+inspected files.
