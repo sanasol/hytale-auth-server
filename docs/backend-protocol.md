@@ -2,12 +2,15 @@
 
 Investigation date: 2026-10-06. This is a map of the client-visible backend, not recovered central-server source. Static observations, runtime observations, and proposed implementation choices are distinguished below. Production was not modified during this investigation.
 
+**Follow-up:** [release0.6.8 implementation contract](backend-implementation.md) recovers HTTP methods, social field types, gateway lifecycle, ICE payload and TURN from the matching Windows release. It supersedes the earlier open questions below where explicitly resolved.
+
 Detailed companion ledgers: [current client inventory](backend-client-inventory.txt), [peer field contract](backend-peer-contract.txt).
 
 ## Artifact identity and evidence
 
 - Current supplied macOS arm64 client: `HytaleClient` SHA-256 `2dcf5b82172a972e32d19917fd0923a49d6e6f4d9b6caf5660e4dd66b97fefb6`. REA `inspect_macho` evidence `ev_ecb218198bf76f739ca09e0619c54044b0a90cfc5e5e54fbd9b1da2436d4fb0f`.
 - Current server: release **0.6.8**, revision `d2feeb3997f2efc9b4fe23282a3ece38f0618047`, SHA-256 `dcd2956cc65b950084650eadd56b889cf51f7610c127c3daac1f74dc471fec97`. CFR 0.152 reconstructed 140 selected class entries into 74 Java files.
+- Matching Windows release **0.6.8**: SHA-256 `05f476a25b967005b5480c46152c57811c0bc62aacfabbbff5a98d5e66043ba5`; paired server revision matches the supplied Mac release. Targeted disassembly and saved-project Ghidra decompilation succeeded; see the follow-up contract for current-release addresses.
 - Historical Windows client: **0.7.0-pre.4**, SHA-256 `df8f131432518a4363725852a11a2a1ac23fc1783cb5c463acaae07fb9884c5c`. Its native dispatch/JSON metadata provided the initial WebSocket contract. Do not treat its addresses as macOS addresses.
 - Runtime evidence: the user's 2026-09-28 release 0.6.8 log confirms connection to `wss://auth.sanasol.ws/ws`, acceptance of `gateway.connected`, assignment of connection ID, successful solo-world entry and normal shutdown. It does **not** validate friend invitations or peer signaling.
 - Local research evidence lives under the workspace `.temp/rea-hytale/`: `macho.json`, `server-identity.txt`, `server-findings.txt`, `server-negative-scan.json`, `server-decompiled/`, `auth-coverage.txt`. Historical native evidence is `.temp/socket-gateway-research/`. Proprietary binaries and reconstructed source are not committed here.
@@ -80,7 +83,7 @@ Our source currently:
 - Stores `/presence/settings` and `/presence/heartbeat`, but does not compute online expiry or notify friends.
 - Has no real friend accept/reject/block relationship state machine.
 
-Unknown: complete request/response DTOs, pagination limits, duplicate-request behavior, privacy precedence, heartbeat TTL, notification ordering and replay guarantees. These require serializer/call-site tracing or a controlled two-account runtime capture.
+The follow-up contract resolves HTTP methods, core DTO fields, status/activity types and privacy field serialization. Remaining unknowns include complete error contracts, privacy enum meanings, pagination limits, duplicate-request behavior, privacy precedence, heartbeat TTL, notification ordering and replay guarantees. These require further call-site tracing or a controlled two-account runtime capture.
 
 ## 3. Groups and world invitations
 
@@ -170,7 +173,8 @@ See `src/app.js`, `src/routes/social.js`, `src/routes/serverDiscovery.js` and th
 - [x] Explain HTTP / notifications / signaling / QUIC separation.
 - [x] Inventory current implementation vs stubs.
 - [x] Establish owner-only ICE configuration and discovery/liveconfig consumers.
-- [ ] Recover every release-client DTO/method/error and WebSocket wrapper field.
+- [x] Recover matching-release social methods/core schemas, gateway lifecycle, ICE payload and TURN credential shape.
+- [ ] Finish remaining enum meanings, error contracts, notification ID semantics and serializer edge cases.
 - [ ] Observe real two-user social state changes, reconnect and NAT traversal.
 - [ ] Confirm central-server state transitions and delivery semantics; binary strings alone cannot prove them.
 
@@ -185,3 +189,5 @@ For direct CLI, export `GHIDRA_INSTALL_DIR` and `JAVA_HOME` as configured in the
 REA limitation observed on this artifact: the full macOS NativeAOT autoanalysis exceeded the provider's330-second startup deadline (`provider_timeout`, operation `list_segments`). Ghidra emitted address-space/decompiler warnings before timeout. `inspect_macho` and plist inspection succeed; a complete REA decompilation of the game is not claimed. Use targeted native inspection or a saved, pre-analyzed database for subsequent work; increasing a timeout alone is not evidence of correctness.
 
 Provider installation smoke check passed: REA/Ghidra decompiled a locally compiled arm64 test function correctly (argc>2 returns7, otherwise0), evidence `ev_90784ec68288110c5064c13a85f0ab9c29f6871de71ee41aaee2c7f1887847b6`. This tests the toolchain, not game protocol compatibility.
+
+Follow-up workaround succeeded on the matching Windows release: import once into a saved Ghidra project, then use `analyzeHeadless -process HytaleClient.exe -noanalysis` with a script that disassembles and decompiles selected function addresses. Local script: `.temp/rea-hytale/ghidra-scripts/SelectedFunctions.java`; projects: `research/ghidra-project`. This avoids repeating full autoanalysis and produced game-function pseudocode, corroborated by direct assembly/serializer traces. It does not constitute complete binary analysis.

@@ -1,0 +1,118 @@
+SOCIAL CONTRACT — MATCHING WINDOWS RELEASE 0.6.8
+SHA256 05f476a25b967005b5480c46152c57811c0bc62aacfabbbff5a98d5e66043ba5
+Binary .temp/rea-hytale/release-068/game/Client/HytaleClient.exe
+All addresses below Windows preferred VA base0x140000000. These are NOT Mac addresses, even though release matches.
+Evidence: release-social-prop-<address>.asm, release-social-call-<address>.asm, release-social-state-<address>.asm.
+
+HTTP METHODS PROVEN THROUGH NATIVE ASYNC DISPATCH
+Method pool initializer0x140d9e070 stores GET at+8, PUT at+0x10, POST at+0x18, DELETE at+0x20 of pool referenced by RIP target0x1433df738.
+Endpoint wrappers dispatch builder0x1418f4e40 via generic dictionary; builder reads dict+8, resolves fat callback pointer -> MoveNext.
+Observed MoveNext functions:
+0x141663800 GET (pool+8 at0x141663864)
+0x141663db0 POST (pool+0x18 at0x141663e07)
+0x1416641f0 PUT (pool+0x10 at0x141664247)
+0x1417386c0 POST (pool+0x18 at0x141738724), request/response generic variant
+Full dictionary and callback values for each wrapper recorded release-social-method-trace.txt. Methods below are thus NOT guessed from REST naming.
+
+GET /friends wrapper0x140ac8fd0
+GET /friend-requests/incoming wrapper0x140ac94a0
+GET /friend-requests/outgoing wrapper0x140ac9940
+GET /blocks wrapper0x140ac9de0
+GET /friends/favorites wrapper0x140aca280
+POST /friend-requests wrapper0x140acb250
+POST /friend-requests/by-username wrapper0x140926d50
+POST /friend-requests/accept wrapper0x140acba20
+POST /friend-requests/reject wrapper0x140acbe90
+POST /friends/remove wrapper0x140acc370
+POST /blocks wrapper0x140acc850
+POST /blocks/remove wrapper0x140accde0
+PUT /friends/favorites wrapper0x140926e90
+POST /friends/resolve-discord wrapper0x140ac65e0
+GET /presence/friends wrapper0x140acaab0
+GET /presence/settings wrapper0x14027c480
+PUT /presence/settings wrapper0x14027c680
+PUT /presence/appear-offline wrapper0x14096d640
+POST /presence/heartbeat wrapper0x1409ee560 (normal/retry use same dispatch)
+POST /presence/join-world wrapper0x14099a720
+POST /party/create wrapper0x14095f810
+POST /party/invites/send wrapper0x14095f970
+POST /party/invites/accept wrapper0x14095fa80
+POST /party/invites/reject wrapper0x140ae2960
+GET /party/invites wrapper0x140adffc0
+GET /party/invites/sent wrapper0x140ae0450
+POST /world-invites wrapper0x14099a4f0
+GET /world-invites wrapper0x140af6a30
+GET /world-invites/sent wrapper0x140af6ec0
+POST /world-invites/accept wrapper0x14099a610
+POST /world-invites/reject wrapper0x140af83a0
+POST /world-invites/cancel wrapper0x140af8940
+GET /party wrapper0x140addcf0 directly loads method pool+8 at0x140addd6e.
+POST /party/leave wrapper0x140ae12f0 and POST /presence/clear wrapper0x1409ee2c0 dispatch non-generic builder0x1417ddd30 -> MoveNext0x140aeb720; at0x140aeb769 it loads same HttpMethod pool+0x18 (POST). Thus all listed route methods are resolved.
+
+FRIENDS CLR PROPERTY INITIALIZERS (MATCH 0.7pre INVENTORY)
+DTO labels reconstructed from generated type metadata/ordering and field patterns; fields/addresses directly observed. Pascal CLR names are not wire spellings.
+AcceptFriendRequestRequest0x1409276c0: RequesterUuid
+BlockPlayerRequest0x140928840: TargetUuid
+BlocksListResponse0x140928fe0: Blocks
+FavoriteFriendsResponse0x140929ad0: Favorites
+Friend0x14092a3e0: Uuid, Since, IsOnline, DiscordUserId, IsFavorite, ServerName, WorldName, GameMode, CanJoin, IsWorldOwner
+FriendRequest0x14092bb80: RequesterUuid, TargetUuid, CreatedAt
+FriendRequestsListResponse0x14092c9c0: Requests
+FriendsListResponse0x14092d4b0: Friends
+RejectFriendRequestRequest0x14092dfa0: RequesterUuid
+SendFriendRequestByUsernameRequest0x14092fae0: TargetUsername
+SendFriendRequestRequest0x140930340: TargetUuid
+SetFavoriteFriendsRequest0x140930940: Favorites
+SocialErrorResponse0x140930f70: ErrorCode, Message
+UnblockPlayerRequest0x140931a00: BlockedUuid
+UnfriendRequest0x1409321b0: FriendUuid
+Context encoded wire fields0x140933020: requesterUuid, blockedUuid, createdAt, targetUuid, blocks, favorites, uuid, since, isOnline, discordUserId, isFavorite, serverName, worldName, gameMode, canJoin, isWorldOwner, requests, friends, discord_ids, mappings, targetUsername, errorCode, message, friendUuid.
+By-username serializer0x14092fca0 and field initializer0x140933020 retain same+0x158 encoded field slot as historical0.7: JSON key targetUsername. No value enum/range/nullable types inferred.
+
+EXPLICIT WEBSOCKET JSON ALIASES (PROPERTY METADATA, VERIFIED RELEASE)
+FriendBlockedPayload0x140980200: player_uuid
+FriendPresenceUpdatedPayload0x140980990: player_uuid,status,activity,game_mode,server_uuid,server_name,world_name,can_join,is_world_owner
+FriendRequestAcceptedPayload0x140981ed0: player_uuid,accepted_at
+FriendRequestReceivedPayload0x140982840: requester_uuid,created_at
+FriendRequestRejectedPayload0x1409831f0: player_uuid
+FriendUnfriendedPayload0x140983830: player_uuid
+Envelope0x1409872e0: id,type,timestamp,data (GatewayNotificationEvent inferred).
+Gateway dispatch0x140997fe0 handles gateway.connected/gateway.close/gateway.notification/peer.session.ack/peer.error; notification dispatcher0x140998c70 handles friend.request.received/accepted/rejected, friend.presence.updated, friend.unfriended/blocked and other social/peer events. Do not send friend.* directly as outer gateway type without envelope.
+
+PRESENCE CLR PROPERTIES
+FriendPresenceEntry0x14096e280: Uuid,Status,Activity,ServerName,WorldName,GameMode,CanJoin,IsWorldOwner
+List0x14096f860: Friends
+HeartbeatRequest0x140970360: Status,Activity,ServerUuid,ServerName,WorldName,GameMode,ServerHost,ServerPort,InviteCode
+Settings0x1409731f0: ShowOnline,ShowLocation,ShowActivity,AllowJoin,AllowInvites,AllowFriendRequests
+Encoded context0x140974cb0 corroborates camelCase: appearOffline,uuid,status,activity,serverName,worldName,gameMode,canJoin,isWorldOwner,friends,serverUuid,serverHost,serverPort,inviteCode,showOnline,showLocation,showActivity,allowJoin,allowInvites,allowFriendRequests.
+Current backend stores only heartbeat status/activity, so release client's server/world/join metadata is discarded by current handler. This is now matching-release evidence.
+
+PARTY / WORLD CLR PROPERTIES
+PartyInfo0x140961fa0: PartyId,LeaderUuid,Members,MaxSize,CurrentSize
+PartyInvite0x1409632f0: InviteUuid,InviterUuid,InvitedPlayerUuid,PartyId,ExpiresAt,CreatedAt,IsExpired
+PartyInvite send body0x1409659c0: TargetUuid,ExpiresInSeconds
+Encoded party context0x140966c80: inviteUuid,maxSize,partyId,leaderUuid,members,currentSize,inviterUuid,invitedPlayerUuid,expiresAt,createdAt,invites,targetUuid,expiresInSeconds
+WorldInvite0x14099f660: InviteUuid,InviterUuid,InvitedPlayerUuid,ServerUuid,ServerName,WorldName,ExpiresAt,CreatedAt,IsP2P,IsExpired
+World join response0x14099c270: ServerUuid,Host,Port,ServerName,WorldName,InviteCode
+
+Pending: exact CLR type/enum/nullability of fields; per-serializer wire slots except by-username; server-side business state machine; dynamic integration proof. No production calls or changes performed.
+
+ADDITIONAL SCALAR / SEMANTIC EVIDENCE
+Heartbeat serializer0x140970f30:
+- status key uses context slot+0x38 at0x140970fbd; payload object+8 is a managed string (UTF16 at+0xc, length+8). Null status is omitted at0x140970fa2.
+- activity uses slot+0x48 at0x140971020; payload object+0x10 also string, omitted when null at0x140971005.
+- serverName(slot+0x58), worldName(+0x68), gameMode(+0x78), serverHost(+0xc8), inviteCode(+0xe8) use same managed-string serializer0x1410d4e30 and skip null.
+- serverUuid(+0xb8) tests presence flag before 16-byte identifier at object+0x40; serverPort(+0xd8) tests presence flag at object+0x54 before value+0x58. Optional fields; full parsing constraints not recovered.
+Heartbeat construction0x140272f70 explicitly puts 'online' at status object+8 and 'playing' OR 'menus' at activity object+0x10. Branch is internal state-dependent; no invented enum mapping.
+Offline consumers0x140937e20 (gateway presence callback) and0x140acabe0 (REST snapshot) explicitly compare exact lowercase 'offline', also treating empty string as offline. Do not send capitalized 'Offline' or numeric status. Full null semantics not offered as backend guidance.
+
+Settings response serializer0x1409739e0:
+- showOnline slot+0xf8, showLocation+0x108, showActivity+0x118 and allowInvites+0x138 read signed32 storage and write numeric JSON via0x1410d20c0 /0x1410d27a0. These are numbers, not string enums; semantic enum values still unknown.
+- allowJoin slot+0x128 reads byte and uses boolean writer0x1410d0850 at0x140973be0.
+- allowFriendRequests slot+0x148 has presence byte at object+0x19 then value byte+0x1a; absent value branches directly to end0x140974072 (omitted). Present value emitted as boolean. This establishes optional field serialization, NOT server acceptance of explicit null or default.
+- Slots are tied to exact camelCase literal stores in context0x140974cb0, not guessed from Pascal names.
+
+Date wire representation:
+Friend serializer0x14092b070 uses since key then writer0x1410cba30 /0x1410cbf30 (calls0x14092b1bb /0x14092b1e2).
+FriendRequestReceived serializer0x140982b20 uses created_at slot+0xd8 and SAME writer at0x140982cc6 /0x140982ced.
+Writer0x1410cba30 inserts opening quote at0x1410cbbbc, calls date formatter0x1410dff60 at0x1410cbbea, then closing quote0x1410cbc0b. Therefore these date fields are JSON STRINGS, not Unix numeric timestamps. Precise accepted date formats/timezone validation not recovered, so do not label arbitrary ISO8601 subsets proven. Both fields are emitted unconditionally in these serializers; deserialization requiredness/missing-field policy not established.

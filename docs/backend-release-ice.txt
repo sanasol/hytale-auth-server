@@ -1,0 +1,15 @@
+Matching-release ICE crosscheck, 2026-10-06
+Artifact .temp/rea-hytale/release-068/game/Client/HytaleClient.exe, official Windows release0.6.8, SHA25605f476a25b967005b5480c46152c57811c0bc62aacfabbbff5a98d5e66043ba5. This matches installed game VERSION but is Windows, not installed macOS executable; no runtime observation.
+
+Confirmed identical field sets compared with historical0.7.0-pre.4:
+IceSignalMessage function0x1402d7f30:
+ v at0x1402d8027,type0x1402d815e,session0x1402d82d1,ufrag0x1402d8444,pwd0x1402d8585,candidates0x1402d86c6,reason0x1402d8807.
+IceCandidateDto function0x1402d7140:
+ type0x1402d722b,address0x1402d7389,port0x1402d74ea,priority0x1402d7612,foundation0x1402d7746.
+Constructor0x1402d6eb0 sets Version1. Receive0x1402d9d20 checks version==1 at0x1402d9f74, exact session context equality next, otherwise ignores with warnings0x1402d9ff4/0x1402da020.
+Host receiver0x1402d1f10 requires literal kindice at0x1402d1f6c; concurrent session count compares16 at0x1402d1fef. Duplicate ICE session and duplicate sender rejected.
+Host signal handler0x1402d25a0 handles candidate0x1402d2605,offer0x1402d265b, sends answer0x1402d2bc9. Offer count compares2 at0x1402d26fd then rejects with end,too many offers0x1402d2820/0x1402d283e; malformed creds end,bad credentials0x1402d2b03/0x1402d2b21.
+Offer timeout reason at0x140a192a3 in function0x140a18d30.
+Evidence saved release-ice-*.asm and release-ice-*-xrefs.txt.
+
+Therefore basic ICE signaling field spelling, v1 and ice kind are now corroborated on matching release0.6.8, not merely inferred from later pre-release. Primitive serialization signedness and full joiner path are covered in historical ice-contract.txt, not independently traced again in this release pass. Inner session must be preserved as supplied; relation to outer peer.session_id still not established. No production/game edits.

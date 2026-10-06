@@ -1,0 +1,39 @@
+Current Windows release0.6.8 gateway lifecycle static findings, 2026-10-06
+Artifact release-068/game/Client/HytaleClient.exe; evidence release-gateway-*.asm.
+All addresses preferred VA, base0x140000000. No runtime observation.
+
+CONNECT
+0x140aec320 disposes prior ClientWebSocket, makes new one, fetches current session token; empty token throws (0x140aec8e0 literal). Sets Authorization: Bearer <token> at0x140aec430 and User-Agent HytaleClient/<version> at0x140aec48a. Default URL prefix wss://socket-gateway. at0x140aec4ad plus domain helper, appends /ws at0x140aec513. Optional preprovided URL field+0x30 bypasses default construction. Socket connected log follows completion of upgrade, before gateway.connected message processing.
+No explicit keepalive option write in this connect function; framework defaults not yet recovered. No application ping message branch in dispatcher.
+
+TOP-LEVEL TYPES
+0x140997fe0: gateway.connected, gateway.close, gateway.notification, peer.session.ack, peer.error. Others logged unknown.
+Connected callback0x140af4780 copies data connection_id string into gateway service field+0x20. No use of this ID in presence/world requests established; any linkage remains an inference.
+
+OPEN AND CORRELATION
+Open async0x140af4ad0 generates a GUID client_ref formatted d at0x140af4bce. Stores pending record (peer UUID, kind, completion source) in dictionary service+0x108 keyed by client_ref. Sends peer.session.open and awaits completion source. There is cancellation registration; no fixed timeout established here.
+Ack0x140999ae0: nonempty data.client_ref mandatory to match a pending entry; removes it via dictionary TryRemove. Copies data.session_id to new local session, supplied peer UUID/kind from pending. Copies data.peer_online bool into session+0x38 (0x140999b72/0x140999ba6). Stores session under session_id in service+0x100, resolves completion source. Missing/unmatched client_ref silently ignored; no branch rejecting peer_online=false in ack handler itself.
+Error0x140999cd0: similarly nonempty client_ref and matching pending entry required. Removes pending, constructs PeerErrorException(code,message), faults awaiter. Does not find active session using session_id in this handler; error code vocabulary not established.
+
+PEER EVENTS
+Opened0x140999d80 parses from_uuid as GUID. On success creates local session with session_id, kind, from_uuid, direction field+0x30=1 and peer_online=true; stores under session_id; invokes incoming-session event. Malformed UUID logs and ignores.
+Message0x140999f10 looks up session_id, delivers entire parsed payload to local session event only if local closed flag==0. No seq read/check or senderUUID revalidation in this handler; that does not prove application subscriber ignores them.
+Closed0x140999f60 removes session_id from service map, sets closed flag=1 unless already1, invokes closed event with received payload. Unknown session ignored.
+Send0x14096a7d0 rejects locally closed sessions, serializes session_id, zeroes 8-byte seq storage (nullable/default representation unresolved), copies JSON payload, sends peer.send. No sequence increment in this method. Do not require clients to provide monotonic seq based on these observations.
+Close request0x140999a00 sends peer.session.close with session_id; local state change may occur in its caller, not investigated.
+
+RECONNECT
+State machine0x140aed420 retries using delay function0x14097e5e0. Auth-availability check in supervisor0x140aedb00 stops retrying when unavailable, logs at0x140aede6a. Exact cancellation/disconnection map cleanup unresolved.
+Delay verified from initializer0x14097e8a0 and conversion0x140e886d0 (divisor10000.0 at0x142bfa830):
+initial retry attempt0 base=5000ms.
+attempt>=1 base=min(15000*2^min(attempt-1,10),60000)ms.
+returns base+Random.Next(base), so observed static retry ranges [5,10), [15,30), [30,60), then [60,120) seconds.
+Constants initializer stores ticks at0x1433c6878=50000000,0x1433c6880=150000000,0x1433c6888=600000000. Separate field0x1433c6870=150000000 is not used by this delay function; do not conflate with retry1.
+
+UNRESOLVED
+Framework WS heartbeat intervals, total retry ceiling (none established), active session cleanup on raw disconnect, peer_online use beyond ack storage, seq JSON type/default/omission, and server error vocabulary. Server-side authorization and offline routing policy cannot be inferred from client alone.
+
+FOLLOW-UP CONNECTION LINKAGE (bounded negative)
+Searched all NativeAOT UTF16 literal references for connectionId/connection-id/connection_id and broader connection: no X-Connection-ID/header or REST JSON connectionId found. ConnectionId reflection getter metadata0x140af0270 is not proof of transport linkage. Presence heartbeat async0x1409ee560 passes supplied DTO through typeinfo accessor0x14096ff00 to /presence/heartbeat; construction is outside this function and belongs to presence investigation. No confirmed HTTP->WS explicit ID link. Backend can still route from authenticated user identity, but that is implementation inference.
+SEQ FOLLOW-UP
+PeerSend property builder0x14098e4c0 seq descriptor at0x14098e658 onward uses getter0x140af21e0 (qword DTO+0x10) and setter0x140af2210. Property nullable config at descriptor+0x50 HasValue=1,+0x54=2, unlike session_id descriptor which clears this config. Likely JsonIgnoreCondition.WhenWritingDefault; requires descriptor field/type confirmation before treating as established. Qword getter is compatible with Int64 or nullable Int32; no definitive type claim.

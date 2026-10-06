@@ -1,0 +1,33 @@
+TURN backend dependency, release0.6.8, 2026-10-06
+Static Windows binary .temp/rea-hytale/release-068/game/Client/HytaleClient.exe SHA25605f476a25b967005b5480c46152c57811c0bc62aacfabbbff5a98d5e66043ba5. No live network requests or production changes.
+
+HTTP CONTRACT (high-confidence static)
+POST https://sessions.<configured-domain>/turn-credentials
+Authorization: Bearer <sessionToken>
+Accept: application/json
+Host assembled function0x140b0bd20 at0x140b0bdce and endpoint0x140b0be05. HttpMethod uses static+0x18 at0x140b0bdb3; HttpMethod initializer0x140d9e070 assigns POST to same slot at0x140d9e0fa..117. Bearer assigned0x140b0bef7 onward; JSON Accept0x140b0bfcb onward. This constructor does not populate a request-body object; treat POST as no application payload pending runtime verification.
+Missing sessionToken throws argument error. Non-success status raises TURN credential exception with HTTP status and Retry-After-derived detail (same function0x140b0c4ba). Response JSON must decode and have nonnull iceServers; otherwise0x140b0c543 unusable response exception. Read limit0x10000 observed in Ghidra call to response load. No invented API request body needed.
+
+RESPONSE DTO
+IceServersResponse function0x1409dbfe0 has exactly iceServers (0x1409dc0d7), expiresAt (0x1409dc260).
+IceServerEntry function0x1409db160 has urls (0x1409db257), username (0x1409db3e0), credential (0x1409db521).
+Shape:
+ {"iceServers":[{"urls":["stun:host:3478","turn:host:3478"],"username":"<temporary user>","credential":"<temporary secret>"}],"expiresAt":"<expiry datetime>"}
+Example shows fields, not live values; STUN entries need not have credentials. There is NO ttl/ttlSeconds field in these DTOs. expiresAt observed nullable16byte datetime-like value: presence byte then64bit ticks, copied at0x1402bb533..570 and serialized through nullable converter0x1409dfce0. DateTime exact public JSON format not independently executed; ISO8601 anticipated from standard .NET JSON but remains inference. Return a real expiry matching issued relay credentials and verify client acceptance.
+Parser0x1402bb140 iterates entry.urls, recognizes stun0x1402bb311 and turn0x1402bb3e9; fallback STUN stun.cloudflare.com:3478 at0x1402bb500 when no STUN provided. Accepted turns/tcp URL variants not established in this pass.
+
+LIVE CONFIG
+Function0x14093e840 defines:
+ enable_ice_framework defaulttrue at0x14093ec43: ICE connectivity checks instead of racing QUIC handshakes.
+ ice_servers_override string (default empty by initializer) at0x14093ec95: documented format stun:host:port,turn:host:port|percent-encoded-username|percent-encoded-password. Intended direct relay testing before credentials service returns entries.
+ ice_force_relay defaultfalse at0x14093ed04: offer only relayed candidates.
+ enable_turn_credentials defaulttrue at0x14093ed61: mint relay credentials from sessions service while gathering ICE relay candidates.
+These defaults are compiled defaults, not verified effective runtime config.
+
+RELAY DEPENDENCY / FAILURE
+Credential fetch0x140a0a930 converts response and caches expiry; missing expiry replaced by local fallback TTL (constant not decoded). Error branch0x140a0b01a explicitly logs Could not fetch ICE credentials; continuing without relay.
+Gather function0x140a19fc0 logs Relay is configured but no credentials are available; continuing without it (0x140a1a2d4). Relay-only with no usable relay has no candidates and falls back (0x140a1a408).
+Therefore implementing only gateway relaying can enable direct ICE paths but cannot provide a working restrictive-NAT relay. Fully working joins across such networks require an actual accessible TURN relay and valid temporary credentials from this endpoint (or explicit client override). A fabricated successful JSON response without real TURN allocations does not solve NAT traversal.
+No assumption that every NAT requires TURN or that TURN guarantees success on all networks. Need credential expiry format/caching policy and client-supported relay URL transports verified before final endpoint implementation.
+
+Evidence: release-turn-140b0bd20.asm, release-turn-httpmethod.asm, release-turn-1409db160.asm, release-turn-1409dbfe0.asm, release-turn-parse-response.asm, release-turn-14093e840.asm, release-turn-140a0a930.asm, release-turn-140a19fc0.asm. Parent Ghidra pseudocode under ghidra-release corroborates request construction and response checks.

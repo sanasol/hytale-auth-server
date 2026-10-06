@@ -1,0 +1,23 @@
+Batch profiles contract, Windows0.6.8,2026-10-06
+Artifact .temp/rea-hytale/release-068/game/Client/HytaleClient.exe SHA25605f476a25b967005b5480c46152c57811c0bc62aacfabbbff5a98d5e66043ba5. Static native serialization evidence, no backend request or production edit.
+
+Endpoint POST /profile/uuids (parent verified wrapper0x140abdbc0); request {"uuids":["<UUID>"]}; response {"profiles":[{"uuid":"<UUID>","username":"<name>","skin":"<serialized skin string or null>"}]}.
+
+EXACT TYPE TRACE
+Response property initializer0x14091e860 declares profiles and required flag; response serializer0x14091ea20 calls list serializer0x140921500 at0x14091ee29. List serializer iterates entries and calls element serializer0x14091d530 at0x140921558. This direct link distinguishes public profile element from OTHER account profile DTO with entitlements in same context.
+Individual element initializer0x14091d0d0 contains exactly3properties:
+ uuid0x14091d1c7; requiredflag1 at0x14091d241.
+ username0x14091d317; requiredflag1 at0x14091d39b.
+ skin0x14091d4a3; no requiredflag assignment.
+Do not add entitlements merely because another DTO's properties occur nearby.
+
+TYPES
+uuid:16byte value stored object+0x18; serializer0x14091d58e loads16bytes, calls GUID JSONwriter0x1410cf370 at0x14091d5dc (or indented0x1410cf870). Use UUID JSON string, not numeric ID.
+username:string reference object+8.0x14091d611 reads reference and0x14091d61a accesses UTF16 chars+0xc/length+8; writes string0x1410d4e30. Null branch exists. Required means presence, not independently proven nonempty/non-null constraint.
+skin:string reference object+0x10.0x14091d6f8 reads reference;0x14091d701 accesses UTF16 chars;0x14091d739 writes string; null branch0x14091d743. This is serialized skin data STRING, not nested JSON object. It is optional at propertymetadata level; serializer emits null when absent. Missing skin shouldn't fail same way as missing requiredprofiles/uuid/username, but downstream rendering may have own expectations.
+
+UNKNOWN UUIDS
+No server implementation or response capture inspected here; whether unknown requested UUIDs are omitted, fail whole batch, or return another status is not established by these DTOs. A synthetic profile with invented username is not justified. If implementing compatibility, omission with profiles[] is a design choice until verified, not observed protocol fact.
+
+EVIDENCE
+release-profile-element-response-serializer.asm,release-profile-element-listinfo.asm,release-profile-element-properties.asm,release-profile-element-serializer.asm,release-profile-element-uuid-writer.asm. Existing parent files release-profile-request/response/context.asm retained without changes.
