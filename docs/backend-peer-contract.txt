@@ -1,0 +1,51 @@
+Peer WebSocket DTO contract extracted 2026-10-06
+
+Artifact: .temp/socket-gateway-research/client-72/Client/HytaleClient.exe, Windows x64 NativeAOT 0.7.0-pre.4 (prior mirror artifact, NOT current user installation 0.6.8).
+Known SHA256 df8f131432518a4363725852a11a2a1ac23fc1783cb5c463acaae07fb9884c5c. Static capstone disassembly using PE .pdata boundaries and RIP-relative NativeAOT UTF16 string references. Addresses below are preferred-image virtual addresses (base0x140000000); ASLR runtime addresses differ.
+
+FIELD SETS
+PeerSessionOpenRequest properties function0x140a113c0, file peer-140a113c0.asm:
+  peer_uuid at0x140a114b7, kind at0x140a11627, client_ref at0x140a117a1.
+PeerSendRequest properties function0x140a0df60, file peer-140a0df60.asm:
+  session_id at0x140a0e057, seq at0x140a0e1ce, payload at0x140a0e308.
+PeerSessionAckPayload properties function0x140a0ee00, file peer-140a0ee00.asm:
+  session_id at0x140a0eef7, peer_online at0x140a0f067, client_ref at0x140a0f1a1.
+PeerSessionOpenedPayload properties function0x140a10930, file peer-140a10930.asm:
+  session_id at0x140a10a27, from_uuid at0x140a10b97, kind at0x140a10d0a.
+PeerMessagePayload properties function0x140a0d060, file peer-140a0d060.asm:
+  session_id at0x140a0d157, from_uuid at0x140a0d2c7, seq at0x140a0d43a, payload at0x140a0d574.
+GatewayNotificationEvent properties function0x140a06d80, file peer-notification-properties.asm:
+  id at0x140a06e77, type at0x140a06fe7, timestamp at0x140a0715a, data at0x140a07294.
+Additional:
+  PeerSessionClosedPayload0x140a0f950: session_id at0x140a0fa47, reason at0x140a0fbb7.
+  PeerSessionCloseRequest0x140a10180: session_id at0x140a10277.
+  PeerErrorPayload0x140a0c290: code,session_id,client_ref,message (prior peer-error-properties.asm).
+
+CONFIDENCE
+Field spellings/counts: directly observed generated JSON property initializer literals and allocated property array sizes, high confidence for THIS version.
+Mapping property function to DTO type: supported by sequential generated context order (native metadata lists PeerErrorPayload -> PeerMessagePayload -> PeerSendRequest -> PeerSessionAckPayload -> PeerSessionClosedPayload -> PeerSessionCloseRequest -> PeerSessionOpenedPayload -> PeerSessionOpenRequest), field semantics and callers. No managed C# method body metadata available; type-label association is static reconstruction.
+JSON requiredness, nullability, numeric width, seq semantics, id type, timestamp formatting, supported kind enum values and payload inner schema are NOT established by these field-name initializers alone. Do not make schemas enforce invented constraints.
+
+CALLER CORROBORATION
+peer-140b8ca90.asm at0x140b8cd1f formats peer GUID into request, at0x140b8cd38 fills kind from caller state, at0x140b8cd49 fills client ref, at0x140b8cd8c uses literal peer.session.open. This confirms the request corresponds to opening peer session, not generic user lookup.
+peer-1409ea270.asm at0x1409ea2ce assigns session ID; at0x1409ea2da zeroes 8 bytes for seq storage (could be default/nullable representation, do not infer wire seq=0); at0x1409ea2e4 copies payload; at0x1409ea322 sends peer.send.
+peer-140a19820.asm at0x140a19851 reads FromUuid string and attempts GUID parse; malformed logs at0x140a19975. SessionId used as session-map key, kind copied into local peer session.
+
+ENVELOPES (shape only, placeholders)
+Client -> gateway:
+ {"type":"peer.session.open","data":{"peer_uuid":"<peer>","kind":"<unknown allowed value>","client_ref":"<correlation>"}}
+ {"type":"peer.send","data":{"session_id":"<session>","seq":"<unknown JSON type/nullability>","payload":"<application JSON>"}}
+ {"type":"peer.session.close","data":{"session_id":"<session>"}}
+Gateway -> client:
+ {"type":"peer.session.ack","data":{"session_id":"<session>","peer_online":"<expected boolean; verify serializer>","client_ref":"<correlation>"}}
+ {"type":"gateway.notification","data":{"id":"<unknown representation>","type":"peer.session.opened","timestamp":"<unknown representation>","data":{"session_id":"<session>","from_uuid":"<sender UUID>","kind":"<kind>"}}}
+Analogous notification type peer.message wraps PeerMessagePayload; peer.session.closed wraps PeerSessionClosedPayload.
+These are illustrative shapes, NOT captured frames or ready-to-send test fixtures.
+
+NOTIFICATION DISPATCH OBSERVED
+Function0x140a18710, peer-140a18710.asm dispatches:
+chat; account.discord.linked/unlinked; friend.request.received/accepted/rejected; friend.presence.updated; friend.unfriended; friend.blocked; party.invite.received/canceled; party.leader.changed; party.member.joined/left; world.invite.received/accepted/rejected/canceled; peer.session.opened/closed; peer.message.
+Relevant addresses peer.session.closed0x140a18f98, peer.session.opened0x140a190c2, peer.message0x140a19320.
+
+LIMITATIONS / NEXT VERIFICATION
+Need match schemas against CURRENT0.6.8 client before implementation, decode inner ICE payload and kind, establish authorized peer criteria (friendship/world invitation), delivery/reconnect/session lifecycle and server-defined errors. No fresh network traffic or production edits done here.

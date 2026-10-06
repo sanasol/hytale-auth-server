@@ -1,0 +1,189 @@
+CURRENT MAC CLIENT SOCIAL INVENTORY — 2026-10-06
+Scope: static literals and metadata only; no methods, object association or behavior inferred from string presence.
+Binary root: /Users/sanasol/Library/Application Support/com.sanasol.f2p-evo/games/7753664e-b9cf-4ac2-80a3-2424a91e9690/Client/Hytale.app/Contents/MacOS
+HytaleClient.backup SHA256 1581843dbe87d1acde7e928eccb715fa7afd741a2f087f73c77acd305609d3db
+HytaleClient SHA256 2dcf5b82172a972e32d19917fd0923a49d6e6f4d9b6caf5660e4dd66b97fefb6
+
+Extraction: inventory-strings.py scans ASCII UTF16LE runs, checks uint32LE length at textOffset-4 and reconstructs omitted final zero byte. Offsets below are file offsets in HytaleClient.backup, NOT virtual addresses. Self-checks assert complete /friend-requests and targetUsername. This is a bounded ASCII subset, not complete metadata recovery.
+Patched executable service URL edits can break length-validated extraction; missing extracted URL is not absence of functionality. No versions taken from prior Windows data. Parent inventory identifies build; this file is tied to hashes above.
+
+HTTP PATH LITERALS (method/schema/host association unknown until callsite decompile)
+022c1bbc /blocks [also patched]
+022c1bd1 /blocks/remove [also patched]
+022c1d97 /friend-requests [also patched]
+022c1dbe /friend-requests/accept [also patched]
+022c1df3 /friend-requests/by-username [also patched]
+022c1e32 /friend-requests/incoming [also patched]
+022c1e6b /friend-requests/outgoing [also patched]
+022c1ea4 /friend-requests/reject [also patched]
+022c1ed8 /friends [also patched]
+022c1eef /friends/favorites [also patched]
+022c1f1a /friends/remove [also patched]
+022c1f3f /friends/resolve-discord [also patched]
+022c1f76 /game-session [also patched]
+022c1f97 /game-session/child [also patched]
+022c1fc4 /game-session/refresh [also patched]
+022c201b /interaction/ [also patched]
+022c2084 /me/interactions/ [also patched]
+022c20f0 /my-account/discord-link/handoff [also patched]
+022c2137 /my-account/discord-token [also patched]
+022c2170 /my-account/game-profile [also patched]
+022c2234 /party [also patched]
+022c2247 /party/create [also patched]
+022c2268 /party/invites [also patched]
+022c228b /party/invites/accept [also patched]
+022c22bc /party/invites/reject [also patched]
+022c22ed /party/invites/send [also patched]
+022c231a /party/invites/sent [also patched]
+022c2346 /party/leave [also patched]
+022c247e /presence/appear-offline [also patched]
+022c24b5 /presence/clear [also patched]
+022c24da /presence/friends [also patched]
+022c2503 /presence/heartbeat [also patched]
+022c2530 /presence/join-world [also patched]
+022c255f /presence/settings [also patched]
+022c25ab /profile/uuid/ [also patched]
+022c25ce /profile/uuids [also patched]
+022c2609 /server-join/auth-grant [also patched]
+022c263e /server-join/auth-token [also patched]
+022c2672 /servers/ [also patched]
+022c268b /servers/listings [also patched]
+022c2884 /world-invites [also patched]
+022c28a7 /world-invites/accept [also patched]
+022c28d8 /world-invites/cancel [also patched]
+022c2909 /world-invites/reject [also patched]
+022c293a /world-invites/sent [also patched]
+
+GATEWAY EVENT/MESSAGE LITERALS (direction and payload schemas not established here)
+023acac2 account.discord.linked
+023acaf5 account.discord.unlinked
+023d25ea friend.blocked
+023d260d friend.presence.updated
+023d2642 friend.request.accepted
+023d2677 friend.request.received
+023d26ac friend.request.rejected
+023d26e1 friend.unfriended
+023d2bba gateway.close
+023d2bdb gateway.connected
+023d2c04 gateway.notification
+023da7f9 party.invite.canceled
+023da82a party.invite.received
+023da85b party.leader.changed
+023da88a party.member.joined
+023da8b7 party.member.left
+023daab9 peer.error
+023daaf1 peer.message
+023dab0f peer.send
+023dab28 peer.session.ack
+023dab4f peer.session.close
+023dab7a peer.session.closed
+023daba7 peer.session.open
+023dabd0 peer.session.opened
+023e3021 world.invite.accepted
+023e3052 world.invite.canceled
+023e3083 world.invite.received
+023e30b4 world.invite.rejected
+
+FIELD-NAME CANDIDATES (exact literals, NOT proven membership in a particular DTO)
+023e26c9 uuid
+023e26d7 uuids
+023db97e profiles
+023e2516 username
+023e00f2 targetUsername
+023e0114 targetUuid
+023d546b inviteUuid
+023d54e6 inviterUuid
+023da8df partyId
+023d629b leaderUuid
+023d7734 maxSize
+023ccbea client_ref
+023de4d1 session_id
+023cd93b connection_id
+023d277d from_uuid
+023daa0b payload
+023ce7e8 data
+023e1383 type
+023dc363 reason
+023cccbb code
+023d7bd0 message
+023e0b1e timestamp
+023df3c7 status
+023acbc8 activity
+023de557 settings
+023d2741 friends
+023dc956 requests
+023aed98 blocks
+023d1b60 favorites
+023acff1 allowFriendRequests
+023ad01d allowInvites
+023ad03b allowJoin
+023de8b4 showActivity
+023de8d2 showLocation
+023de8f0 showOnline
+023accce address
+023db0e0 port
+023afb6e candidates
+023e15d3 ufrag
+023e315c worldName
+023ce012 createdAt
+023d16c2 expiresAt
+023d5502 inviter_uuid
+023d54a1 invite_uuid
+023da8f3 party_id
+023dafb3 player_uuid
+023d7a9a member_count
+
+METADATA DTO/CLIENT NAME SUBSTRINGS (file offsets; packed metadata includes adjacent type names; names are recognisable substrings, no reconstructed members)
+01d32251 PresenceSettingsResponse
+01d323cc PeerMessagePayload
+01d324af PeerSessionClosedPayload
+01d326c7 PublicGameProfileResponse
+01d32b1a PublicGameProfilesLookupRequest
+01d335d2 FriendsListResponse
+01d33802 FriendRequestsListResponse
+01d338ec BlocksListResponse
+01d33967 SendFriendRequestRequest
+01d339a5 SendFriendRequestByUsernameRequest
+01d339fc AcceptFriendRequestRequest
+01d33a3c RejectFriendRequestRequest
+01d33a57 UnfriendRequest
+01d33a9b BlockPlayerRequest
+01d33aae UnblockPlayerRequest
+01d33ae8 SetFavoriteFriendsRequest
+01d33b36 SocialErrorResponse
+01d33bac FavoriteFriendsResponse
+01d33be9 FriendsClientJsonContext
+01d34835 FriendRequestReceivedPayload
+01d34899 FriendRequestAcceptedPayload
+01d3491e FriendRequestRejectedPayload
+01d3497c FriendPresenceUpdatedPayload
+01d34ada FriendUnfriendedPayload
+01d34af2 FriendBlockedPayload
+01d36796 PartyInviteReceivedPayload
+01d36863 PartyInviteCanceledPayload
+01d3687e PartyMemberJoinedPayload
+01d368cb PartyMemberLeftPayload
+01d368e2 PartyLeaderChangedPayload
+01d37750 WorldInviteReceivedPayload
+01d3776b WorldInviteAcceptedPayload
+01d377ba WorldInviteRejectedPayload
+01d37809 WorldInviteCanceledPayload
+01d37824 ChatPushPayload
+01d37859 PeerSessionOpenRequest
+01d37918 PeerSendRequest
+01d3793e PeerSessionCloseRequest
+01d37956 PeerSessionAckPayload
+01d379b6 PeerErrorPayload
+
+SERVICE PREFIX LITERALS IN BACKUP
+023d40c2 https://account-data.
+023d4348 https://liveconfig.
+023d43a4 https://server-discovery.
+023d43dd https://sessions.
+023d4406 https://social.
+023d44b1 https://telemetry.
+023d44dc https://tools.
+023d463c hytale.com
+023e32dc wss://socket-gateway.
+
+Interpretation boundaries: /profile/uuids + PublicGameProfilesLookupRequest + uuids/profiles are strong targets for callsite/schema recovery, not a complete proven HTTP contract. Snake_case peer event literals coexist with camelCase REST field candidates; do not normalise or interchange them. Friends list, REST mutations, presence, party and world invitations have separate paths and WS event families, but causal flows require native callsite analysis/runtime evidence. No request executed and no game modified.
