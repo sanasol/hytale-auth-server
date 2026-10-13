@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const config = require('../config');
 const storage = require('../services/storage');
 const assets = require('../services/assets');
@@ -7,6 +8,46 @@ const { sendJson, sendHtml, sendBinary } = require('../utils/response');
 
 // Head image cache directory
 const HEAD_CACHE_DIR = config.headCacheDir;
+
+function normalizeHeadBackground(value) {
+  return ['black', 'white', 'transparent'].includes(value) || /^#[0-9a-f]{6}$/i.test(value || '') ? value : 'black';
+}
+
+// A renderer/asset update must not reuse thumbnails produced by older code.
+let renderVersion;
+function headRenderVersion() {
+  if (renderVersion) return renderVersion;
+  const hash = crypto.createHash('sha256');
+  hash.update('head-128-v2');
+  for (const file of [path.join(__dirname, '../../assets/avatar.js'), require.resolve('../services/assets')]) {
+    hash.update(fs.readFileSync(file));
+  }
+  try {
+    const stat = fs.statSync(config.assetsPath);
+    hash.update(`${stat.size}:${stat.mtimeMs}`);
+  } catch {}
+  renderVersion = hash.digest('hex').slice(0, 16);
+  return renderVersion;
+}
+
+function headCacheKey(uuid, background, skin) {
+  const sorted = Object.fromEntries(Object.entries(skin || {}).sort(([a], [b]) => a.localeCompare(b)));
+  const digest = crypto.createHash('sha256').update(headRenderVersion()).update(JSON.stringify(sorted)).digest('hex').slice(0, 24);
+  return `${uuid}_${background}_${digest}`;
+}
+
+async function authorizeSkinEditor(req, res, uuid) {
+  if (!['POST', 'PUT', 'PATCH'].includes(req.method)) {
+    sendJson(res, 405, { error: 'Method not allowed' }); return false;
+  }
+  const adminToken = req.headers['x-admin-token'];
+  if (adminToken && await storage.verifyAdminToken(adminToken)) return true;
+  const token = /^Bearer (.+)$/.exec(req.headers.authorization || '')?.[1];
+  const claims = require('../services/auth').verifyToken(token);
+  if (claims?.uuid?.toLowerCase() === uuid.toLowerCase() && Number.isFinite(claims.exp) && claims.exp > Date.now() / 1000 && claims.scope === 'hytale:server') return true;
+  sendJson(res, 401, { error: 'Sign in to save this character' });
+  return false;
+}
 
 /**
  * Initialize head cache directory
@@ -94,6 +135,7 @@ async function handleAvatarRoutes(req, res, urlPath, body = {}) {
   }
 
   const uuid = pathParts[1];
+  if (!/^[a-z0-9-]{1,64}$/i.test(uuid)) { sendJson(res, 400, { error: 'Invalid UUID' }); return; }
   const action = pathParts[2];
 
   if (action === 'model') {
@@ -103,7 +145,7 @@ async function handleAvatarRoutes(req, res, urlPath, body = {}) {
   } else if (action === 'head') {
     await serveHeadEmbed(req, res, uuid);
   } else if (action === 'head-cache' && req.method === 'POST') {
-    handleHeadImageCache(req, res, uuid);
+    await handleHeadImageCache(req, res, uuid);
   } else {
     serveAvatarViewer(req, res, uuid);
   }
@@ -136,7 +178,7 @@ async function handleAvatarModel(req, res, uuid) {
     'haircut', 'pants', 'overtop', 'undertop', 'shoes',
     'headAccessory', 'faceAccessory', 'earAccessory',
     'eyebrows', 'eyes', 'face', 'facialHair', 'gloves',
-    'cape', 'overpants', 'mouth', 'ears', 'underwear'
+    'cape', 'overpants', 'mouth', 'ears', 'underwear', 'skinFeature', 'bodyCharacteristic'
   ];
 
   for (const category of categories) {
@@ -148,22 +190,9 @@ async function handleAvatarModel(req, res, uuid) {
     }
   }
 
-  // Handle eye color separately (it's stored in 'eyeColor' field)
-  if (userSkin.eyeColor && eyeColors) {
-    const eyeColorData = eyeColors[userSkin.eyeColor];
-    if (eyeColorData && resolvedParts.eyes) {
-      // Override the base color for eyes with the eye color
-      resolvedParts.eyes.baseColor = eyeColorData.BaseColor;
+  assets.applyEyeColor(resolvedParts, userSkin.eyeColor, eyeColors, gradientSets);
 
-      // Also resolve the gradient texture from Eyes_Gradient set
-      if (resolvedParts.eyes.gradientSet && gradientSets) {
-        const eyeGradientSet = gradientSets.find(g => g.Id === resolvedParts.eyes.gradientSet);
-        if (eyeGradientSet && eyeGradientSet.Gradients && eyeGradientSet.Gradients[userSkin.eyeColor]) {
-          resolvedParts.eyes.gradientTexture = eyeGradientSet.Gradients[userSkin.eyeColor].Texture;
-        }
-      }
-    }
-  }
+  assets.applyCosmeticCompatibility(resolvedParts, configs, gradientSets);
 
   // Parse bodyCharacteristic for body type and skin tone
   // Format: "BodyType.SkinToneId" e.g., "Muscular.22"
@@ -201,6 +230,7 @@ async function handleAvatarModel(req, res, uuid) {
     uuid,
     skinTone,
     bodyType,
+    body: resolvedParts.bodyCharacteristic || null,
     parts: resolvedParts,
     raw: userSkin
   });
@@ -230,7 +260,7 @@ async function handleAvatarPreview(req, res, uuid, customSkin = {}) {
     'haircut', 'pants', 'overtop', 'undertop', 'shoes',
     'headAccessory', 'faceAccessory', 'earAccessory',
     'eyebrows', 'eyes', 'face', 'facialHair', 'gloves',
-    'cape', 'overpants', 'mouth', 'ears', 'underwear'
+    'cape', 'overpants', 'mouth', 'ears', 'underwear', 'skinFeature', 'bodyCharacteristic'
   ];
 
   for (const category of categories) {
@@ -242,20 +272,9 @@ async function handleAvatarPreview(req, res, uuid, customSkin = {}) {
     }
   }
 
-  // Handle eye color separately
-  if (customSkin.eyeColor && eyeColors) {
-    const eyeColorData = eyeColors[customSkin.eyeColor];
-    if (eyeColorData && resolvedParts.eyes) {
-      resolvedParts.eyes.baseColor = eyeColorData.BaseColor;
+  assets.applyEyeColor(resolvedParts, customSkin.eyeColor, eyeColors, gradientSets);
 
-      if (resolvedParts.eyes.gradientSet && gradientSets) {
-        const eyeGradientSet = gradientSets.find(g => g.Id === resolvedParts.eyes.gradientSet);
-        if (eyeGradientSet && eyeGradientSet.Gradients && eyeGradientSet.Gradients[customSkin.eyeColor]) {
-          resolvedParts.eyes.gradientTexture = eyeGradientSet.Gradients[customSkin.eyeColor].Texture;
-        }
-      }
-    }
-  }
+  assets.applyCosmeticCompatibility(resolvedParts, configs, gradientSets);
 
   // Parse bodyCharacteristic for body type and skin tone
   let bodyType = 'Regular';
@@ -285,6 +304,7 @@ async function handleAvatarPreview(req, res, uuid, customSkin = {}) {
     uuid,
     skinTone,
     bodyType,
+    body: resolvedParts.bodyCharacteristic || null,
     parts: resolvedParts,
     raw: customSkin
   });
@@ -295,9 +315,10 @@ async function handleAvatarPreview(req, res, uuid, customSkin = {}) {
  */
 async function serveHeadEmbed(req, res, uuid) {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  const bgParam = url.searchParams.get('bg') || 'black';
+  const bgParam = normalizeHeadBackground(url.searchParams.get('bg') || 'black');
   const noCache = url.searchParams.get('nocache') === '1';
-  const cacheKey = `${uuid}_${bgParam}`;
+  const userData = await storage.getUserData(uuid);
+  const cacheKey = headCacheKey(uuid, bgParam, userData.skin);
 
   if (!noCache) {
     const cached = getHeadCacheFromDisk(cacheKey);
@@ -321,36 +342,43 @@ async function serveHeadEmbed(req, res, uuid) {
       sendBinary(res, 200, cached.data, 'image/png', {
         'Last-Modified': lastModified,
         'ETag': etag,
-        'Cache-Control': 'public, max-age=3600'
+        'Cache-Control': 'no-cache'
       });
       return;
     }
   }
 
   // Return HTML page that renders and caches the head
-  const html = generateHeadEmbedHtml(uuid, bgParam);
+  const html = generateHeadEmbedHtml(uuid, bgParam, cacheKey);
   sendHtml(res, 200, html);
 }
 
 /**
  * Handle head image cache POST
  */
-function handleHeadImageCache(req, res, uuid, url) {
+async function handleHeadImageCache(req, res, uuid) {
+  if (!/^[a-z0-9-]{1,64}$/i.test(uuid)) { sendJson(res, 400, { error: 'Invalid UUID' }); return; }
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const bgParam = normalizeHeadBackground(url.searchParams.get('bg') || 'black');
+  let length = 0;
   const chunks = [];
-  req.on('data', chunk => chunks.push(chunk));
-  req.on('end', () => {
-    const bgParam = url?.searchParams?.get('bg') || 'black';
-    const cacheKey = `${uuid}_${bgParam}`;
-    const data = Buffer.concat(chunks);
-
-    if (data.length > 0) {
-      saveHeadCacheToDisk(cacheKey, data);
-      console.log(`Cached head image for ${uuid} (${bgParam}): ${data.length} bytes`);
-    }
-
-    res.writeHead(204);
-    res.end();
-  });
+  for await (const chunk of req) {
+    length += chunk.length;
+    if (length > 256 * 1024) { sendJson(res, 413, { error: 'Thumbnail too large' }); return; }
+    chunks.push(chunk);
+  }
+  const data = Buffer.concat(chunks);
+  if (data.length < 24 || !data.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) || data.toString('ascii', 12, 16) !== 'IHDR' || data.readUInt32BE(16) !== 128 || data.readUInt32BE(20) !== 128) {
+    sendJson(res, 400, { error: '128px PNG thumbnail required' }); return;
+  }
+  try { await require('sharp')(data).raw().toBuffer(); }
+  catch { sendJson(res, 400, { error: 'Invalid PNG thumbnail' }); return; }
+  const userData = await storage.getUserData(uuid);
+  const cacheKey = headCacheKey(uuid, bgParam, userData.skin);
+  if (url.searchParams.get('v') !== cacheKey) { sendJson(res, 409, { error: 'Character changed; reload thumbnail' }); return; }
+  saveHeadCacheToDisk(cacheKey, data);
+  res.writeHead(204);
+  res.end();
 }
 
 /**
@@ -388,6 +416,7 @@ function handleCustomizerRoute(req, res, urlPath) {
     if (fs.existsSync(viewerPath)) {
       let html = fs.readFileSync(viewerPath, 'utf8');
       html = html.replace(/\{\{UUID\}\}/g, uuid);
+      html = html.replace(/(src="\/assets\/(?:avatar|depth-peeling|thumbnail-renderer)\.js)"/g, `$1?v=${headRenderVersion()}"`);
       sendHtml(res, 200, html);
       return;
     }
@@ -400,7 +429,7 @@ function handleCustomizerRoute(req, res, urlPath) {
 /**
  * Generate head embed HTML - uses HytaleAvatarViewer from /assets/avatar.js
  */
-function generateHeadEmbedHtml(uuid, bgParam = 'transparent') {
+function generateHeadEmbedHtml(uuid, bgParam = 'transparent', cacheKey = '') {
   // Parse background parameter
   let cssBg = 'transparent';
   let threeColor = '0x000000';
@@ -440,8 +469,8 @@ function generateHeadEmbedHtml(uuid, bgParam = 'transparent') {
 <body>
   <div id="canvas-container"></div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <script src="/assets/depth-peeling.js"></script>
-  <script src="/assets/avatar.js"></script>
+  <script src="/assets/depth-peeling.js?v=${headRenderVersion()}"></script>
+  <script src="/assets/avatar.js?v=${headRenderVersion()}"></script>
   <script>
     const UUID = '${uuid}';
     const BG_COLOR = ${threeColor};
@@ -458,6 +487,9 @@ function generateHeadEmbedHtml(uuid, bgParam = 'transparent') {
       });
 
       viewer.init();
+      viewer.renderer.setPixelRatio(1);
+      viewer.renderer.setSize(128, 128, false);
+      viewer.camera.aspect = 1;
 
       // Set background based on parameters
       viewer.renderer.setClearColor(BG_COLOR, BG_ALPHA);
@@ -496,7 +528,7 @@ function generateHeadEmbedHtml(uuid, bgParam = 'transparent') {
     async function cacheRenderedImage(canvas) {
       try {
         const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-        await fetch('/avatar/' + UUID + '/head-cache?bg=${bgParam}', {
+        await fetch('/avatar/' + UUID + '/head-cache?bg=${encodeURIComponent(bgParam)}&v=${encodeURIComponent(cacheKey)}', {
           method: 'POST',
           body: blob,
           headers: { 'Content-Type': 'image/png' }
@@ -596,8 +628,8 @@ function generateAvatarViewerHtml(uuid) {
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <script src="/assets/depth-peeling.js"></script>
-  <script src="/assets/avatar.js"></script>
+  <script src="/assets/depth-peeling.js?v=${headRenderVersion()}"></script>
+  <script src="/assets/avatar.js?v=${headRenderVersion()}"></script>
   <script>
     const UUID = '${uuid}';
     let viewer = null;
@@ -839,4 +871,8 @@ module.exports = {
   handleTestHeadPage,
   invalidateHeadCache,
   initHeadCache,
+  authorizeSkinEditor,
+  headCacheKey,
+  headRenderVersion,
+  normalizeHeadBackground,
 };

@@ -362,6 +362,33 @@ describe('Assets Service', () => {
       expect(result.baseColor).toBe('#000000');
     });
 
+    it('resolves renamed saved cosmetics through fallback aliases', () => {
+      const configs = { haircut: { SpikyMohawk: {
+        Id: 'SpikyMohawk', FallbackPartIds: ['SpikyMohawl'], Model: 'm', GreyscaleTexture: 'g'
+      } } };
+      expect(assets.resolveSkinPart('haircut', 'SpikyMohawl.Black', configs, []).id).toBe('SpikyMohawk');
+    });
+
+    it('ignores placeholder texture entries and chooses a valid default gradient', () => {
+      const configs = { pants: { Dungarees: {
+        Id: 'Dungarees', GradientSet: 'Jean_Generic', Textures: { ShortDungareesOneShoulder: {} },
+        Variants: { ShortDungareesRegular: { Model: 'm', GreyscaleTexture: 'g' } }
+      } } };
+      const result = assets.resolveSkinPart('pants', 'Dungarees', configs,
+        [{ Id: 'Jean_Generic', Gradients: { Blue: { Texture: 'blue.png', BaseColor: ['#123456'] } } }]);
+      expect(result.greyscaleTexture).toBe('g');
+      expect(result.gradientTexture).toBe('blue.png');
+      expect(result.texture).toBeUndefined();
+    });
+
+    it('returns body textures and accessory hiding metadata from the selected config', () => {
+      const configs = { bodyCharacteristic: { Goblin: {
+        Id: 'Goblin', Model: 'player', GreyscaleTexture: 'goblin.png', GradientSet: 'Skin'
+      } }, headAccessory: { Hoodie: { Id: 'Hoodie', HidesSkinProperties: ['Ears', 'EarAccessory'] } } };
+      expect(assets.resolveSkinPart('bodyCharacteristic', 'Goblin.22', configs, []).greyscaleTexture).toBe('goblin.png');
+      expect(assets.resolveSkinPart('headAccessory', 'Hoodie', configs, []).hidesSkinProperties).toEqual(['Ears', 'EarAccessory']);
+    });
+
     it('should handle items with Variants (like capes)', () => {
       const configs = {
         cape: {

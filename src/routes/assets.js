@@ -59,40 +59,20 @@ function buildColorHexMap(gradientSets) {
  * Get colors for an item based on its gradient set or textures
  */
 function getItemColors(item, gradientSets) {
-  const colors = [];
-
-  // If item has explicit Textures with color variants
-  if (item.Textures && typeof item.Textures === 'object') {
-    return Object.keys(item.Textures);
-  }
-
-  // If item has Variants (like capes), get colors from the first variant's Textures
-  if (item.Variants) {
-    const firstVariant = Object.values(item.Variants)[0];
-    if (firstVariant) {
-      // Check variant's Textures (for non-greyscale items like skeleton cape)
-      if (firstVariant.Textures && typeof firstVariant.Textures === 'object') {
-        return Object.keys(firstVariant.Textures);
-      }
-      // Check variant's GradientSet (for greyscale items like king cape)
-      if (firstVariant.GreyscaleTexture && item.GradientSet && gradientSets) {
-        const gradientSet = gradientSets.find(g => g.Id === item.GradientSet);
-        if (gradientSet && gradientSet.Gradients) {
-          return Object.keys(gradientSet.Gradients);
-        }
-      }
+  const colors = new Set();
+  const definitions = item.Variants
+    ? Object.values(item.Variants).map(variant => ({ ...item, ...variant, Variants: null }))
+    : [item];
+  for (const definition of definitions) {
+    for (const [color, texture] of Object.entries(definition.Textures || {})) {
+      if (texture.Texture) colors.add(color);
+    }
+    if (definition.GreyscaleTexture && definition.GradientSet) {
+      const gradients = gradientSets?.find(set => set.Id === definition.GradientSet)?.Gradients || {};
+      for (const color of Object.keys(gradients)) colors.add(color);
     }
   }
-
-  // If item has a gradient set, get colors from that set
-  if (item.GradientSet && gradientSets) {
-    const gradientSet = gradientSets.find(g => g.Id === item.GradientSet);
-    if (gradientSet && gradientSet.Gradients) {
-      return Object.keys(gradientSet.Gradients);
-    }
-  }
-
-  return colors;
+  return [...colors];
 }
 
 /**
@@ -100,27 +80,12 @@ function getItemColors(item, gradientSets) {
  * Returns false if the item is likely broken or unavailable in-game
  */
 function isItemComplete(item) {
-  // Items without Variants - check Model and either GreyscaleTexture or Textures
-  if (!item.Variants) {
-    if (!item.Model) return false;
-    if (!item.GreyscaleTexture && (!item.Textures || Object.keys(item.Textures).length === 0)) {
-      return false;
-    }
-    return true;
-  }
-
-  // Items with Variants - check each variant has Model and texture
-  // Need at least one complete variant
-  const variants = Object.values(item.Variants);
-  if (variants.length === 0) return false;
-
-  for (const variant of variants) {
-    if (!variant.Model) continue;
-    if (variant.GreyscaleTexture || (variant.Textures && Object.keys(variant.Textures).length > 0)) {
-      return true; // At least one complete variant found
-    }
-  }
-  return false;
+  const definitions = item.Variants
+    ? Object.values(item.Variants).map(variant => ({ ...item, ...variant, Variants: null }))
+    : [item];
+  return definitions.some(definition => definition.Model && (
+    definition.GreyscaleTexture || Object.values(definition.Textures || {}).some(texture => texture.Texture)
+  ));
 }
 
 /**
@@ -201,7 +166,8 @@ function handleCosmeticsList(req, res) {
       if (item.Variants) {
         variants = Object.keys(item.Variants).map(variantId => ({
           id: variantId,
-          name: item.Variants[variantId].NameKey || variantId
+          name: item.Variants[variantId].NameKey || variantId,
+          colors: getItemColors({ ...item, ...item.Variants[variantId], Variants: null }, gradientSets)
         }));
       }
 
@@ -212,7 +178,8 @@ function handleCosmeticsList(req, res) {
         colors: colors,
         gradientSet: item.GradientSet || null,
         model: item.Model || null,
-        variants: variants
+        variants: variants,
+        colorHexMap: buildColorHexMap((gradientSets || []).filter(set => set.Id === item.GradientSet))
       };
 
       // Add HeadAccessory-specific fields (for haircut interaction logic)

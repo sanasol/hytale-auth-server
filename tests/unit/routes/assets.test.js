@@ -47,6 +47,22 @@ describe('Assets Routes', () => {
       expect(response.gradientSets).toBeDefined();
     });
 
+    it('lists gradient colors for variants even when parent textures contain placeholders', () => {
+      assets.loadCosmeticConfigs.mockReturnValue({ pants: { Dungarees: {
+        Id: 'Dungarees', GradientSet: 'Jean_Generic', Textures: { ShortDungareesOneShoulder: {} },
+        Variants: { ShortDungareesRegular: { Model: 'm', GreyscaleTexture: 'g' } }
+      } } });
+      assets.loadGradientSets.mockReturnValue([{ Id: 'Jean_Generic', Gradients: {
+        Blue: { Texture: 'blue.png', BaseColor: ['#123456'] },
+        Black: { Texture: 'black.png', BaseColor: ['#010101'] }
+      } }]);
+      assetRoutes.handleCosmeticsList({}, mockRes);
+      const item = JSON.parse(mockRes.end.mock.calls[0][0]).items.pants[0];
+      expect(item.colors).toEqual(['Blue', 'Black']);
+      expect(item.variants[0].colors).toEqual(['Blue', 'Black']);
+      expect(item.colorHexMap.Blue).toBe('#123456');
+    });
+
     it('should handle null configs', () => {
       assets.loadCosmeticConfigs.mockReturnValue(null);
 

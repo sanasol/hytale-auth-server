@@ -14,6 +14,7 @@ describe('Avatar Routes', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    assets.applyCosmeticCompatibility.mockImplementation(jest.requireActual('../../../src/services/assets').applyCosmeticCompatibility);
     mockRes = {
       writeHead: jest.fn(),
       setHeader: jest.fn(),
@@ -31,6 +32,7 @@ describe('Avatar Routes', () => {
     assets.loadGradientSets.mockReturnValue([]);
     assets.loadEyeColors.mockReturnValue({});
     assets.resolveSkinPart.mockReturnValue(null);
+    assets.applyEyeColor.mockImplementation(jest.requireActual('../../../src/services/assets').applyEyeColor);
     fs.existsSync.mockReturnValue(false);
     fs.readFileSync.mockReturnValue(Buffer.from(''));
     fs.writeFileSync.mockReturnValue();
@@ -90,6 +92,21 @@ describe('Avatar Routes', () => {
       expect(response.raw).toBeDefined();
     });
 
+    it('exposes the configured body and hides accessory-covered categories without losing raw skin', async () => {
+      const raw = { bodyCharacteristic: 'Goblin.22', ears: 'Elf.22', headAccessory: 'Hoodie.Black' };
+      storage.getUserData.mockResolvedValue({ skin: raw });
+      assets.resolveSkinPart.mockImplementation((category) => {
+        if (category === 'bodyCharacteristic') return { id: 'Goblin', greyscaleTexture: 'goblin.png' };
+        if (category === 'headAccessory') return { id: 'Hoodie', hidesSkinProperties: ['Ears'] };
+        return { id: 'Elf' };
+      });
+      await avatarRoutes.handleAvatarModel(mockReq, mockRes, 'test-uuid');
+      const result = JSON.parse(mockRes.end.mock.calls[0][0]);
+      expect(result.body.greyscaleTexture).toBe('goblin.png');
+      expect(result.parts.ears).toBeUndefined();
+      expect(result.raw.ears).toBe('Elf.22');
+    });
+
     it('should return default body type and skin tone when not set', async () => {
       storage.getUserData.mockResolvedValue({
         skin: {}  // Empty skin object
@@ -130,7 +147,7 @@ describe('Avatar Routes', () => {
       expect(response.skinTone).toBe('05');
     });
 
-    it('should allow explicit skinTone override', async () => {
+    it('should prefer the current bodyCharacteristic tone over legacy skinTone', async () => {
       storage.getUserData.mockResolvedValue({
         skin: {
           bodyCharacteristic: 'Regular.01',
@@ -141,7 +158,7 @@ describe('Avatar Routes', () => {
       await avatarRoutes.handleAvatarModel(mockReq, mockRes, 'test-uuid');
 
       const response = JSON.parse(mockRes.end.mock.calls[0][0]);
-      expect(response.skinTone).toBe('15');
+      expect(response.skinTone).toBe('01');
     });
   });
 

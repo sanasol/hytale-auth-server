@@ -2,6 +2,7 @@
  * Admin Pages - Separate full pages for each section
  */
 const { sendHtml } = require('../utils/response');
+const { headRenderVersion } = require('./avatar');
 
 // Shared HTML components
 const sharedStyles = `
@@ -447,7 +448,7 @@ function handleServersPage(req, res) {
               const tooltip = tt.length ? tt.join('\\n') : '';
               return \`
               <div class="player-tag" \${tooltip ? 'data-tooltip="' + tooltip + '"' : ''}>
-                <iframe class="player-avatar" src="/avatar/\${p.uuid}/head?bg=black" loading="lazy"></iframe>
+                <a href="/customizer/\${p.uuid}" target="_blank" title="Edit character"><iframe class="player-avatar" style="pointer-events:none" src="/avatar/\${p.uuid}/head?bg=black&v=${headRenderVersion()}" loading="lazy"></iframe></a>
                 <div class="player-info">
                   <span class="player-name">\${p.username}</span>
                   <span class="player-uuid">\${p.uuid.substring(0,8)}...</span>
@@ -649,7 +650,7 @@ function handlePlayersPage(req, res) {
         const serverBadge = p.server ? '<span class="status-badge server">' + p.server.substring(0,8) + '</span>' : '';
         return \`
         <div class="player-tag" style="padding:12px" \${tooltip ? 'data-tooltip="' + tooltip + '"' : ''}>
-          <iframe class="player-avatar" style="width:50px;height:50px" src="/avatar/\${p.uuid}/head?bg=black" loading="lazy"></iframe>
+          <a href="/customizer/\${p.uuid}" target="_blank" title="Edit character"><iframe class="player-avatar" style="width:50px;height:50px;pointer-events:none" src="/avatar/\${p.uuid}/head?bg=black&v=${headRenderVersion()}" loading="lazy"></iframe></a>
           <div class="player-info">
             <span class="player-name" style="font-size:1em">\${p.username}</span>
             <span class="player-uuid">\${p.uuid}</span>

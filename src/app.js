@@ -305,6 +305,7 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
   // Account-data skin endpoint (used by customizer) - extracts UUID from path
   if (urlPath.startsWith('/account-data/skin/')) {
     const skinUuid = urlPath.replace('/account-data/skin/', '');
+    if (!await routes.avatar.authorizeSkinEditor(req, res, skinUuid)) return;
     await routes.account.handleSkin(req, res, body, skinUuid, name, routes.avatar.invalidateHeadCache);
     return;
   }

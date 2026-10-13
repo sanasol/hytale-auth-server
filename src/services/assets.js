@@ -52,6 +52,7 @@ const COSMETIC_CONFIG_FILES = {
   'Ears.json': 'ears',
   'Underwear.json': 'underwear',
   'BodyCharacteristics.json': 'bodyCharacteristic',
+  'SkinFeatures.json': 'skinFeature',
 };
 
 /**
@@ -266,64 +267,61 @@ function resolveSkinPart(category, partValue, configs, gradientSets) {
     }
   }
 
+  // Renamed 0.7 cosmetics retain old identifiers as FallbackPartIds.
+  // Resolve those aliases for saved skins without rewriting the user's raw data.
+  if (!partConfig) {
+    const alias = Object.values(configs[category]).find(item =>
+      item.FallbackPartIds?.some(id => id.toLowerCase() === rawPartId.toLowerCase()));
+    if (alias) {
+      partConfig = alias;
+      partId = alias.Id;
+    }
+  }
+
   if (!partConfig) {
     console.log(`[resolveSkinPart] ${category}: partConfig not found for "${rawPartId}"`);
     return null;
   }
 
+  // Variant definitions override the item while retaining shared metadata.
+  const variantKey = partConfig.Variants
+    ? (variantId && partConfig.Variants[variantId] ? variantId : Object.keys(partConfig.Variants)[0])
+    : null;
+  const effective = variantKey ? { ...partConfig, ...partConfig.Variants[variantKey] } : partConfig;
   const result = {
     id: partId,
-    colorId: colorId,
-    name: partConfig.Name
+    colorId,
+    name: partConfig.Name,
+    model: effective.Model,
+    variantId: variantKey,
+    hidesSkinProperties: effective.HidesSkinProperties || [],
+    headAccessoryType: effective.HeadAccessoryType,
+    hairType: effective.HairType,
+    requiresGenericHaircut: effective.RequiresGenericHaircut,
+    priority: effective.Priority
   };
 
-  // Handle items with Variants (like capes)
-  if (partConfig.Variants) {
-    // Use specified variant, or default to Neck_Piece (with shoulder/collar pieces)
-    // User can select NoNeck variant to hide shoulder pieces
-    const variant = variantId ? partConfig.Variants[variantId] : partConfig.Variants['Neck_Piece'] || Object.values(partConfig.Variants)[0];
-    console.log(`[resolveSkinPart] ${category}: variant found:`, variant ? 'yes' : 'no', 'has Textures:', !!variant?.Textures, 'has GreyscaleTexture:', !!variant?.GreyscaleTexture);
-    if (variant) {
-      result.model = variant.Model;
-      result.greyscaleTexture = variant.GreyscaleTexture;
-
-      if (variant.Textures && colorId && variant.Textures[colorId]) {
-        result.texture = variant.Textures[colorId].Texture;
-        result.baseColor = variant.Textures[colorId].BaseColor;
-        console.log(`[resolveSkinPart] ${category}: using Textures[${colorId}] -> texture="${result.texture}"`);
-      } else if (variant.GreyscaleTexture && partConfig.GradientSet) {
-        result.gradientSet = partConfig.GradientSet;
-        if (colorId && gradientSets) {
-          const gradientSetConfig = gradientSets.find(g => g.Id === partConfig.GradientSet);
-          if (gradientSetConfig && gradientSetConfig.Gradients && gradientSetConfig.Gradients[colorId]) {
-            result.gradientTexture = gradientSetConfig.Gradients[colorId].Texture;
-            result.baseColor = gradientSetConfig.Gradients[colorId].BaseColor;
-          }
-        }
-      }
-    }
-    return result;
-  }
-
-  // Standard item without variants
-  result.model = partConfig.Model;
-
-  if (partConfig.Textures && colorId && partConfig.Textures[colorId]) {
-    result.texture = partConfig.Textures[colorId].Texture;
-    result.baseColor = partConfig.Textures[colorId].BaseColor;
-  } else if (partConfig.GreyscaleTexture) {
-    result.greyscaleTexture = partConfig.GreyscaleTexture;
-    result.gradientSet = partConfig.GradientSet;
-
-    if (colorId && partConfig.GradientSet && gradientSets) {
-      const gradientSetConfig = gradientSets.find(g => g.Id === partConfig.GradientSet);
-      if (gradientSetConfig && gradientSetConfig.Gradients && gradientSetConfig.Gradients[colorId]) {
-        result.gradientTexture = gradientSetConfig.Gradients[colorId].Texture;
-        result.baseColor = gradientSetConfig.Gradients[colorId].BaseColor;
-      }
+  // A missing color must still select an actual texture/gradient, rather than
+  // render an untextured solid polygon. Empty texture entries are placeholders.
+  const textures = effective.Textures || {};
+  const selectedTexture = colorId && textures[colorId]?.Texture ? colorId : null;
+  const defaultTexture = Object.keys(textures).find(key => textures[key]?.Texture);
+  if (selectedTexture || (!effective.GreyscaleTexture && defaultTexture)) {
+    const textureKey = selectedTexture || defaultTexture;
+    result.texture = textures[textureKey].Texture;
+    result.baseColor = textures[textureKey].BaseColor;
+    result.colorId = textureKey;
+  } else if (effective.GreyscaleTexture) {
+    result.greyscaleTexture = effective.GreyscaleTexture;
+    result.gradientSet = effective.GradientSet;
+    const gradients = gradientSets?.find(g => g.Id === effective.GradientSet)?.Gradients || {};
+    const gradientKey = colorId && gradients[colorId] ? colorId : Object.keys(gradients)[0];
+    if (gradientKey) {
+      result.gradientTexture = gradients[gradientKey].Texture;
+      result.baseColor = gradients[gradientKey].BaseColor;
+      result.colorId = gradientKey;
     }
   }
-
   return result;
 }
 
@@ -367,6 +365,33 @@ function preloadCosmetics() {
   }
 }
 
+// Hidden cosmetics stay in raw skin so removing a covering accessory restores them.
+function applyCosmeticCompatibility(parts, configs, gradientSets) {
+  const hat = parts.headAccessory;
+  const hair = parts.haircut;
+  if (hat?.headAccessoryType === 'HalfCovering' && hair?.requiresGenericHaircut && hair.hairType) {
+    const fallback = resolveSkinPart('haircut', `Generic${hair.hairType}.${hair.colorId || ''}`, configs, gradientSets);
+    if (fallback) parts.haircut = fallback;
+  }
+  const categoryKeys = new Map(Object.keys(parts).map(key => [key.toLowerCase(), key]));
+  const hidden = new Set();
+  for (const part of Object.values(parts)) {
+    for (const property of part.hidesSkinProperties || []) {
+      const key = categoryKeys.get(property.toLowerCase());
+      if (key && key !== 'bodyCharacteristic') hidden.add(key);
+    }
+  }
+  for (const key of hidden) delete parts[key];
+}
+
+function applyEyeColor(parts, eyeColor, eyeColors, gradientSets) {
+  if (!eyeColor || !parts.eyes || !eyeColors?.[eyeColor]) return;
+  parts.eyes.baseColor = eyeColors[eyeColor].BaseColor;
+  const gradient = gradientSets?.find(set => set.Id === parts.eyes.gradientSet)?.Gradients?.[eyeColor];
+  if (gradient) parts.eyes.gradientTexture = gradient.Texture;
+  parts.eyes.colorId = eyeColor;
+}
+
 module.exports = {
   assetsExist,
   loadCosmeticsFromAssets,
@@ -375,6 +400,8 @@ module.exports = {
   loadEyeColors,
   extractAsset,
   resolveSkinPart,
+  applyCosmeticCompatibility,
+  applyEyeColor,
   getFallbackCosmetics,
   preloadCosmetics,
 };

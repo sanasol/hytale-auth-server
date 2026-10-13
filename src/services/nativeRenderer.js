@@ -342,79 +342,7 @@ async function createTintedTexture(greyscalePath, baseColor, gradientPath = null
  * Create eye shadow texture from original eye texture
  * Creates a semi-transparent shadow at the top of eye backgrounds
  */
-async function createEyeShadowTexture(originalTexture) {
-  if (!originalTexture || !originalTexture.userData) return null;
 
-  try {
-    const texW = originalTexture.userData.width;
-    const texH = originalTexture.userData.height;
-
-    // Get the canvas from the original texture
-    const origCanvas = originalTexture.image;
-    if (!origCanvas) return null;
-
-    // Create new canvas for shadow texture
-    const canvas = createCanvas(texW, texH);
-    const ctx = canvas.getContext('2d');
-
-    // Copy original image
-    ctx.drawImage(origCanvas, 0, 0);
-    const imageData = ctx.getImageData(0, 0, texW, texH);
-    const data = imageData.data;
-
-    // Apply eye shadow effect (matching browser logic)
-    for (let y = 0; y < texH; y++) {
-      for (let x = 0; x < texW; x++) {
-        const idx = (y * texW + x) * 4;
-        const a = data[idx + 3];
-
-        if (y < 16 && a > 0) {
-          let localX = -1, localY = -1;
-          // Left eye region (1-14, 1-14)
-          if (x >= 1 && x < 15 && y >= 1 && y < 15) {
-            localX = x - 1;
-            localY = y - 1;
-          // Right eye region (17-30, 1-14)
-          } else if (x >= 17 && x < 31 && y >= 1 && y < 15) {
-            localX = x - 17;
-            localY = y - 1;
-          }
-
-          if (localX >= 0 && localY >= 0) {
-            // Create shadow gradient from top
-            let shadowAlpha = 0;
-            if (localY < 4) {
-              shadowAlpha = (1 - localY / 4) * 0.25;
-            }
-            data[idx] = 0;     // Black
-            data[idx + 1] = 0;
-            data[idx + 2] = 0;
-            data[idx + 3] = Math.round(shadowAlpha * 255 * (a / 255));
-          } else {
-            data[idx + 3] = 0; // Transparent outside eye regions
-          }
-        }
-      }
-    }
-
-    ctx.putImageData(imageData, 0, 0);
-
-    // Create Three.js texture
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.magFilter = THREE.NearestFilter;
-    texture.minFilter = THREE.NearestFilter;
-    texture.wrapS = THREE.ClampToEdgeWrapping;
-    texture.wrapT = THREE.ClampToEdgeWrapping;
-    texture.generateMipmaps = false;
-    texture.userData = { width: texW, height: texH };
-    texture.needsUpdate = true;
-
-    return texture;
-  } catch (err) {
-    console.error('[NativeRenderer] Error creating eye shadow texture:', err.message);
-    return null;
-  }
-}
 
 /**
  * Parse color to RGB object
@@ -484,6 +412,17 @@ function createBoxMesh(shape, color, texture = null, nodeName = '') {
   const depth = settings.size.z * sz * SCALE;
 
   const geometry = new THREE.BoxGeometry(width, height, depth);
+
+  // An omitted texture face is absent geometry (e.g. Player Head front).
+  // Leaving Three.js default UVs here samples the entire body atlas.
+  if (shape.textureLayout && Object.keys(shape.textureLayout).length > 0) {
+    const faces = ['right', 'left', 'top', 'bottom', 'front', 'back'];
+    const indices = Array.from(geometry.index.array);
+    geometry.setIndex(faces.flatMap((face, i) =>
+      shape.textureLayout[face] ? indices.slice(i * 6, i * 6 + 6) : []
+    ));
+    geometry.clearGroups();
+  }
 
   // Apply UV mapping if texture layout provided
   if (texture && shape.textureLayout) {
@@ -802,7 +741,7 @@ function createQuadMesh(shape, color, texture = null, nodeName = '') {
     material = new THREE.MeshLambertMaterial({
       map: texture,
       color: 0xffffff,
-      alphaTest: isFacialOverlay ? 0.05 : 0.1,
+      alphaTest: 1 / 255,
       transparent: true,
       side: THREE.DoubleSide,
       depthWrite: !isFacialOverlay,
@@ -858,7 +797,7 @@ function applyTransform(group, node) {
 /**
  * Render a player node recursively
  */
-function renderPlayerNode(node, parent, skinColor, bodyTexture, hiddenParts = new Set()) {
+function renderPlayerNode(node, parent, skinColor, bodyTexture, hiddenParts = new Set(), polygonOffsetParts = new Set()) {
   const nodeName = node.name || node.id || '';
 
   // Skip hidden body parts
@@ -869,7 +808,7 @@ function renderPlayerNode(node, parent, skinColor, bodyTexture, hiddenParts = ne
     parent.add(group);
     if (node.children) {
       for (const child of node.children) {
-        renderPlayerNode(child, group, skinColor, bodyTexture, hiddenParts);
+        renderPlayerNode(child, group, skinColor, bodyTexture, hiddenParts, polygonOffsetParts);
       }
     }
     return;
@@ -886,14 +825,21 @@ function renderPlayerNode(node, parent, skinColor, bodyTexture, hiddenParts = ne
     } else if (node.shape.type === 'quad') {
       mesh = createQuadMesh(node.shape, skinColor, bodyTexture, nodeName);
     }
-    if (mesh) group.add(mesh);
+    if (mesh) {
+      if (polygonOffsetParts.has(nodeName)) {
+        mesh.material.polygonOffset = true;
+        mesh.material.polygonOffsetFactor = 1;
+        mesh.material.polygonOffsetUnits = 1;
+      }
+      group.add(mesh);
+    }
   }
 
   parent.add(group);
 
   if (node.children) {
     for (const child of node.children) {
-      renderPlayerNode(child, group, skinColor, bodyTexture, hiddenParts);
+      renderPlayerNode(child, group, skinColor, bodyTexture, hiddenParts, polygonOffsetParts);
     }
   }
 }
@@ -952,15 +898,15 @@ function applyOITSorting(scene, camera) {
  * Render a cosmetic node recursively
  * FIX P0: Properly apply zOffset as local position for attached bones
  * FIX P0: Set explicit renderOrder for facial cosmetics layering
- * FIX: Added eyeShadowTexture for proper eye rendering
+ * Uses original model textures without synthesized eye backgrounds.
  */
-function renderCosmeticNode(node, parent, character, color, texture = null, partType = '', zOffset = 0, eyeShadowTexture = null) {
+function renderCosmeticNode(node, parent, character, color, texture = null, partType = '', zOffset = 0) {
   const nodeName = node.name || node.id || '';
 
   let targetParent = parent;
   let attachedToPlayerBone = false;
 
-  if (nodeName) {
+  if (nodeName && node.shape?.settings?.isPiece === true) {
     const matchingBone = character.getObjectByName(nodeName);
     if (matchingBone) {
       targetParent = matchingBone;
@@ -972,15 +918,8 @@ function renderCosmeticNode(node, parent, character, color, texture = null, part
   group.name = nodeName + '_cosmetic';
 
   if (attachedToPlayerBone) {
-    // FIX P0: Apply orientation from cosmetic node
-    if (node.orientation) {
-      group.quaternion.set(
-        node.orientation.x ?? 0,
-        node.orientation.y ?? 0,
-        node.orientation.z ?? 0,
-        node.orientation.w ?? 1
-      );
-    }
+    // A piece root uses the existing bone transform, not its template pose.
+    group.quaternion.identity();
     // FIX P0: Apply zOffset as local Z position (bone provides XY position)
     // This ensures facial cosmetics layer correctly even when attached to bones
     if (zOffset) {
@@ -1005,20 +944,7 @@ function renderCosmeticNode(node, parent, character, color, texture = null, part
     if (node.shape.type === 'box') {
       mesh = createBoxMesh(node.shape, color, texture, nodeName);
     } else if (node.shape.type === 'quad') {
-      // FIX: Use eye shadow texture for eye background (matching browser)
-      if (partType === 'eyes' && nodeName.includes('Background') && eyeShadowTexture) {
-        mesh = createQuadMesh(node.shape, color, eyeShadowTexture, nodeName);
-        // Set proper OIT material properties for eye background
-        if (mesh) {
-          mesh.renderOrder = 100;
-          mesh.material.transparent = true;
-          mesh.material.depthWrite = true;
-          mesh.material.alphaTest = 0;
-          mesh.userData.oitTransparent = true;
-        }
-      } else {
-        mesh = createQuadMesh(node.shape, color, texture, nodeName);
-      }
+      mesh = createQuadMesh(node.shape, color, texture, nodeName);
     }
 
     // FIX P0: Set explicit renderOrder for ALL facial cosmetics based on partType
@@ -1033,7 +959,7 @@ function renderCosmeticNode(node, parent, character, color, texture = null, part
       } else if (partType === 'eyes') {
         // FIX P1: OIT layer ordering for eye components
         if (nodeName.includes('Background')) {
-          // Already handled above with eyeShadowTexture
+          // Preserve the model texture, including opaque eye whites.
           mesh.renderOrder = 105;
           mesh.material.depthWrite = false;  // Background doesn't write depth
           mesh.userData.oitTransparent = true;
@@ -1061,11 +987,11 @@ function renderCosmeticNode(node, parent, character, color, texture = null, part
     for (const child of node.children) {
       const childName = child.name || child.id || '';
       const childBone = character.getObjectByName(childName);
-      if (childBone) {
-        renderCosmeticNode(child, childBone, character, color, texture, partType, zOffset, eyeShadowTexture);
+      if (childBone && child.shape?.settings?.isPiece === true) {
+        renderCosmeticNode(child, childBone, character, color, texture, partType, zOffset);
       } else {
         // Don't apply zOffset again for nested children (already applied at top level)
-        renderCosmeticNode(child, group, character, color, texture, partType, 0, eyeShadowTexture);
+        renderCosmeticNode(child, group, character, color, texture, partType, 0);
       }
     }
   }
@@ -1081,12 +1007,12 @@ async function buildCharacter(modelData, character) {
 
   // Determine hidden parts based on equipped cosmetics
   const hiddenParts = new Set();
+  const polygonOffsetParts = new Set();
   if (modelData.parts?.pants || modelData.parts?.overpants) {
-    hiddenParts.add('Pelvis');
-    hiddenParts.add('L-Thigh');
-    hiddenParts.add('R-Thigh');
-    hiddenParts.add('L-Calf');
-    hiddenParts.add('R-Calf');
+    // Shorts leave skin exposed; retain the underlying legs and offset their depth.
+    for (const name of ['Pelvis', 'L-Thigh', 'R-Thigh', 'L-Calf', 'R-Calf']) {
+      polygonOffsetParts.add(name);
+    }
   }
   if (modelData.parts?.overtop || modelData.parts?.undertop) {
     hiddenParts.add('Belly');
@@ -1101,21 +1027,23 @@ async function buildCharacter(modelData, character) {
 
   // Load player base model
   try {
-    const playerModelBuffer = assets.extractAsset('Common/Characters/Player.blockymodel');
+    const bodyPart = modelData.body || modelData.parts?.bodyCharacteristic;
+    const bodyModelPath = bodyPart?.model || 'Characters/Player.blockymodel';
+    const playerModelBuffer = assets.extractAsset(bodyModelPath.startsWith('Common/') ? bodyModelPath : 'Common/' + bodyModelPath);
     if (playerModelBuffer) {
       const playerModel = JSON.parse(playerModelBuffer.toString());
 
       // Load body texture
-      const bodyTexturePath = modelData.bodyType === 'Muscular'
+      const bodyTexturePath = bodyPart?.greyscaleTexture || (modelData.bodyType === 'Muscular'
         ? 'Characters/Player_Textures/Player_Muscular_Greyscale.png'
-        : 'Characters/Player_Textures/Player_Greyscale.png';
+        : 'Characters/Player_Textures/Player_Greyscale.png');
 
       const bodyTexture = await createTintedTexture(bodyTexturePath, skinColorHex, skinToneGradient);
 
       // Render player nodes
       if (playerModel.nodes) {
         for (const node of playerModel.nodes) {
-          renderPlayerNode(node, character, skinColor, bodyTexture, hiddenParts);
+          renderPlayerNode(node, character, skinColor, bodyTexture, hiddenParts, polygonOffsetParts);
         }
       }
     }
@@ -1124,26 +1052,27 @@ async function buildCharacter(modelData, character) {
   }
 
   // Cosmetics render order with zOffset (matching browser version)
-  // Order matters: face cosmetics render in this order, with higher zOffset = closer to camera
+  // Surface separation is authored in the models; do not move cosmetic planes.
   const cosmeticOrder = [
+    { key: 'skinFeature', zOffset: 0 },
     { key: 'underwear', zOffset: 0 },
-    { key: 'pants', zOffset: 0.001 },
-    { key: 'overpants', zOffset: 0.002 },
-    { key: 'shoes', zOffset: 0.001 },
-    { key: 'undertop', zOffset: 0.001 },
-    { key: 'overtop', zOffset: 0.002 },
-    { key: 'gloves', zOffset: 0.001 },
+    { key: 'pants', zOffset: 0 },
+    { key: 'overpants', zOffset: 0 },
+    { key: 'shoes', zOffset: 0 },
+    { key: 'undertop', zOffset: 0 },
+    { key: 'overtop', zOffset: 0 },
+    { key: 'gloves', zOffset: 0 },
     { key: 'ears', zOffset: 0 },
-    { key: 'face', zOffset: 0.01 },
-    { key: 'facialHair', zOffset: 0.02 },  // AFTER face, higher zOffset so beard renders in front
-    { key: 'mouth', zOffset: 0.025 },
-    { key: 'eyes', zOffset: 0.03 },
-    { key: 'eyebrows', zOffset: 0.035 },
-    { key: 'haircut', zOffset: 0.005 },
-    { key: 'headAccessory', zOffset: 0.006 },
-    { key: 'faceAccessory', zOffset: 0.015 },
-    { key: 'earAccessory', zOffset: 0.001 },
-    { key: 'cape', zOffset: -0.001 }
+    { key: 'face', zOffset: 0 },
+    { key: 'facialHair', zOffset: 0 },
+    { key: 'mouth', zOffset: 0 },
+    { key: 'eyes', zOffset: 0 },
+    { key: 'eyebrows', zOffset: 0 },
+    { key: 'haircut', zOffset: 0 },
+    { key: 'headAccessory', zOffset: 0 },
+    { key: 'faceAccessory', zOffset: 0 },
+    { key: 'earAccessory', zOffset: 0 },
+    { key: 'cape', zOffset: 0 }
   ];
 
   for (const { key, zOffset } of cosmeticOrder) {
@@ -1208,12 +1137,11 @@ async function buildCharacter(modelData, character) {
         console.log(`[SSR TEXTURE] ${key}: No texture path provided!`);
       }
 
-      // Create eye shadow texture for eyes (matching browser behavior)
-      let eyeShadowTexture = null;
-      if (key === 'eyes' && texture) {
-        eyeShadowTexture = await createEyeShadowTexture(texture);
-        console.log(`[SSR TEXTURE] ${key}: Eye shadow texture created = ${!!eyeShadowTexture}`);
+      if ((part.texture || part.greyscaleTexture) && !texture) {
+        throw new Error(`Texture unavailable for ${key}`);
       }
+
+      // Create eye shadow texture for eyes (matching browser behavior)
 
       try {
         let modelPath = part.model;
@@ -1227,11 +1155,11 @@ async function buildCharacter(modelData, character) {
                 nodeCount: model.nodes.length,
                 rootNodeNames: model.nodes.map(n => n.name || n.id),
                 hasTexture: !!texture,
-                hasEyeShadow: !!eyeShadowTexture
+                preservesTextureAlpha: true
               });
             }
             for (const node of model.nodes) {
-              renderCosmeticNode(node, character, character, color, texture, key, zOffset, eyeShadowTexture);
+              renderCosmeticNode(node, character, character, color, texture, key, 0);
             }
           }
         } else {
@@ -1278,7 +1206,7 @@ async function renderHead(uuid, bgColor = 'black', width = 200, height = 200) {
     'haircut', 'pants', 'overtop', 'undertop', 'shoes',
     'headAccessory', 'faceAccessory', 'earAccessory',
     'eyebrows', 'eyes', 'face', 'facialHair', 'gloves',
-    'cape', 'overpants', 'mouth', 'ears', 'underwear'
+    'cape', 'overpants', 'mouth', 'ears', 'underwear', 'bodyCharacteristic', 'skinFeature'
   ];
 
   for (const category of categories) {
@@ -1289,6 +1217,9 @@ async function renderHead(uuid, bgColor = 'black', width = 200, height = 200) {
       }
     }
   }
+
+  assets.applyEyeColor(resolvedParts, userSkin.eyeColor, eyeColors, gradientSets);
+  assets.applyCosmeticCompatibility(resolvedParts, configs, gradientSets);
 
   // Parse body characteristic
   let bodyType = 'Regular';
@@ -1457,7 +1388,7 @@ async function renderHeadFromSkinData(skinData, bgColor = 'black', width = 200, 
     'haircut', 'pants', 'overtop', 'undertop', 'shoes',
     'headAccessory', 'faceAccessory', 'earAccessory',
     'eyebrows', 'eyes', 'face', 'facialHair', 'gloves',
-    'cape', 'overpants', 'mouth', 'ears', 'underwear'
+    'cape', 'overpants', 'mouth', 'ears', 'underwear', 'bodyCharacteristic', 'skinFeature'
   ];
 
   for (const category of categories) {
@@ -1468,6 +1399,9 @@ async function renderHeadFromSkinData(skinData, bgColor = 'black', width = 200, 
       }
     }
   }
+
+  assets.applyEyeColor(resolvedParts, skinData.eyeColor, eyeColors, gradientSets);
+  assets.applyCosmeticCompatibility(resolvedParts, configs, gradientSets);
 
   // Parse body characteristic
   let bodyType = 'Regular';
@@ -1628,7 +1562,7 @@ async function renderFullBodyFromSkinData(skinData, bgColor = 'black', width = 4
     'haircut', 'pants', 'overtop', 'undertop', 'shoes',
     'headAccessory', 'faceAccessory', 'earAccessory',
     'eyebrows', 'eyes', 'face', 'facialHair', 'gloves',
-    'cape', 'overpants', 'mouth', 'ears', 'underwear'
+    'cape', 'overpants', 'mouth', 'ears', 'underwear', 'bodyCharacteristic', 'skinFeature'
   ];
 
   for (const category of categories) {
@@ -1639,6 +1573,9 @@ async function renderFullBodyFromSkinData(skinData, bgColor = 'black', width = 4
       }
     }
   }
+
+  assets.applyEyeColor(resolvedParts, skinData.eyeColor, eyeColors, gradientSets);
+  assets.applyCosmeticCompatibility(resolvedParts, configs, gradientSets);
 
   // Parse body characteristic
   let bodyType = 'Regular';

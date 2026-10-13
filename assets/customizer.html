@@ -789,6 +789,9 @@
     let currentSubcategory = 'eyes';
     let currentSkin = {};
     let currentColors = {};
+    let canSave = false;
+    let previewRunning = false;
+    let previewPending = false;
     let currentVariants = {};    // category -> variant id (e.g., 'cape' -> 'Neck_Piece')
     let originalSkin = {};
     let originalColors = {};
@@ -816,6 +819,7 @@
     async function init() {
       setupCategories();
       setupControls();
+      await configureSaveAccess();
       await loadCosmeticItems();
 
       // Initialize 3D thumbnail renderer
@@ -825,6 +829,26 @@
       await initViewer();
       selectCategory('head');
       selectSubcategory('eyes');
+    }
+
+    async function configureSaveAccess() {
+      const button = document.getElementById('btn-save');
+      const token = localStorage.getItem('adminToken');
+      try {
+        if (token) {
+          const response = await fetch('/admin/verify', { headers: { 'X-Admin-Token': token } });
+          canSave = response.ok && (await response.json()).valid === true;
+        }
+      } catch (_) { canSave = false; }
+      button.disabled = !canSave;
+      if (!canSave) {
+        button.textContent = 'Sign in to save';
+        const link = document.createElement('a');
+        link.href = '/admin';
+        link.textContent = 'Sign in to admin to save';
+        link.style.color = '#b4bafa';
+        button.after(link);
+      }
     }
 
     function setupCategories() {
@@ -955,7 +979,7 @@
 
       const selectedId = currentSkin[categoryKey];
       const selectedColor = currentColors[categoryKey];
-      const skinTone = currentSkin.skinTone || '01';
+      const skinTone = currentColors.bodyCharacteristic || currentSkin.skinTone || '01';
 
       // Add "None" option
       const noneItem = document.createElement('div');
@@ -1058,7 +1082,8 @@
 
         // Sort colors for consistent ordering
         // Numbers first (skin tones), then alphabetically
-        const sortedColors = [...selectedItem.colors].sort((a, b) => {
+        const variantColors = selectedItem.variants?.find(variant => variant.id === currentVariants[categoryKey])?.colors;
+        const sortedColors = [...(variantColors || selectedItem.colors)].sort((a, b) => {
           const aIsNum = /^\d+$/.test(a);
           const bIsNum = /^\d+$/.test(b);
           if (aIsNum && bIsNum) return parseInt(a) - parseInt(b);
@@ -1134,9 +1159,12 @@
 
     function selectVariant(categoryKey, variantId) {
       currentVariants[categoryKey] = variantId;
+      const item = (cosmeticItems[categoryKey] || []).find(item => item.id === currentSkin[categoryKey]);
+      const colors = item?.variants?.find(variant => variant.id === variantId)?.colors || item?.colors || [];
+      if (colors.length && !colors.includes(currentColors[categoryKey])) currentColors[categoryKey] = colors[0];
 
       // Update UI
-      loadVariantsForCategory(categoryKey);
+      loadColorsForCategory(categoryKey);
 
       // Refresh preview
       scheduleRefresh();
@@ -1144,6 +1172,9 @@
 
     // Map color IDs to hex values using the colorHexMap from the API
     function getColorForId(colorId, categoryKey) {
+      const selectedItem = (cosmeticItems[categoryKey] || []).find(item => item.id === currentSkin[categoryKey]);
+      if (selectedItem?.colorHexMap?.[colorId]) return selectedItem.colorHexMap[colorId];
+
       // First check the API-provided color map (from gradient sets)
       if (colorHexMap[colorId]) {
         return colorHexMap[colorId];
@@ -1335,7 +1366,6 @@
         await viewer.loadAvatar(UUID);
         // Store original skin for discard
         if (viewer.modelData && viewer.modelData.raw) {
-          originalSkin = { ...viewer.modelData.raw };
           currentSkin = { ...viewer.modelData.raw };
           // Parse colors and variants from raw data (format: "ItemId.ColorId.VariantId")
           for (const [key, value] of Object.entries(currentSkin)) {
@@ -1351,6 +1381,8 @@
               }
             }
           }
+          if (currentSkin.eyeColor) currentColors.eyes = currentSkin.eyeColor;
+          originalSkin = { ...currentSkin };
           originalColors = { ...currentColors };
           originalVariants = { ...currentVariants };
         }
@@ -1362,6 +1394,10 @@
     }
 
     async function refreshPreview() {
+      // A model rebuild performs asynchronous texture loads; run one at a time
+      // so a slower previous selection cannot append meshes to the next one.
+      if (previewRunning) { previewPending = true; return; }
+      previewRunning = true;
       console.log('Refreshing preview with skin:', currentSkin, 'colors:', currentColors, 'variants:', currentVariants);
 
       // Show loading
@@ -1387,6 +1423,8 @@
           }
         }
 
+        if (currentColors.eyes) previewSkin.eyeColor = currentColors.eyes;
+
         // Post updated skin to server and get resolved model
         const response = await fetch(`/avatar/${UUID}/preview`, {
           method: 'POST',
@@ -1397,14 +1435,8 @@
         if (response.ok) {
           const data = await response.json();
 
-          // Clear and rebuild the character
-          while (viewer.character.children.length > 0) {
-            viewer.character.remove(viewer.character.children[0]);
-          }
-          viewer.originalTransforms.clear();
-          viewer.hiddenBodyParts.clear();
-          viewer.polygonOffsetParts.clear();
-          viewer.textureCache.clear();
+          // Dispose the previous GPU meshes before the next serialized rebuild.
+          viewer._clearCharacter();
 
           viewer.modelData = data;
           viewer._determineHiddenParts(data);
@@ -1416,7 +1448,13 @@
         console.error('Preview error:', e);
       }
 
-      document.getElementById('loading-overlay').classList.add('hidden');
+      previewRunning = false;
+      if (previewPending) {
+        previewPending = false;
+        refreshPreview();
+      } else {
+        document.getElementById('loading-overlay').classList.add('hidden');
+      }
     }
 
     function setupControls() {
@@ -1522,6 +1560,7 @@
     }
 
     async function saveSkin() {
+      if (!canSave) return;
       // Validate required fields before saving
       const missingFields = REQUIRED_SKIN_FIELDS.filter(field => !currentSkin[field]);
       if (missingFields.length > 0) {
@@ -1546,10 +1585,19 @@
         }
       }
 
+      // The backend merges partial updates; send explicit tombstones for cleared
+      // optional properties so selecting None persists after reopening the editor.
+      for (const category of Object.values(CATEGORIES)) {
+        for (const sub of Object.values(category.subcategories)) {
+          if (!REQUIRED_SKIN_FIELDS.includes(sub.key) && !currentSkin[sub.key]) saveSkinData[sub.key] = null;
+        }
+      }
+      if (currentColors.eyes) saveSkinData.eyeColor = currentColors.eyes;
+
       try {
         const response = await fetch(`/account-data/skin/${UUID}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Admin-Token': localStorage.getItem('adminToken') || '' },
           body: JSON.stringify(saveSkinData)
         });
 

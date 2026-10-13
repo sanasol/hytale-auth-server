@@ -116,8 +116,8 @@ const REGION_BODY_PARTS = {
 
 // Parts to hide when rendering specific cosmetics
 const HIDE_PARTS_FOR_COSMETIC = {
-  pants: ['Pelvis', 'L-Thigh', 'R-Thigh', 'L-Calf', 'R-Calf'],
-  overpants: ['Pelvis', 'L-Thigh', 'R-Thigh', 'L-Calf', 'R-Calf'],
+  pants: [], // Short garments require the base legs underneath.
+  overpants: [],
   underwear: ['Pelvis', 'L-Thigh', 'R-Thigh'],
   shoes: ['L-Foot', 'R-Foot'],
   overtop: ['Belly', 'Chest'],
@@ -443,12 +443,22 @@ class ThumbnailRenderer {
       const mesh = this._createBoxMesh(node.shape, skinColor, nodeName, bodyTexture);
       if (mesh) {
         mesh.visible = shouldShow;
+        if (['Pelvis', 'L-Thigh', 'R-Thigh', 'L-Calf', 'R-Calf'].includes(nodeName)) {
+          mesh.material.polygonOffset = true;
+          mesh.material.polygonOffsetFactor = 1;
+          mesh.material.polygonOffsetUnits = 1;
+        }
         group.add(mesh);
       }
     } else if (node.shape && node.shape.type === 'quad') {
       const mesh = this._createQuadMesh(node.shape, skinColor, nodeName, bodyTexture);
       if (mesh) {
         mesh.visible = shouldShow;
+        if (['Pelvis', 'L-Thigh', 'R-Thigh', 'L-Calf', 'R-Calf'].includes(nodeName)) {
+          mesh.material.polygonOffset = true;
+          mesh.material.polygonOffsetFactor = 1;
+          mesh.material.polygonOffsetUnits = 1;
+        }
         group.add(mesh);
       }
     }
@@ -501,6 +511,10 @@ class ThumbnailRenderer {
       console.log(`[ThumbnailRenderer] Cosmetic texture for ${category}: ${w}x${h}, key=${texture._cacheKey}`);
     }
 
+    if ((part.texture || part.greyscaleTexture) && !texture) {
+      throw new Error(`Texture unavailable for ${category}`);
+    }
+
     // Load model
     let modelPath = part.model;
     if (!modelPath.startsWith('Common/')) modelPath = 'Common/' + modelPath;
@@ -509,66 +523,32 @@ class ThumbnailRenderer {
 
     const model = await this._fetchModel(modelPath);
 
-    // Get zOffset for this category (matching avatar.js values)
-    const zOffsets = {
-      face: 0.01,
-      mouth: 0.015,
-      eyes: 0.02,
-      eyebrows: 0.025,
-      haircut: 0.005,
-      facialHair: 0.004,
-      headAccessory: 0.006,
-      faceAccessory: 0.005,
-      earAccessory: 0.001,
-      ears: 0,
-      pants: 0.001,
-      overpants: 0.002,
-      shoes: 0.001,
-      undertop: 0.001,
-      overtop: 0.002,
-      gloves: 0.001,
-      underwear: 0,
-      cape: -0.001
-    };
-    const zOffset = zOffsets[category] || 0;
+    // Model-authored offsets define the surface separation.
+    const zOffset = 0;
 
     if (model) {
       if (DEBUG_THUMBNAILS) console.log(`[ThumbnailRenderer] Cosmetic model loaded, nodes: ${model.nodes?.length}`);
 
-      // Create eye shadow texture if rendering eyes (matching avatar.js)
-      let shadowTexture = null;
-      if (category === 'eyes' && texture) {
-        shadowTexture = await this._createEyeShadowTexture(texture);
-      }
-
-      await this._renderCosmeticModel(model.nodes, this.character, color, category, texture, zOffset, shadowTexture);
-
-      if (DEBUG_THUMBNAILS) {
-        let cosmeticMeshes = 0;
-        this.character.traverse((obj) => {
-          if (obj.isMesh && obj.name.includes('_cosmetic')) cosmeticMeshes++;
-        });
-        console.log(`[ThumbnailRenderer] Added ${cosmeticMeshes} cosmetic meshes`);
-      }
+      await this._renderCosmeticModel(model.nodes, this.character, color, category, texture, zOffset);
     } else {
       if (DEBUG_THUMBNAILS) console.error(`[ThumbnailRenderer] Failed to load cosmetic model: ${modelPath}`);
     }
   }
 
-  async _renderCosmeticModel(nodes, parent, color, partType, texture, zOffset, shadowTexture = null) {
+  async _renderCosmeticModel(nodes, parent, color, partType, texture, zOffset) {
     if (!nodes) return;
     for (const node of nodes) {
-      await this._renderCosmeticNode(node, parent, color, partType, texture, zOffset, 0, shadowTexture);
+      await this._renderCosmeticNode(node, parent, color, partType, texture, zOffset, 0);
     }
   }
 
-  async _renderCosmeticNode(node, parent, color, partType, texture, zOffset, depth, shadowTexture = null) {
+  async _renderCosmeticNode(node, parent, color, partType, texture, zOffset, depth) {
     const nodeName = node.name || node.id || '';
 
     // Find matching bone in character
     let targetParent = parent;
     let attachedToPlayerBone = false;
-    if (nodeName) {
+    if (nodeName && node.shape?.settings?.isPiece === true) {
       const matchingBone = this._findBoneByName(this.character, nodeName);
       if (matchingBone) {
         targetParent = matchingBone;
@@ -580,15 +560,8 @@ class ThumbnailRenderer {
     group.name = nodeName + '_cosmetic';
 
     if (attachedToPlayerBone) {
-      // When attaching to a bone, only apply orientation (not position)
-      if (node.orientation) {
-        group.quaternion.set(
-          node.orientation.x ?? 0,
-          node.orientation.y ?? 0,
-          node.orientation.z ?? 0,
-          node.orientation.w ?? 1
-        );
-      }
+      // A piece root uses the existing bone transform, not its template pose.
+      group.quaternion.identity();
     } else {
       this._applyTransform(group, node);
     }
@@ -603,30 +576,7 @@ class ThumbnailRenderer {
       if (node.shape.type === 'box') {
         mesh = this._createBoxMesh(node.shape, color, nodeName, texture);
       } else if (node.shape.type === 'quad') {
-        // Handle eye background with shadow texture (matching avatar.js)
-        if (partType === 'eyes' && nodeName.includes('Background') && shadowTexture) {
-          mesh = this._createQuadMesh(node.shape, color, nodeName, shadowTexture);
-          if (mesh) {
-            mesh.renderOrder = 100;
-            mesh.material.transparent = true;
-            mesh.material.depthWrite = false;
-            mesh.material.alphaTest = 0;
-            mesh.material.blending = THREE.NormalBlending;
-          }
-        } else {
-          mesh = this._createQuadMesh(node.shape, color, nodeName, texture);
-
-          // Set render order for proper layering (matching avatar.js)
-          if (mesh) {
-            if (partType === 'eyes' && nodeName.includes('Eye') && !nodeName.includes('Attachment') && !nodeName.includes('Background')) {
-              mesh.renderOrder = 101;
-            } else if (partType === 'mouth') {
-              mesh.renderOrder = 99;
-            } else if (partType === 'face') {
-              mesh.renderOrder = 98;
-            }
-          }
-        }
+        mesh = this._createQuadMesh(node.shape, color, nodeName, texture);
       }
       if (mesh) group.add(mesh);
     }
@@ -638,12 +588,12 @@ class ThumbnailRenderer {
       for (const child of node.children) {
         const childName = child.name || child.id || '';
         const childBone = this._findBoneByName(this.character, childName);
-        if (childBone) {
+        if (childBone && child.shape?.settings?.isPiece === true) {
           // Child matches a player bone, attach to that bone
-          await this._renderCosmeticNode(child, childBone, color, partType, texture, zOffset, depth + 1, shadowTexture);
+          await this._renderCosmeticNode(child, childBone, color, partType, texture, zOffset, depth + 1);
         } else {
           // No matching bone, attach to current group with no additional zOffset
-          await this._renderCosmeticNode(child, group, color, partType, texture, 0, depth + 1, shadowTexture);
+          await this._renderCosmeticNode(child, group, color, partType, texture, 0, depth + 1);
         }
       }
     }
@@ -911,53 +861,7 @@ class ThumbnailRenderer {
   }
 
   // Create eye shadow texture (matching avatar.js)
-  async _createEyeShadowTexture(originalTexture) {
-    if (!originalTexture || !originalTexture.image) return null;
 
-    const img = originalTexture.image;
-    const canvas = document.createElement('canvas');
-    canvas.width = img.width;
-    canvas.height = img.height;
-    const ctx = canvas.getContext('2d');
-
-    ctx.drawImage(img, 0, 0);
-    const imageData = ctx.getImageData(0, 0, img.width, img.height);
-    const data = imageData.data;
-
-    for (let y = 0; y < img.height; y++) {
-      for (let x = 0; x < img.width; x++) {
-        const idx = (y * img.width + x) * 4;
-        const a = data[idx + 3];
-
-        if (y < 16 && a > 0) {
-          let localX = -1, localY = -1;
-          if (x >= 1 && x < 15 && y >= 1 && y < 15) {
-            localX = x - 1;
-            localY = y - 1;
-          } else if (x >= 17 && x < 31 && y >= 1 && y < 15) {
-            localX = x - 17;
-            localY = y - 1;
-          }
-
-          if (localX >= 0 && localY >= 0) {
-            let shadowAlpha = 0;
-            if (localY < 4) {
-              shadowAlpha = (1 - localY / 4) * 0.25;
-            }
-            data[idx] = 0;
-            data[idx + 1] = 0;
-            data[idx + 2] = 0;
-            data[idx + 3] = Math.round(shadowAlpha * 255 * (a / 255));
-          } else {
-            data[idx + 3] = 0;
-          }
-        }
-      }
-    }
-
-    ctx.putImageData(imageData, 0, 0);
-    return this._createCanvasTexture(canvas);
-  }
 
   _parseColor(color) {
     if (typeof color === 'number') {
@@ -1030,6 +934,17 @@ class ThumbnailRenderer {
     const d = settings.size.z * sz * THUMB_SCALE;
 
     const geometry = new THREE.BoxGeometry(w, h, d);
+
+    // An omitted texture face is absent geometry (e.g. Player Head front).
+    // Leaving Three.js default UVs here samples the entire body atlas.
+    if (shape.textureLayout && Object.keys(shape.textureLayout).length > 0) {
+      const faces = ['right', 'left', 'top', 'bottom', 'front', 'back'];
+      const indices = Array.from(geometry.index.array);
+      geometry.setIndex(faces.flatMap((face, i) =>
+        shape.textureLayout[face] ? indices.slice(i * 6, i * 6 + 6) : []
+      ));
+      geometry.clearGroups();
+    }
 
     if (texture && shape.textureLayout) {
       this._applyBoxUVs(geometry, shape, texture, flipX, flipY, flipZ);
@@ -1241,7 +1156,7 @@ class ThumbnailRenderer {
       material = new THREE.MeshLambertMaterial({
         map: texture,
         transparent: true,
-        alphaTest: 0.5,
+        alphaTest: 1 / 255,
         side: THREE.DoubleSide,
         depthWrite: true,
         depthTest: true

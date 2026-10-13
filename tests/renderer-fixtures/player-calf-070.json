@@ -1,0 +1,108 @@
+{
+  "id": "35",
+  "name": "L-Calf",
+  "position": {
+    "x": 0,
+    "y": -10,
+    "z": 2
+  },
+  "orientation": {
+    "x": 0,
+    "y": 0,
+    "z": 0,
+    "w": 1
+  },
+  "shape": {
+    "type": "box",
+    "offset": {
+      "x": 0,
+      "y": -12,
+      "z": -2
+    },
+    "stretch": {
+      "x": -1,
+      "y": 1,
+      "z": 1
+    },
+    "settings": {
+      "isPiece": false,
+      "size": {
+        "x": 10,
+        "y": 24,
+        "z": 12
+      }
+    },
+    "textureLayout": {
+      "back": {
+        "offset": {
+          "x": 190,
+          "y": 97
+        },
+        "mirror": {
+          "x": false,
+          "y": false
+        },
+        "angle": 0
+      },
+      "right": {
+        "offset": {
+          "x": 178,
+          "y": 97
+        },
+        "mirror": {
+          "x": false,
+          "y": false
+        },
+        "angle": 0
+      },
+      "front": {
+        "offset": {
+          "x": 178,
+          "y": 97
+        },
+        "mirror": {
+          "x": true,
+          "y": false
+        },
+        "angle": 0
+      },
+      "left": {
+        "offset": {
+          "x": 156,
+          "y": 97
+        },
+        "mirror": {
+          "x": false,
+          "y": false
+        },
+        "angle": 0
+      },
+      "top": {
+        "offset": {
+          "x": 178,
+          "y": 86
+        },
+        "mirror": {
+          "x": true,
+          "y": false
+        },
+        "angle": 0
+      },
+      "bottom": {
+        "offset": {
+          "x": 221,
+          "y": 27
+        },
+        "mirror": {
+          "x": true,
+          "y": true
+        },
+        "angle": 270
+      }
+    },
+    "unwrapMode": "custom",
+    "visible": true,
+    "doubleSided": false,
+    "shadingMode": "flat"
+  }
+}

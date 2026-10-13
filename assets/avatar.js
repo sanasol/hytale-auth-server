@@ -179,8 +179,11 @@ class HytaleAvatarViewer {
       this.onLoadProgress('Loading animation...');
       this.currentAnimation = await this._loadAnimation(this.currentAnimationPath);
 
-      this.lastFrameTime = performance.now();
-      this._animate();
+      if (!this._animating) {
+        this._animating = true;
+        this.lastFrameTime = performance.now();
+        this._animate();
+      }
 
       this.onLoadComplete(this.modelData);
     } catch (err) {
@@ -195,9 +198,7 @@ class HytaleAvatarViewer {
       this.onLoadProgress('Building character...');
 
       // Clear existing character
-      while (this.character.children.length > 0) {
-        this.character.remove(this.character.children[0]);
-      }
+      this._clearCharacter();
       this.originalTransforms.clear();
       this.hiddenBodyParts.clear();
       this.polygonOffsetParts.clear();
@@ -228,9 +229,7 @@ class HytaleAvatarViewer {
       this.onLoadProgress('Building character from model data...');
 
       // Clear existing character
-      while (this.character.children.length > 0) {
-        this.character.remove(this.character.children[0]);
-      }
+      this._clearCharacter();
       this.originalTransforms.clear();
       this.hiddenBodyParts.clear();
       this.polygonOffsetParts.clear();
@@ -288,8 +287,33 @@ class HytaleAvatarViewer {
     this.character.rotation.y += amount;
   }
 
+  _clearCharacter() {
+    const cachedTextures = new Set(this.textureCache.values());
+    const disposedTextures = new Set();
+    this.character.traverse((object) => {
+      if (!object.isMesh) return;
+      object.geometry?.dispose();
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of materials) {
+        if (material?.map && !cachedTextures.has(material.map) && !disposedTextures.has(material.map)) {
+          material.map.dispose();
+          disposedTextures.add(material.map);
+        }
+        material?.dispose();
+      }
+    });
+    this.character.clear();
+    this.originalTransforms.clear();
+    this.hiddenBodyParts.clear();
+    this.polygonOffsetParts.clear();
+  }
+
   // Cleanup
   destroy() {
+    this._destroyed = true;
+    this._animating = false;
+    if (this._animationFrame !== undefined) cancelAnimationFrame(this._animationFrame);
+    this._clearCharacter();
     window.removeEventListener('resize', this._resizeHandler);
     if (this.oitRenderer) {
       this.oitRenderer.dispose();
@@ -299,6 +323,7 @@ class HytaleAvatarViewer {
       this.renderer.dispose();
       this.container.removeChild(this.renderer.domElement);
     }
+    for (const texture of this.textureCache.values()) texture.dispose();
     this.textureCache.clear();
   }
 
@@ -306,11 +331,10 @@ class HytaleAvatarViewer {
 
   _determineHiddenParts(data) {
     if (data.parts?.pants || data.parts?.overpants) {
-      this.hiddenBodyParts.add('Pelvis');
-      this.hiddenBodyParts.add('L-Thigh');
-      this.hiddenBodyParts.add('R-Thigh');
-      this.hiddenBodyParts.add('L-Calf');
-      this.hiddenBodyParts.add('R-Calf');
+      // Shorts leave skin exposed: clothing never replaces whole leg meshes.
+      for (const name of ['Pelvis', 'L-Thigh', 'R-Thigh', 'L-Calf', 'R-Calf']) {
+        this.polygonOffsetParts.add(name);
+      }
     }
     if (data.parts?.overtop || data.parts?.undertop) {
       this.hiddenBodyParts.add('Belly');
@@ -351,7 +375,8 @@ class HytaleAvatarViewer {
   }
 
   _animate() {
-    requestAnimationFrame(() => this._animate());
+    if (this._destroyed) return;
+    this._animationFrame = requestAnimationFrame(() => this._animate());
 
     const now = performance.now();
     const deltaTime = (now - this.lastFrameTime) / 1000;
@@ -625,53 +650,7 @@ class HytaleAvatarViewer {
     return this._createCanvasTexture(canvas);
   }
 
-  async _createEyeShadowTexture(originalTexture) {
-    if (!originalTexture || !originalTexture.image) return null;
 
-    const img = originalTexture.image;
-    const canvas = document.createElement('canvas');
-    canvas.width = img.width;
-    canvas.height = img.height;
-    const ctx = canvas.getContext('2d');
-
-    ctx.drawImage(img, 0, 0);
-    const imageData = ctx.getImageData(0, 0, img.width, img.height);
-    const data = imageData.data;
-
-    for (let y = 0; y < img.height; y++) {
-      for (let x = 0; x < img.width; x++) {
-        const idx = (y * img.width + x) * 4;
-        const a = data[idx + 3];
-
-        if (y < 16 && a > 0) {
-          let localX = -1, localY = -1;
-          if (x >= 1 && x < 15 && y >= 1 && y < 15) {
-            localX = x - 1;
-            localY = y - 1;
-          } else if (x >= 17 && x < 31 && y >= 1 && y < 15) {
-            localX = x - 17;
-            localY = y - 1;
-          }
-
-          if (localX >= 0 && localY >= 0) {
-            let shadowAlpha = 0;
-            if (localY < 4) {
-              shadowAlpha = (1 - localY / 4) * 0.25;
-            }
-            data[idx] = 0;
-            data[idx + 1] = 0;
-            data[idx + 2] = 0;
-            data[idx + 3] = Math.round(shadowAlpha * 255 * (a / 255));
-          } else {
-            data[idx + 3] = 0;
-          }
-        }
-      }
-    }
-
-    ctx.putImageData(imageData, 0, 0);
-    return this._createCanvasTexture(canvas);
-  }
 
   _parseColor(color) {
     if (typeof color === 'number') {
@@ -706,11 +685,13 @@ class HytaleAvatarViewer {
     // Load base player model
     this.onLoadProgress('Loading player model...');
     try {
-      const playerModel = await this._fetchModel('Common/Characters/Player.blockymodel');
+      const bodyPart = data.body || data.parts?.bodyCharacteristic;
+      const bodyModelPath = bodyPart?.model || 'Characters/Player.blockymodel';
+      const playerModel = await this._fetchModel(bodyModelPath.startsWith('Common/') ? bodyModelPath : 'Common/' + bodyModelPath);
       if (playerModel) {
-        const bodyTexturePath = data.bodyType === 'Muscular'
+        const bodyTexturePath = bodyPart?.greyscaleTexture || (data.bodyType === 'Muscular'
           ? 'Characters/Player_Textures/Player_Muscular_Greyscale.png'
-          : 'Characters/Player_Textures/Player_Greyscale.png';
+          : 'Characters/Player_Textures/Player_Greyscale.png');
 
         const bodyTexture = await this._createTintedTexture(bodyTexturePath, skinColorHex, skinToneGradient);
         await this._renderPlayerModel(playerModel.nodes, this.character, skinColor, bodyTexture);
@@ -722,24 +703,25 @@ class HytaleAvatarViewer {
     // Cosmetics render order - order matters for layering
     // facialHair must come AFTER face with higher zOffset to render in front
     const cosmeticOrder = [
+      { key: 'skinFeature', zOffset: 0 },
       { key: 'underwear', zOffset: 0 },
-      { key: 'pants', zOffset: 0.001 },
-      { key: 'overpants', zOffset: 0.002 },
-      { key: 'shoes', zOffset: 0.001 },
-      { key: 'undertop', zOffset: 0.001 },
-      { key: 'overtop', zOffset: 0.002 },
-      { key: 'gloves', zOffset: 0.001 },
+      { key: 'pants', zOffset: 0 },
+      { key: 'overpants', zOffset: 0 },
+      { key: 'shoes', zOffset: 0 },
+      { key: 'undertop', zOffset: 0 },
+      { key: 'overtop', zOffset: 0 },
+      { key: 'gloves', zOffset: 0 },
       { key: 'ears', zOffset: 0 },
-      { key: 'face', zOffset: 0.01 },
-      { key: 'facialHair', zOffset: 0.02 },  // AFTER face, higher zOffset
-      { key: 'mouth', zOffset: 0.025 },
-      { key: 'eyes', zOffset: 0.03 },
-      { key: 'eyebrows', zOffset: 0.035 },
-      { key: 'haircut', zOffset: 0.005 },
-      { key: 'headAccessory', zOffset: 0.006 },
-      { key: 'faceAccessory', zOffset: 0.015 },
-      { key: 'earAccessory', zOffset: 0.001 },
-      { key: 'cape', zOffset: -0.001 }
+      { key: 'face', zOffset: 0 },
+      { key: 'facialHair', zOffset: 0 },
+      { key: 'mouth', zOffset: 0 },
+      { key: 'eyes', zOffset: 0 },
+      { key: 'eyebrows', zOffset: 0 },
+      { key: 'haircut', zOffset: 0 },
+      { key: 'headAccessory', zOffset: 0 },
+      { key: 'faceAccessory', zOffset: 0 },
+      { key: 'earAccessory', zOffset: 0 },
+      { key: 'cape', zOffset: 0 }
     ];
 
     for (const { key, zOffset } of cosmeticOrder) {
@@ -781,16 +763,17 @@ class HytaleAvatarViewer {
           texture = await this._createTintedTexture(part.greyscaleTexture, baseCol, gradientPath);
         }
 
+        if ((part.texture || part.greyscaleTexture) && !texture) {
+          console.warn(`[COSMETIC] Skipping ${key}: its texture could not be loaded`);
+          continue;
+        }
+
         try {
           let modelPath = part.model;
           if (!modelPath.startsWith('Common/')) modelPath = 'Common/' + modelPath;
           const model = await this._fetchModel(modelPath);
           if (model) {
-            let shadowTexture = null;
-            if (key === 'eyes' && texture) {
-              shadowTexture = await this._createEyeShadowTexture(texture);
-            }
-            await this._renderCosmeticModel(model.nodes, this.character, color, key, texture, zOffset, shadowTexture);
+            await this._renderCosmeticModel(model.nodes, this.character, color, key, texture, 0);
           }
         } catch (e) {
           console.error(`[COSMETIC] ${key} error:`, e);
@@ -850,10 +833,10 @@ class HytaleAvatarViewer {
     }
   }
 
-  async _renderCosmeticModel(nodes, parent, color, partType, texture, zOffset, shadowTexture = null) {
+  async _renderCosmeticModel(nodes, parent, color, partType, texture, zOffset) {
     if (!nodes) return;
     for (const node of nodes) {
-      this._renderCosmeticNode(node, parent, color, partType, texture, zOffset, 0, shadowTexture);
+      this._renderCosmeticNode(node, parent, color, partType, texture, zOffset, 0);
     }
   }
 
@@ -866,12 +849,12 @@ class HytaleAvatarViewer {
     return found;
   }
 
-  _renderCosmeticNode(node, parent, color, partType, texture, zOffset, depth = 0, shadowTexture = null) {
+  _renderCosmeticNode(node, parent, color, partType, texture, zOffset, depth = 0) {
     const nodeName = node.name || node.id || '';
 
     let targetParent = parent;
     let attachedToPlayerBone = false;
-    if (nodeName) {
+    if (nodeName && node.shape?.settings?.isPiece === true) {
       const matchingBone = this._findBoneByName(this.character, nodeName);
       if (matchingBone) {
         targetParent = matchingBone;
@@ -883,19 +866,8 @@ class HytaleAvatarViewer {
     group.name = nodeName + '_cosmetic';
 
     if (attachedToPlayerBone) {
-      // When a cosmetic node matches a player bone by name, it attaches directly
-      // to that bone. The node's position represents where the bone IS in the
-      // template (not an offset to apply), so we only apply the orientation.
-      // The position is ignored because the cosmetic should align with wherever
-      // the player's bone actually is, not where the template expected it.
-      if (node.orientation) {
-        group.quaternion.set(
-          node.orientation.x ?? 0,
-          node.orientation.y ?? 0,
-          node.orientation.z ?? 0,
-          node.orientation.w ?? 1
-        );
-      }
+      // A piece root uses the existing bone transform, not its template pose.
+      group.quaternion.identity();
     } else {
       this._applyTransform(group, node);
     }
@@ -921,27 +893,9 @@ class HytaleAvatarViewer {
       if (node.shape.type === 'box') {
         mesh = this._createBoxMesh(node.shape, color, nodeName, texture);
       } else if (node.shape.type === 'quad') {
-        if (partType === 'eyes' && nodeName.includes('Background') && shadowTexture) {
-          // Eye background with shadow - mark for OIT
-          mesh = this._createQuadMesh(node.shape, color, nodeName, shadowTexture);
-          mesh.renderOrder = 100;
-          mesh.material.transparent = true;
-          mesh.material.depthWrite = true; // Enable for OIT depth peeling
-          mesh.material.alphaTest = 0;
-          mesh.material.blending = THREE.NormalBlending;
-          // Mark for OIT rendering
-          mesh.userData.oitTransparent = true;
-        } else {
-          mesh = this._createQuadMesh(node.shape, color, nodeName, texture);
-
-          if (mesh && partType === 'eyes' && nodeName.includes('Eye') && !nodeName.includes('Attachment') && !nodeName.includes('Background')) {
-            // Eye pupil - mark for OIT
-            mesh.renderOrder = 101;
-            mesh.material.transparent = true;
-            mesh.material.depthWrite = true; // Enable for OIT depth peeling
-            mesh.userData.oitTransparent = true;
-          }
-        }
+        // The shipped model texture contains the eye whites and pupil alpha.
+        // Preserve both; do not synthesize a shadow in place of the whites.
+        mesh = this._createQuadMesh(node.shape, color, nodeName, texture);
 
         if (mesh && partType === 'mouth') {
           mesh.renderOrder = 99;
@@ -958,10 +912,10 @@ class HytaleAvatarViewer {
       for (const child of node.children) {
         const childName = child.name || child.id || '';
         const childBone = this._findBoneByName(this.character, childName);
-        if (childBone) {
-          this._renderCosmeticNode(child, childBone, color, partType, texture, zOffset, depth + 1, shadowTexture);
+        if (childBone && child.shape?.settings?.isPiece === true) {
+          this._renderCosmeticNode(child, childBone, color, partType, texture, zOffset, depth + 1);
         } else {
-          this._renderCosmeticNode(child, group, color, partType, texture, 0, depth + 1, shadowTexture);
+          this._renderCosmeticNode(child, group, color, partType, texture, 0, depth + 1);
         }
       }
     }
@@ -1019,6 +973,17 @@ class HytaleAvatarViewer {
 
     const hasTextureLayout = texture && shape.textureLayout && Object.keys(shape.textureLayout).length > 0;
     const geometry = new THREE.BoxGeometry(width, height, depth);
+
+    // An omitted texture face is absent geometry (e.g. Player Head front).
+    // Leaving Three.js default UVs here samples the entire body atlas.
+    if (shape.textureLayout && Object.keys(shape.textureLayout).length > 0) {
+      const faces = ['right', 'left', 'top', 'bottom', 'front', 'back'];
+      const indices = Array.from(geometry.index.array);
+      geometry.setIndex(faces.flatMap((face, i) =>
+        shape.textureLayout[face] ? indices.slice(i * 6, i * 6 + 6) : []
+      ));
+      geometry.clearGroups();
+    }
 
     if (hasTextureLayout) {
       const texW = texture.image?.width || texture.userData?.width;
@@ -1338,8 +1303,8 @@ class HytaleAvatarViewer {
       material = new THREE.MeshLambertMaterial({
         map: texture,
         wireframe: this.wireframeMode,
-        alphaTest: 0.5,
-        transparent: false,
+        alphaTest: 1 / 255,
+        transparent: true,
         side: THREE.DoubleSide,
         depthWrite: true,
         depthTest: true
