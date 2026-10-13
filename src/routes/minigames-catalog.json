@@ -1,0 +1,112 @@
+[
+  {
+    "available": false,
+    "description": "Hide on a crowded tavern or look for disguised props!\n\nAs a prop, hide in the tavern by disguising yourself as random objects such as beds, tankards and barrels.\nTaunt to charge up your escape ability, a smoke bomb combined with a dash.\nSurvive until the end of the match to win.\n\nAs a hunter, track down the hidden props and eliminate them to turn them into hunters. Find every prop to win the match!",
+    "displayName": "Prop Hunt",
+    "iconUrl": "https://live-content.hytale.com/minigames/7fcda190a2a0b4678b0c735cb0ce5a69db329da91ab60fb69c58339a83cea0ec.png",
+    "id": "prophunt",
+    "maxPlayers": 12,
+    "nameKey": "client.minigames.prophunt.name",
+    "screenshots": [
+      {
+        "url": "https://live-content.hytale.com/minigames/0f646ba7c34339e093be7a5d4b141a41ca11220ccaaee573437f2d98267ea8ff.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/ccbbdb0d7c1df414df5daf32f80d360c77fe00e729c6e0c17aa8f1bf2d71c763.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/0112bf08eeb9ae5466b5225a39fbd80a3ea3be2c64717a97265f476f038749c8.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/a99a9b0b1d9128c7372e08b7aaa1bbe8b666c17efd60522a6238cce830213261.png"
+      }
+    ]
+  },
+  {
+    "available": false,
+    "defaultMode": true,
+    "description": "A playlist of party-style microgames! Accumulate the most stars to win!\n\nParty games available:\n\nColor Party: Step onto the dance floor and stand on the correct block to survive!\nDiving: Leap off a platform as a frog and claim blocks in the pond.\nHigh Ground: Stay inside the circle to earn points while knocking everyone else out.\nLavablocks: Escape the rising lava by breaking blocks and positioning yourself wisely.\nLazers: Fire deadly lasers at your enemies and rack up the most eliminations.\nMemory Floor: Memorize the shapes on the floor and stand on the correct one.\nPlot Painter: Paint blocks next to your color and claim the biggest share of the board.\nRacing: Shoot the right blocks to speed up and cover the most distance.\nStash & Seek: Hide your relics and find everyone else's.\nTile Flip: Claim tiles by running over them and grab power-ups along the way.\nTNT Run: Run and parkour across the map as the blocks fall into the void.\nTNT Tag: Tag other players to pass on the TNT before it explodes.",
+    "displayName": "Shuffle Jam",
+    "groupId": "shufflejam",
+    "iconUrl": "https://live-content.hytale.com/minigames/6cf1ab8cdf4e5ec444b78f5a5108037520fd1d2b4c973e1a0a44f68bd5a6ad7a.png",
+    "id": "shufflejam-8",
+    "maxPlayers": 8,
+    "modeLabel": "8 Players",
+    "nameKey": "client.minigames.shufflejam-8.name",
+    "screenshots": [
+      {
+        "url": "https://live-content.hytale.com/minigames/bd057c6efeefa63bddcaeda29daf0a788412dfbd9273e8b03c13066a4eaee43f.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/76bae3c8d92152ad0e4243e0733a78334ec8b668ddb1f882d43d046fc69730ec.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/1faa213913165892bd6e3daa88a7731fe7c7c123eacf1aac681e1b3e6715283f.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/d6972f0c61d3443085e24a6243e6a0f9cf1a7397c02247f4079b7c6d56ee289f.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/1ec80b2b472533f130793a3a8fe95c4dcaab2d2f7dc97f4db6f0b1ce8b589400.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/454e3653fd981cfe7ac403100ef1febf3d855c64a071f5f47afad7277bb02394.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/1a5d1ea04392d7c6aed352cca2f9f034e88472254af4cdef972d20771871017b.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/716fd32c8a22cee61461d136ab8d71ab8ea5999ee2af4bff598bd782899a5273.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/558ae941b927c5a775d8ada53172ed9a95067044c1a53b79855ad2c8efd0042f.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/30aeec4f5d03e9dda02377318ae6794332acc464738f5bc17bbda3d6ca910dc2.png"
+      }
+    ]
+  },
+  {
+    "available": false,
+    "description": "A playlist of party-style microgames! Accumulate the most stars to win!\n\nParty games available:\n\nColor Party: Step onto the dance floor and stand on the correct block to survive!\nDiving: Leap off a platform as a frog and claim blocks in the pond.\nHigh Ground: Stay inside the circle to earn points while knocking everyone else out.\nLavablocks: Escape the rising lava by breaking blocks and positioning yourself wisely.\nLazers: Fire deadly lasers at your enemies and rack up the most eliminations.\nMemory Floor: Memorize the shapes on the floor and stand on the correct one.\nPlot Painter: Paint blocks next to your color and claim the biggest share of the board.\nRacing: Shoot the right blocks to speed up and cover the most distance.\nStash & Seek: Hide your relics and find everyone else's.\nTile Flip: Claim tiles by running over them and grab power-ups along the way.\nTNT Run: Run and parkour across the map as the blocks fall into the void.\nTNT Tag: Tag other players to pass on the TNT before it explodes.",
+    "displayName": "Shuffle Jam",
+    "groupId": "shufflejam",
+    "iconUrl": "https://live-content.hytale.com/minigames/6cf1ab8cdf4e5ec444b78f5a5108037520fd1d2b4c973e1a0a44f68bd5a6ad7a.png",
+    "id": "shufflejam",
+    "maxPlayers": 4,
+    "modeLabel": "4 Players",
+    "nameKey": "client.minigames.shufflejam-8.name",
+    "screenshots": [
+      {
+        "url": "https://live-content.hytale.com/minigames/bd057c6efeefa63bddcaeda29daf0a788412dfbd9273e8b03c13066a4eaee43f.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/76bae3c8d92152ad0e4243e0733a78334ec8b668ddb1f882d43d046fc69730ec.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/1faa213913165892bd6e3daa88a7731fe7c7c123eacf1aac681e1b3e6715283f.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/d6972f0c61d3443085e24a6243e6a0f9cf1a7397c02247f4079b7c6d56ee289f.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/1ec80b2b472533f130793a3a8fe95c4dcaab2d2f7dc97f4db6f0b1ce8b589400.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/454e3653fd981cfe7ac403100ef1febf3d855c64a071f5f47afad7277bb02394.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/1a5d1ea04392d7c6aed352cca2f9f034e88472254af4cdef972d20771871017b.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/716fd32c8a22cee61461d136ab8d71ab8ea5999ee2af4bff598bd782899a5273.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/558ae941b927c5a775d8ada53172ed9a95067044c1a53b79855ad2c8efd0042f.png"
+      },
+      {
+        "url": "https://live-content.hytale.com/minigames/30aeec4f5d03e9dda02377318ae6794332acc464738f5bc17bbda3d6ca910dc2.png"
+      }
+    ]
+  }
+]

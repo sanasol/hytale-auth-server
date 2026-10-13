@@ -171,6 +171,9 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     return;
   }
 
+  if (await routes.modBrowser.handleModBrowserRoutes(req, res, url, urlPath)) return;
+  if (await routes.matchmaking.handleMatchmakingRoutes(req, res, url, urlPath)) return;
+
   if (routes.liveConfig.handleLiveConfigRoutes(req, res, url, urlPath)) {
     return;
   }

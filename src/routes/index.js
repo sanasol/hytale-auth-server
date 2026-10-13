@@ -1,5 +1,7 @@
 module.exports = {
   health: require('./health'),
+  modBrowser: require('./modBrowser'),
+  matchmaking: require('./matchmaking'),
   session: require('./session'),
   account: require('./account'),
   admin: require('./admin'),
