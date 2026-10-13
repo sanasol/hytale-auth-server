@@ -32,6 +32,8 @@ Game CPU evidence in [avatar-animation-research.md](avatar-animation-research.md
 
 Native textures use raw DataTexture and explicit legacy/linear settings to avoid an unintended extra sRGB conversion. Native and browser use the same portrait camera and light configuration. The local `DepthPeelingRenderer` name is misleading: that class implements ordinary object-distance sorting, not a real multi-layer peeling pass. Most alpha-tested avatar meshes use its ordinary Three render path. Native also uses ordinary Three transparency with depth testing/writing; per-category eye/face ordering hacks were removed.
 
+Transparent PNG output converts premultiplied framebuffer RGB into straight alpha before encoding. A real GL red fixture returned `(128,0,0,128)` on transparent, `(128,0,0,255)` on black and `(255,127,127,255)` on white; the corrected transparent PNG is `(255,0,0,128)`. A real player portrait also contained alpha-1 pixels requiring this conversion. Opaque backgrounds remain unchanged. All twelve sampled transparent and white portraits rendered successfully.
+
 Pixel-exact game correspondence is still unproven. The shipped engine has additional transparency/environment/postprocess branches, track mixing, stretch/UV animation and category visibility paths not fully reconstructed. These limits are separate from the now-proven rigid transforms and attachment behavior.
 
 ## Deployment verification

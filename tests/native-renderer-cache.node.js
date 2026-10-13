@@ -16,7 +16,7 @@ function harness() {
     return {};
   } };
   vm.createContext(context);
-  vm.runInContext(source.replace('let THREE = null;', 'let THREE = globalThis.THREE;').replace('let sharp = null;', 'let sharp = globalThis.sharp;') + '\nmodule.exports.probes={ createDataTexture, createTintedTexture, createBoxMesh, createQuadMesh, renderCosmeticNode, setMaterialState, prepareTransparency, queueRender, acquireRenderer, textureCache, modelCache, materialCache, geometryCache, boundedSet, setRenderer: value=>sharedRenderer=value };', context);
+  vm.runInContext(source.replace('let THREE = null;', 'let THREE = globalThis.THREE;').replace('let sharp = null;', 'let sharp = globalThis.sharp;') + '\nmodule.exports.probes={ unpremultiplyPixels, createDataTexture, createTintedTexture, createBoxMesh, createQuadMesh, renderCosmeticNode, setMaterialState, prepareTransparency, queueRender, acquireRenderer, textureCache, modelCache, materialCache, geometryCache, boundedSet, setRenderer: value=>sharedRenderer=value };', context);
   return { probes: context.module.exports.probes, assetBuffers, bump: () => version++, extracts: () => extracts };
 }
 
@@ -114,4 +114,16 @@ test('native transparency preparation never disables facial depth or resets rend
   assert.equal(hair.material.depthWrite,true);
   assert.equal(eye.renderOrder,17);
   assert.equal(eye.material.userData.nativeParameters.depthWrite,true);
+});
+
+
+test('transparent framebuffer pixels become straight-alpha PNG pixels without dark halos', async () => {
+  const h = harness();
+  const pixels = Uint8Array.from([128, 32, 0, 128, 1, 1, 1, 1, 7, 8, 9, 255, 99, 50, 20, 0]);
+  h.probes.unpremultiplyPixels(pixels);
+  assert.deepEqual([...pixels], [255, 64, 0, 128, 255, 255, 255, 1, 7, 8, 9, 255, 0, 0, 0, 0]);
+  const png = await sharp(Buffer.from(pixels), { raw: { width: 4, height: 1, channels: 4 } }).png().toBuffer();
+  const decoded = await sharp(png).raw().toBuffer();
+  assert.deepEqual([...decoded], [...pixels]);
+  assert.equal(Math.round(decoded[0] * decoded[3] / 255), 128);
 });

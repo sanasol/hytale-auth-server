@@ -157,6 +157,19 @@ function reuseGeometry(geometry, shape, texture) {
   return boundedSet(geometryCache, key, geometry, 2048, true);
 }
 
+// WebGL blending stores RGB multiplied by alpha on a transparent clear color.
+// PNG uses straight alpha, so restore RGB only for transparent output.
+function unpremultiplyPixels(pixels) {
+  for (let i = 0; i < pixels.length; i += 4) {
+    const alpha = pixels[i + 3];
+    if (alpha === 255) continue;
+    for (let channel = 0; channel < 3; channel++) {
+      pixels[i + channel] = alpha === 0 ? 0 : Math.min(255, Math.round(pixels[i + channel] * 255 / alpha));
+    }
+  }
+  return pixels;
+}
+
 function disposeScene(scene) {
   scene.traverse(object => {
     if (object.isMesh && !object.geometry.userData.nativeCached) object.geometry.dispose();
@@ -1251,6 +1264,8 @@ async function renderHead(uuid, bgColor = 'black', width = 200, height = 200) {
     flipped.set(pixels.subarray(srcRow, srcRow + rowSize), dstRow);
   }
 
+  if (bgColor === 'transparent') unpremultiplyPixels(flipped);
+
   // Convert to PNG
   const pngBuffer = await sharp(Buffer.from(flipped), {
     raw: { width, height, channels: 4 }
@@ -1430,6 +1445,8 @@ async function renderHeadFromSkinData(skinData, bgColor = 'black', width = 200, 
     flipped.set(pixels.subarray(srcRow, srcRow + rowSize), dstRow);
   }
 
+  if (bgColor === 'transparent') unpremultiplyPixels(flipped);
+
   // Convert to PNG
   const pngBuffer = await sharp(Buffer.from(flipped), {
     raw: { width, height, channels: 4 }
@@ -1602,6 +1619,8 @@ async function renderFullBodyFromSkinData(skinData, bgColor = 'black', width = 4
     const dstRow = (height - 1 - y) * rowSize;
     flipped.set(pixels.subarray(srcRow, srcRow + rowSize), dstRow);
   }
+
+  if (bgColor === 'transparent') unpremultiplyPixels(flipped);
 
   // Convert to PNG
   const pngBuffer = await sharp(Buffer.from(flipped), {
