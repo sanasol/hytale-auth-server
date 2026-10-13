@@ -118,12 +118,12 @@ const REGION_BODY_PARTS = {
 const HIDE_PARTS_FOR_COSMETIC = {
   pants: [], // Short garments require the base legs underneath.
   overpants: [],
-  underwear: ['Pelvis', 'L-Thigh', 'R-Thigh'],
-  shoes: ['L-Foot', 'R-Foot'],
-  overtop: ['Belly', 'Chest'],
-  undertop: ['Belly', 'Chest'],
+  underwear: [],
+  shoes: [],
+  overtop: [],
+  undertop: [],
   haircut: ['HeadTop', 'HairBase'],
-  gloves: ['L-Hand', 'R-Hand']
+  gloves: []
 };
 
 class ThumbnailRenderer {
@@ -556,6 +556,13 @@ class ThumbnailRenderer {
       }
     }
 
+    if (attachedToPlayerBone) {
+      for (const child of node.children || []) {
+        await this._renderCosmeticNode(child, targetParent, color, partType, texture, 0, depth + 1);
+      }
+      return;
+    }
+
     const group = new THREE.Group();
     group.name = nodeName + '_cosmetic';
 
@@ -603,7 +610,7 @@ class ThumbnailRenderer {
     if (!name) return null;
     let found = null;
     parent.traverse((obj) => {
-      if (obj.name === name && !found) found = obj;
+      if ((obj.name === name || obj.name === name + '_cosmetic') && !found) found = obj;
     });
     return found;
   }
@@ -953,17 +960,12 @@ class ThumbnailRenderer {
     const needsDoubleSide = shape.doubleSided || flipX || flipY || flipZ;
 
     // Detect body parts (matching avatar.js logic for proper material settings)
-    const isBodyPart = ['Neck', 'Head', 'Chest', 'Belly', 'Pelvis'].includes(nodeName) ||
-                       nodeName.includes('Arm') || nodeName.includes('Leg') ||
-                       nodeName.includes('Hand') || nodeName.includes('Foot') ||
-                       nodeName.includes('Thigh') || nodeName.includes('Calf');
-
     let material;
     if (texture) {
       material = new THREE.MeshLambertMaterial({
         map: texture,
-        alphaTest: isBodyPart ? 0 : 0.1,
-        transparent: !isBodyPart,
+        alphaTest: 1 / 255,
+        transparent: true,
         side: needsDoubleSide ? THREE.DoubleSide : THREE.FrontSide,
         depthWrite: true
       });

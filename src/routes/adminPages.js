@@ -352,6 +352,7 @@ const navHtml = (activePage) => `
     <div class="nav-links">
       <a href="/admin/page/servers" class="nav-link ${activePage === 'servers' ? 'active' : ''}">Servers</a>
       <a href="/admin/page/players" class="nav-link ${activePage === 'players' ? 'active' : ''}">Players</a>
+      <a href="/admin/page/avatars" class="nav-link">Avatar audit</a>
       <a href="/admin/page/logs" class="nav-link ${activePage === 'logs' ? 'active' : ''}">Request Logs</a>
       <a href="/admin/page/log-submissions" class="nav-link ${activePage === 'log-submissions' ? 'active' : ''}">Client Logs</a>
       <a href="/admin/page/metrics" class="nav-link ${activePage === 'metrics' ? 'active' : ''}">Metrics</a>

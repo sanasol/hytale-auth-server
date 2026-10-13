@@ -11,7 +11,7 @@ const texture = new THREE.Texture();
 texture.image = { width: 128, height: 128 };
 const source = fs.readFileSync(require.resolve('../src/services/nativeRenderer'), 'utf8');
 const nativeAssets = {};
-const nativeContext = { require: (name) => name === './assets' ? nativeAssets : ({}), module: { exports: {} }, global: {}, console, setTimeout, clearTimeout, THREE };
+const nativeContext = { require: (name) => name === './assets' ? nativeAssets : ({}), module: { exports: {} }, global: {}, process, console, setTimeout, clearTimeout, THREE };
 vm.createContext(nativeContext);
 vm.runInContext(source.replace('let THREE = null;', 'let THREE = globalThis.THREE;') + '\nmodule.exports.probes = { createBoxMesh, renderCosmeticNode, applyTransform, buildCharacter };', nativeContext);
 const native = nativeContext.module.exports.probes;
@@ -48,14 +48,16 @@ for (const [name, render] of [
     viewer.character = new THREE.Group();
     const bone = new THREE.Group(); bone.name = 'Head'; viewer.character.add(bone);
     const parent = new THREE.Group(); viewer.character.add(parent);
-    const node = { name: 'Head', position: { x: 8, y: 4, z: 0 }, orientation: { x: 0, y: 1, z: 0, w: 0 }, shape: { type: 'none', settings: { isPiece: false } } };
+    const node = { name: 'Head', position: { x: 8, y: 4, z: 0 }, orientation: { x: 0, y: 1, z: 0, w: 0 }, shape: { type: 'none', settings: { isPiece: false } }, children: [{ name: 'AttachedChild', position: { x: 5, y: 0, z: 0 }, shape: { type: 'none' } }] };
     await render(viewer, node, parent);
     assert.equal(bone.children.length, 0);
     assert.equal(parent.children.length, 1);
     node.shape.settings.isPiece = true;
     await render(viewer, node, parent);
     assert.equal(bone.children.length, 1);
-    assert.equal(bone.children[0].quaternion.w, 1, 'bound node inherits reference orientation, not template orientation');
+    assert.equal(bone.children[0].name, 'AttachedChild_cosmetic');
+    assert.equal(bone.children[0].position.x, 0.05, 'piece children attach directly to existing bone');
+    assert.equal(bone.children[0].quaternion.w, 1, 'template root orientation must not affect child');
   });
 }
 
@@ -147,3 +149,15 @@ test('eye whites and pupil use the original texture alpha without a generated sh
   assert.equal(background.material.alphaTest, 1 / 255);
   assert.equal(background.material.transparent, true);
 });
+for (const [name, render] of [
+ ['browser', (v,n,p) => Avatar.prototype._renderCosmeticNode.call(v,n,p,0xffffff,'earAccessory',null,0)],
+ ['thumbnail', (v,n,p) => Thumbnail.prototype._renderCosmeticNode.call(v,n,p,0xffffff,'earAccessory',null,0,0)],
+ ['native', (v,n,p) => native.renderCosmeticNode(n,p,v.character,0xffffff,null,'earAccessory')],
+]) {
+ test(`${name}: pieces may attach to authored nodes introduced by another cosmetic`,async()=>{
+  const v=Object.create(name==='thumbnail'?Thumbnail.prototype:Avatar.prototype);v.character=new THREE.Group();
+  const ear=new THREE.Group();ear.name='R-Ear_cosmetic';v.character.add(ear);
+  await render(v,{name:'R-Ear',shape:{type:'none',settings:{isPiece:true}},children:[{name:'Earring',position:{x:2},shape:{type:'none'}}]},v.character);
+  assert.equal(ear.children.length,1);assert.equal(ear.children[0].name,'Earring_cosmetic');assert.equal(ear.children[0].position.x,.02);
+ });
+}

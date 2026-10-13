@@ -4,6 +4,7 @@ const fs=require('fs'),os=require('os'),path=require('path');
 const {Readable}=require('stream');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'avatar-cache-test-'));
 process.env.DATA_DIR=temp;
+process.env.AVATAR_SERVER_PORTRAITS='0';
 const storageFile=require.resolve('../src/services/storage');
 let skin={bodyCharacteristic:'Default.01',eyes:'Medium_Eyes.Blue'};
 require.cache[storageFile]={id:storageFile,filename:storageFile,loaded:true,exports:{getUserData:async()=>({skin}),verifyAdminToken:async t=>t==='valid-admin'}};

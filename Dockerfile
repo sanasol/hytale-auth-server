@@ -49,6 +49,7 @@ COPY assets/avatar.js ./assets/
 COPY assets/customizer.html ./assets/
 COPY assets/thumbnail-renderer.js ./assets/
 COPY assets/depth-peeling.js ./assets/
+COPY assets/avatar-audit.html assets/avatar-audit.js ./assets/
 
 EXPOSE 3000
 

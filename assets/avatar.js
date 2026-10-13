@@ -337,16 +337,16 @@ class HytaleAvatarViewer {
       }
     }
     if (data.parts?.overtop || data.parts?.undertop) {
-      this.hiddenBodyParts.add('Belly');
-      this.hiddenBodyParts.add('Chest');
+      this.polygonOffsetParts.add('Belly');
+      this.polygonOffsetParts.add('Chest');
       this.polygonOffsetParts.add('L-Arm');
       this.polygonOffsetParts.add('R-Arm');
       this.polygonOffsetParts.add('L-Forearm');
       this.polygonOffsetParts.add('R-Forearm');
     }
     if (data.parts?.shoes) {
-      this.hiddenBodyParts.add('L-Foot');
-      this.hiddenBodyParts.add('R-Foot');
+      this.polygonOffsetParts.add('L-Foot');
+      this.polygonOffsetParts.add('R-Foot');
     }
     // Note: 'HeadTop' and 'HairBase' don't exist in Player.blockymodel
     // Haircuts are separate cosmetic models that attach to the Head bone
@@ -365,12 +365,9 @@ class HytaleAvatarViewer {
   }
 
   _resetToOriginalPose() {
-    this.originalTransforms.forEach((transform, nodeName) => {
-      const node = this.character?.getObjectByName(nodeName);
-      if (node) {
-        node.position.copy(transform.position);
-        node.quaternion.copy(transform.quaternion);
-      }
+    this.originalTransforms.forEach((transform, node) => {
+      node.position.copy(transform.position);
+      node.quaternion.copy(transform.quaternion);
     });
   }
 
@@ -406,40 +403,35 @@ class HytaleAvatarViewer {
   _applyAnimation(animation, time) {
     if (!animation || !animation.nodeAnimations || !this.character) return;
 
-    const duration = animation.duration;
-    const loopTime = ((time % duration) + duration) % duration;
-
-    for (const [nodeName, nodeAnim] of Object.entries(animation.nodeAnimations)) {
-      const node = this.character.getObjectByName(nodeName);
-      if (!node) continue;
-
-      if (!this.originalTransforms.has(nodeName)) {
-        this.originalTransforms.set(nodeName, {
-          position: node.position.clone(),
-          quaternion: node.quaternion.clone()
-        });
+    const duration = Math.max(1, animation.duration || 1);
+    const loopTime = animation.holdLastKeyframe ? Math.max(0, Math.min(time, duration)) : ((time % duration) + duration) % duration;
+    this.character.traverse(node => {
+      const nodeName = node.userData.animationName || node.name;
+      const nodeAnim = animation.nodeAnimations[nodeName];
+      if (!nodeAnim) return;
+      if (!this.originalTransforms.has(node)) {
+        this.originalTransforms.set(node, { position: node.position.clone(), quaternion: node.quaternion.clone() });
       }
-      const original = this.originalTransforms.get(nodeName);
-
-      if (nodeAnim.orientation && nodeAnim.orientation.length > 0) {
-        const animQuat = this._interpolateQuaternion(nodeAnim.orientation, loopTime, duration);
-        if (animQuat) {
-          node.quaternion.copy(original.quaternion);
-          node.quaternion.multiply(animQuat);
-        }
+      const original = this.originalTransforms.get(node);
+      node.quaternion.copy(original.quaternion);
+      if (nodeAnim.orientation?.length) {
+        const delta = this._interpolateQuaternion(nodeAnim.orientation, loopTime, duration, animation.holdLastKeyframe);
+        if (delta) node.quaternion.multiply(delta);
       }
-
-      if (nodeAnim.position && nodeAnim.position.length > 0) {
-        const animPos = this._interpolatePosition(nodeAnim.position, loopTime, duration);
-        if (animPos) {
-          node.position.copy(original.position);
-          node.position.add(animPos);
-        }
+      node.position.copy(original.position);
+      // Shipped CPU 0x100839dc0 rotates shape offset after animating the pivot.
+      // Keep children at the inherited center, but rotate that center with the pose.
+      if (node.userData.pivotPosition && node.userData.shapeOffset) {
+        node.position.copy(node.userData.pivotPosition).add(node.userData.shapeOffset.clone().applyQuaternion(node.quaternion));
       }
-    }
+      if (nodeAnim.position?.length) {
+        const delta = this._interpolatePosition(nodeAnim.position, loopTime, duration, animation.holdLastKeyframe);
+        if (delta) node.position.add(delta);
+      }
+    });
   }
 
-  _findKeyframes(keyframes, time, duration) {
+  _findKeyframes(keyframes, time, duration, holdLast = false) {
     if (!keyframes || keyframes.length === 0) return null;
     if (keyframes.length === 1) {
       return { k1: keyframes[0], k2: keyframes[0], t: 0 };
@@ -447,6 +439,8 @@ class HytaleAvatarViewer {
 
     const sorted = [...keyframes].sort((a, b) => a.time - b.time);
 
+    if (holdLast && time <= sorted[0].time) return { k1: sorted[0], k2: sorted[0], t: 0 };
+    if (holdLast && time >= sorted[sorted.length - 1].time) return { k1: sorted[sorted.length - 1], k2: sorted[sorted.length - 1], t: 0 };
     let idx1 = -1;
     for (let i = 0; i < sorted.length; i++) {
       if (sorted[i].time <= time) idx1 = i;
@@ -482,8 +476,15 @@ class HytaleAvatarViewer {
     return { k1, k2, t, smooth: k1.interpolationType === 'smooth' };
   }
 
-  _interpolateQuaternion(keyframes, time, duration) {
-    const kf = this._findKeyframes(keyframes, time, duration);
+  _easeAnimationTime(t) {
+    // Native 0x1004d73a0: rational cubic, weights (2, 1, 2, 1).
+    const u = 1 - t, b0 = u * u * u, b1 = 3 * u * u * t,
+      b2 = 3 * u * t * t, b3 = t * t * t;
+    return (0.05 * b1 + 1.9 * b2 + b3) / (2 * b0 + b1 + 2 * b2 + b3);
+  }
+
+  _interpolateQuaternion(keyframes, time, duration, holdLast = false) {
+    const kf = this._findKeyframes(keyframes, time, duration, holdLast);
     if (!kf) return null;
 
     const { k1, k2, smooth } = kf;
@@ -492,21 +493,26 @@ class HytaleAvatarViewer {
     const q1 = new THREE.Quaternion(k1.delta.x, k1.delta.y, k1.delta.z, k1.delta.w);
     const q2 = new THREE.Quaternion(k2.delta.x, k2.delta.y, k2.delta.z, k2.delta.w);
 
-    if (smooth) t = t * t * (3 - 2 * t);
+    if (smooth) t = this._easeAnimationTime(t);
 
-    const result = new THREE.Quaternion();
-    result.slerpQuaternions(q1, q2, t);
-    return result;
+    // Shipped CPU helper 0x10083ad40: shortest-path normalized linear blend.
+    const sign = q1.dot(q2) < 0 ? -1 : 1;
+    return new THREE.Quaternion(
+      q1.x * (1 - t) + q2.x * t * sign,
+      q1.y * (1 - t) + q2.y * t * sign,
+      q1.z * (1 - t) + q2.z * t * sign,
+      q1.w * (1 - t) + q2.w * t * sign
+    ).normalize();
   }
 
-  _interpolatePosition(keyframes, time, duration) {
-    const kf = this._findKeyframes(keyframes, time, duration);
+  _interpolatePosition(keyframes, time, duration, holdLast = false) {
+    const kf = this._findKeyframes(keyframes, time, duration, holdLast);
     if (!kf) return null;
 
     const { k1, k2, smooth } = kf;
     let t = kf.t;
 
-    if (smooth) t = t * t * (3 - 2 * t);
+    if (smooth) t = this._easeAnimationTime(t);
 
     const v1 = new THREE.Vector3(k1.delta.x, k1.delta.y, k1.delta.z);
     const v2 = new THREE.Vector3(k2.delta.x, k2.delta.y, k2.delta.z);
@@ -844,7 +850,7 @@ class HytaleAvatarViewer {
     if (!name) return null;
     let found = null;
     parent.traverse((obj) => {
-      if (obj.name === name && !found) found = obj;
+      if ((obj.name === name || obj.name === name + '_cosmetic') && !found) found = obj;
     });
     return found;
   }
@@ -860,6 +866,13 @@ class HytaleAvatarViewer {
         targetParent = matchingBone;
         attachedToPlayerBone = true;
       }
+    }
+
+    if (attachedToPlayerBone) {
+      for (const child of node.children || []) {
+        this._renderCosmeticNode(child, targetParent, color, partType, texture, 0, depth + 1);
+      }
+      return;
     }
 
     const group = new THREE.Group();
@@ -931,6 +944,13 @@ class HytaleAvatarViewer {
       );
     }
 
+    group.userData.animationName = node.name || node.id || '';
+    group.userData.pivotPosition = new THREE.Vector3(
+      (node.position?.x || 0) * SCALE, (node.position?.y || 0) * SCALE, (node.position?.z || 0) * SCALE
+    );
+    group.userData.shapeOffset = new THREE.Vector3(
+      (node.shape?.offset?.x || 0) * SCALE, (node.shape?.offset?.y || 0) * SCALE, (node.shape?.offset?.z || 0) * SCALE
+    );
     let posX = (node.position?.x || 0) * SCALE;
     let posY = (node.position?.y || 0) * SCALE;
     let posZ = (node.position?.z || 0) * SCALE;
@@ -1116,15 +1136,11 @@ class HytaleAvatarViewer {
 
     let material;
     if (texture) {
-      const isBodyPart = ['Neck', 'Head', 'Chest', 'Belly', 'Pelvis'].includes(nodeName) ||
-                         nodeName.includes('Arm') || nodeName.includes('Leg') ||
-                         nodeName.includes('Hand') || nodeName.includes('Foot') ||
-                         nodeName.includes('Thigh') || nodeName.includes('Calf');
       material = new THREE.MeshLambertMaterial({
         map: texture,
         wireframe: this.wireframeMode,
-        alphaTest: isBodyPart ? 0 : 0.1,
-        transparent: !isBodyPart,
+        alphaTest: 1 / 255,
+        transparent: true,
         side: needsDoubleSide ? THREE.DoubleSide : THREE.FrontSide,
         depthWrite: true,
         polygonOffset: usePolygonOffset,

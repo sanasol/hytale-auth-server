@@ -400,6 +400,10 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     routes.adminPages.handleServersPage(req, res);
     return;
   }
+  if (urlPath === '/admin/page/avatars') {
+    routes.avatar.handleAvatarAuditPage(req, res);
+    return;
+  }
   if (urlPath === '/admin/page/players') {
     routes.adminPages.handlePlayersPage(req, res);
     return;
@@ -913,10 +917,7 @@ async function startServer() {
   // Pre-load cosmetics
   assets.preloadCosmetics();
 
-  // Initialize native renderer (optional - will log status)
-  const rendererAvailable = nativeRenderer.init();
-  console.log(`Native renderer: ${rendererAvailable ? 'available' : 'not available (install: npm install three gl canvas sharp)'}`);
-
+  // Portraits initialize GL lazily in the shared worker, outside auth request loops.
   // Connect to Redis
   await connectRedis();
   setInterval(() => require('./services/social').expirePresence().catch(e => console.error('Presence expiry:', e.message)), 5000).unref();
@@ -969,6 +970,7 @@ async function startServer() {
  */
 function run() {
   if (cluster.isPrimary && config.workers > 1) {
+    require('./services/portraitRenderer').attachCluster();
     console.log(`Primary ${process.pid} starting ${config.workers} workers...`);
 
     for (let i = 0; i < config.workers; i++) {

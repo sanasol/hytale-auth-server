@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="avatar-render-version" content="{{RENDER_VERSION}}">
+<title>Avatar inspection · Hytale admin</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#171a2c;color:#e9ebf4}*{box-sizing:border-box}body{margin:0;padding:24px}a{color:#acbaff}h1{font-size:25px;margin:14px 0 6px}p{color:#b2b8cb}header{max-width:1200px}.toolbar{display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding:16px;background:#252a40;border-radius:12px;margin:18px 0}.toolbar label{display:flex;gap:8px;align-items:center}button,input,select{font:inherit;background:#343c58;color:inherit;border:1px solid #546181;border-radius:6px;padding:8px}button{cursor:pointer}button:disabled{opacity:.5;cursor:wait}input[type=range]{padding:0;width:150px}input[type=checkbox]{width:18px;height:18px}#uuid{width:335px;max-width:100%}#status{min-height:24px;color:#a6d8cd}#login{padding:16px;background:#4a3240;border-radius:8px}#gallery{overflow:auto}table{border-collapse:separate;border-spacing:0 12px;width:100%;min-width:950px}th{text-align:left;color:#b5bdd4;font-size:13px;padding:8px}td{padding:12px;background:#252a40;vertical-align:top}td:first-child{border-radius:10px 0 0 10px;width:240px}td:last-child{border-radius:0 10px 10px 0}td img{display:block;max-width:100%;border-radius:6px}.checker{background:repeating-conic-gradient(#b9bfca 0% 25%,#f1f2f5 0% 50%) 50%/16px 16px}.name{font-weight:650}.uuid{font-size:11px;color:#a6adc2;overflow-wrap:anywhere;margin:5px 0}details{font-size:12px;margin-top:9px}pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:7px 0;color:#b7c1dc;max-width:280px}.warnings{font-size:12px;color:#ffd195}.caption{font-size:11px;color:#a7b2cc;margin-top:6px}#render-host{position:fixed;left:-1000px;top:0;width:256px;height:256px;pointer-events:none}.empty{padding:25px;background:#252a40;border-radius:10px}footer{color:#9ca7bd;font-size:12px;margin-top:18px}
+</style>
+</head>
+<body>
+<header><a href="/admin/page/players">← Players</a><h1>Avatar inspection</h1><p>Real saved characters, rendered from five angles. Read-only snapshots share one renderer. Use a white or transparent background to check missing surfaces and alpha.</p></header>
+<div id="login" hidden>Sign in to <a href="/admin">admin</a> to load the player list.</div>
+<div class="toolbar">
+<button id="refresh">Load production sample</button>
+<label>Background <select id="background"><option value="dark">Dark</option><option value="white">White</option><option value="transparent">Transparent checkerboard</option></select></label>
+<label><input type="checkbox" id="animate">Animation pose</label>
+<select id="animation" aria-label="Animation"><option value="Default/Idle">Idle</option><option value="Default/Walk">Walk</option><option value="Default/Run">Run</option><option value="Emote/Wave">Wave</option></select>
+<label>Frame <input type="range" id="frame" min="0" max="120" value="0"><output id="frame-value">0</output></label>
+</div>
+<form id="add-form" class="toolbar"><label for="uuid">Player UUID</label><input id="uuid" autocomplete="off" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required><button id="add">Add character</button><span class="caption">Up to 12 characters. Adding another replaces the oldest row.</span></form>
+<div id="status" role="status" aria-live="polite"></div>
+<div id="gallery"><div class="empty">Load a sample of players or enter a UUID.</div></div>
+<div id="render-host" aria-hidden="true"></div>
+<footer>No skin changes, cache uploads, or account writes. Browser view columns are generated here; the server head PNG column provides a separate renderer comparison.</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="/assets/depth-peeling.js"></script>
+<script src="/assets/avatar.js"></script>
+<script src="/assets/avatar-audit.js"></script>
+</body></html>

@@ -4,6 +4,7 @@
  */
 
 const path = require('path');
+const fs = require('fs');
 const config = require('../config');
 const assets = require('./assets');
 const storage = require('./storage');
@@ -21,9 +22,147 @@ if (typeof global.self === 'undefined') {
 let THREE = null;
 let createContext = null;
 let sharp = null;
-let createCanvas = null;
 let rendererAvailable = false;
 let initError = null;
+
+
+// Bounded caches belong to one serialized GL renderer, not to individual players.
+const DEBUG_RENDER = process.env.AVATAR_RENDER_DEBUG === '1';
+const textureCache = new Map();
+const modelCache = new Map();
+const materialCache = new Map();
+const geometryCache = new Map();
+let assetVersion = null;
+let sharedRenderer = null;
+let renderTail = Promise.resolve();
+let queuedRenders = 0;
+let contextsCreated = 0;
+
+function cachedGet(cache, key) {
+  const value = cache.get(key);
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+function boundedSet(cache, key, value, limit, dispose = false) {
+  cache.set(key, value);
+  while (cache.size > limit || (cache === textureCache && [...cache.values()].reduce((bytes, texture) => bytes + (texture.image?.data?.byteLength || 0), 0) > 32 * 1024 * 1024)) {
+    const oldest = cache.keys().next().value;
+    if (dispose) cache.get(oldest)?.dispose();
+    cache.delete(oldest);
+  }
+  return value;
+}
+
+function resetRenderResources() {
+  for (const cache of [materialCache, geometryCache, textureCache]) {
+    for (const value of cache.values()) value.dispose();
+    cache.clear();
+  }
+  modelCache.clear();
+  if (sharedRenderer) {
+    sharedRenderer.renderer.dispose();
+    sharedRenderer.glContext.getExtension('STACKGL_destroy_context')?.destroy();
+    sharedRenderer = null;
+  }
+}
+
+function checkAssetVersion() {
+  const stat = fs.statSync(config.assetsPath);
+  const version = `${stat.size}:${stat.mtimeMs}`;
+  if (assetVersion !== version) {
+    resetRenderResources();
+    assetVersion = version;
+  }
+}
+
+function queueRender(action) {
+  if (queuedRenders >= 64) return Promise.reject(new Error('Avatar render queue is full'));
+  queuedRenders++;
+  const result = renderTail.then(async () => {
+    try { checkAssetVersion(); return await action(); }
+    catch (error) { resetRenderResources(); throw error; }
+    finally { queuedRenders--; }
+  });
+  renderTail = result.catch(() => {});
+  return result;
+}
+
+function acquireRenderer(width, height) {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > 1024 || height > 1024) {
+    throw new Error('Avatar render dimensions must be between 1 and 1024');
+  }
+  if (!sharedRenderer) sharedRenderer = createRenderer(width, height);
+  else if (sharedRenderer.mockCanvas.width !== width || sharedRenderer.mockCanvas.height !== height) {
+    const resize = sharedRenderer.glContext.getExtension('STACKGL_resize_drawingbuffer');
+    if (!resize) {
+      resetRenderResources();
+      sharedRenderer = createRenderer(width, height);
+    } else {
+      resize.resize(width, height);
+      sharedRenderer.renderer.setSize(width, height);
+    }
+  }
+  return sharedRenderer;
+}
+
+function extractCommonAsset(assetPath) {
+  return assets.extractAsset(assetPath.startsWith('Common/') ? assetPath : `Common/${assetPath}`);
+}
+
+function loadModel(assetPath) {
+  if (modelCache.has(assetPath)) return cachedGet(modelCache, assetPath);
+  const buffer = extractCommonAsset(assetPath);
+  if (!buffer) return null;
+  return boundedSet(modelCache, assetPath, JSON.parse(buffer.toString()), 256);
+}
+
+function createDataTexture(data, width, height) {
+  const texture = new THREE.DataTexture(new Uint8Array(data), width, height, THREE.RGBAFormat);
+  // Browser r128 uses unencoded atlas pixels and LinearEncoding output.
+  // Do not introduce an additional sRGB decode/encode on this path.
+  texture.flipY = true;
+  texture.magFilter = THREE.NearestFilter;
+  texture.minFilter = THREE.NearestFilter;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.generateMipmaps = false;
+  texture.userData = { width, height };
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createCachedMaterial(parameters) {
+  const key = JSON.stringify({ ...parameters, map: parameters.map?.uuid });
+  if (materialCache.has(key)) return cachedGet(materialCache, key);
+  const material = new THREE.MeshLambertMaterial(parameters);
+  material.userData.nativeParameters = Object.freeze({ ...parameters });
+  return boundedSet(materialCache, key, material, 1024, true);
+}
+
+function setMaterialState(mesh, overrides) {
+  // Cached materials are immutable templates; render-state variants have their own keys.
+  const parameters = mesh.material.userData.nativeParameters;
+  mesh.material = createCachedMaterial({ ...parameters, ...overrides });
+}
+
+function reuseGeometry(geometry, shape, texture) {
+  const key = JSON.stringify([geometry.type, shape, texture?.userData?.width, texture?.userData?.height]);
+  if (geometryCache.has(key)) {
+    geometry.dispose();
+    return cachedGet(geometryCache, key);
+  }
+  geometry.userData.nativeCached = true;
+  return boundedSet(geometryCache, key, geometry, 2048, true);
+}
+
+function disposeScene(scene) {
+  scene.traverse(object => {
+    if (object.isMesh && !object.geometry.userData.nativeCached) object.geometry.dispose();
+  });
+  scene.clear();
+}
 
 const SCALE = 0.01; // BlockyModel units to world units
 
@@ -64,8 +203,6 @@ function init() {
     THREE = require('three');
     createContext = require('gl');
     sharp = require('sharp');
-    const canvas = require('canvas');
-    createCanvas = canvas.createCanvas;
 
     rendererAvailable = true;
     console.log('[NativeRenderer] Dependencies loaded successfully');
@@ -73,7 +210,7 @@ function init() {
     initError = err;
     rendererAvailable = false;
     console.warn('[NativeRenderer] Dependencies not available:', err.message);
-    console.warn('[NativeRenderer] Install with: npm install three gl canvas sharp');
+    console.warn('[NativeRenderer] Install with: npm install three gl sharp');
   }
 
   return rendererAvailable;
@@ -104,10 +241,11 @@ function createRenderer(width, height) {
 
   // Enable consistent color math across environments
   if (THREE.ColorManagement) {
-    THREE.ColorManagement.enabled = true;
+    THREE.ColorManagement.enabled = false;
   }
 
   // Create headless WebGL context with high precision and alpha support
+  contextsCreated++;
   const glContext = createContext(width, height, {
     preserveDrawingBuffer: true,
     antialias: true,
@@ -146,15 +284,15 @@ function createRenderer(width, height) {
   renderer.setSize(width, height);
 
   // FIX P2: Match browser Three.js default settings
+  renderer.useLegacyLights = true;
   renderer.toneMapping = THREE.NoToneMapping;
   renderer.toneMappingExposure = 1.0;
 
-  // FIX P2: Use sRGB output directly - Three.js handles gamma internally
-  // This matches browser behavior and avoids incorrect manual gamma correction
+  // Match the current browser r128 linear output; pixels receive no extra gamma pass.
   if (THREE.SRGBColorSpace) {
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
   } else if (renderer.outputEncoding !== undefined) {
-    renderer.outputEncoding = THREE.sRGBEncoding;
+    renderer.outputEncoding = THREE.LinearEncoding;
   }
 
   return { renderer, glContext, mockCanvas };
@@ -165,54 +303,15 @@ function createRenderer(width, height) {
  */
 async function loadTextureFromAsset(texturePath) {
   if (!texturePath) return null;
-
+  const key = `raw:${texturePath}`;
+  if (textureCache.has(key)) return cachedGet(textureCache, key);
   try {
-    const buffer = assets.extractAsset(texturePath);
-    if (!buffer) {
-      console.log(`[NativeRenderer] Texture not found: ${texturePath}`);
-      return null;
-    }
-
-    // Use sharp to decode the image
-    const image = sharp(buffer);
-    const metadata = await image.metadata();
-    const { data, info } = await image
-      .ensureAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-
-    // Create a canvas to hold the image data
-    const canvas = createCanvas(info.width, info.height);
-    const ctx = canvas.getContext('2d');
-    const imageData = ctx.createImageData(info.width, info.height);
-
-    // Copy raw RGBA data
-    for (let i = 0; i < data.length; i++) {
-      imageData.data[i] = data[i];
-    }
-    ctx.putImageData(imageData, 0, 0);
-
-    // Create Three.js texture from canvas
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.magFilter = THREE.NearestFilter;
-    texture.minFilter = THREE.NearestFilter;
-    texture.wrapS = THREE.ClampToEdgeWrapping;
-    texture.wrapT = THREE.ClampToEdgeWrapping;
-    texture.generateMipmaps = false;
-    texture.userData = { width: info.width, height: info.height };
-
-    // Force sRGB color space - bypasses "Unsupported image type" warning
-    // by explicitly telling Three.js how to treat this texture
-    if (THREE.SRGBColorSpace) {
-      texture.colorSpace = THREE.SRGBColorSpace;
-    } else if (texture.encoding !== undefined) {
-      texture.encoding = THREE.sRGBEncoding;
-    }
-    texture.needsUpdate = true;
-
-    return texture;
-  } catch (err) {
-    console.error(`[NativeRenderer] Error loading texture ${texturePath}:`, err.message);
+    const buffer = extractCommonAsset(texturePath);
+    if (!buffer) return null;
+    const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    return boundedSet(textureCache, key, createDataTexture(data, info.width, info.height), 1024, true);
+  } catch (error) {
+    console.error(`[NativeRenderer] Cannot load texture ${texturePath}:`, error.message);
     return null;
   }
 }
@@ -223,119 +322,28 @@ async function loadTextureFromAsset(texturePath) {
  * FIX P2: Remove * 2 multiplier that caused color overexposure
  */
 async function createTintedTexture(greyscalePath, baseColor, gradientPath = null) {
-  // FIX P2: Normalize greyscale path
-  const normalizedGreyscale = greyscalePath.startsWith('Common/') ? greyscalePath : greyscalePath;
-  const buffer = assets.extractAsset(normalizedGreyscale);
-  if (!buffer) {
-    console.warn(`[NativeRenderer] Greyscale texture not found: ${normalizedGreyscale}`);
-    return null;
+  const key = JSON.stringify(['tinted', greyscalePath, baseColor, gradientPath]);
+  if (textureCache.has(key)) return cachedGet(textureCache, key);
+  const original = await loadTextureFromAsset(greyscalePath);
+  if (!original) return null;
+  const data = new Uint8Array(original.image.data);
+  const gradient = gradientPath ? await loadTextureFromAsset(gradientPath) : null;
+  const color = parseColor(baseColor);
+  for (let i = 0; i < data.length; i += 4) {
+    if (!data[i + 3] || data[i] !== data[i + 1] || data[i + 1] !== data[i + 2]) continue;
+    const grey = data[i];
+    if (gradient) {
+      const index = Math.min(grey, gradient.image.width - 1) * 4;
+      data[i] = gradient.image.data[index];
+      data[i + 1] = gradient.image.data[index + 1];
+      data[i + 2] = gradient.image.data[index + 2];
+    } else {
+      data[i] = Math.round(color.r * grey / 255);
+      data[i + 1] = Math.round(color.g * grey / 255);
+      data[i + 2] = Math.round(color.b * grey / 255);
+    }
   }
-
-  try {
-    const image = sharp(buffer);
-    const { data, info } = await image
-      .ensureAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-
-    // Load gradient if provided
-    // FIX P0: Normalize gradient path and try multiple fallbacks
-    let gradientData = null;
-    if (gradientPath) {
-      // Try different path variations
-      const pathsToTry = [
-        gradientPath,
-        gradientPath.startsWith('Common/') ? gradientPath : `Common/${gradientPath}`,
-        // Try without Common/ prefix if it was already there
-        gradientPath.startsWith('Common/') ? gradientPath.replace('Common/', '') : gradientPath
-      ];
-
-      for (const pathToTry of pathsToTry) {
-        const gradientBuffer = assets.extractAsset(pathToTry);
-        if (gradientBuffer) {
-          const gradient = sharp(gradientBuffer);
-          const gradientResult = await gradient.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-          gradientData = gradientResult.data;
-          break;
-        }
-      }
-
-      if (!gradientData) {
-        console.warn(`[NativeRenderer] Gradient texture not found: ${gradientPath}`);
-      }
-    }
-
-    // Parse base color
-    const color = parseColor(baseColor);
-
-    // Apply tinting
-    for (let i = 0; i < data.length; i += 4) {
-      const origR = data[i];
-      const origG = data[i + 1];
-      const origB = data[i + 2];
-      const alpha = data[i + 3];
-
-      if (alpha > 0) {
-        const isGreyscale = (origR === origG) && (origG === origB);
-
-        if (isGreyscale) {
-          const grey = origR;
-          let r, g, b;
-
-          if (gradientData) {
-            const gradX = Math.min(grey, Math.floor(gradientData.length / 4) - 1);
-            const gradIdx = gradX * 4;
-            r = gradientData[gradIdx];
-            g = gradientData[gradIdx + 1];
-            b = gradientData[gradIdx + 2];
-          } else if (color) {
-            // Simple tinting: greyscale modulates color brightness
-            const t = grey / 255;
-            r = Math.round(color.r * t);
-            g = Math.round(color.g * t);
-            b = Math.round(color.b * t);
-          } else {
-            r = grey; g = grey; b = grey;
-          }
-
-          data[i] = r;
-          data[i + 1] = g;
-          data[i + 2] = b;
-        }
-      }
-    }
-
-    // Create canvas with tinted data
-    const canvas = createCanvas(info.width, info.height);
-    const ctx = canvas.getContext('2d');
-    const imageData = ctx.createImageData(info.width, info.height);
-    for (let i = 0; i < data.length; i++) {
-      imageData.data[i] = data[i];
-    }
-    ctx.putImageData(imageData, 0, 0);
-
-    // Create texture
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.magFilter = THREE.NearestFilter;
-    texture.minFilter = THREE.NearestFilter;
-    texture.wrapS = THREE.ClampToEdgeWrapping;
-    texture.wrapT = THREE.ClampToEdgeWrapping;
-    texture.generateMipmaps = false;
-    texture.userData = { width: info.width, height: info.height };
-
-    // Force sRGB color space - bypasses "Unsupported image type" warning
-    if (THREE.SRGBColorSpace) {
-      texture.colorSpace = THREE.SRGBColorSpace;
-    } else if (texture.encoding !== undefined) {
-      texture.encoding = THREE.sRGBEncoding;
-    }
-    texture.needsUpdate = true;
-
-    return texture;
-  } catch (err) {
-    console.error(`[NativeRenderer] Error creating tinted texture:`, err.message);
-    return null;
-  }
+  return boundedSet(textureCache, key, createDataTexture(data, original.image.width, original.image.height), 1024, true);
 }
 
 /**
@@ -429,31 +437,25 @@ function createBoxMesh(shape, color, texture = null, nodeName = '') {
     applyBoxUVs(geometry, shape, texture);
   }
 
-  // Body parts use solid materials, cosmetics use transparent with alpha clipping
-  const isBodyPart = ['Neck', 'Head', 'Chest', 'Belly', 'Pelvis'].includes(nodeName) ||
-                     nodeName.includes('Arm') || nodeName.includes('Leg') ||
-                     nodeName.includes('Hand') || nodeName.includes('Foot') ||
-                     nodeName.includes('Thigh') || nodeName.includes('Calf');
-
   // MeshLambertMaterial for proper lighting interaction
   let material;
   if (texture) {
-    material = new THREE.MeshLambertMaterial({
+    material = createCachedMaterial({
       map: texture,
       color: 0xffffff,
-      alphaTest: 0.1,
+      alphaTest: 1 / 255,
       transparent: true,
       side: THREE.DoubleSide,
       depthWrite: true
     });
   } else {
-    material = new THREE.MeshLambertMaterial({
+    material = createCachedMaterial({
       color: color,
       side: THREE.DoubleSide
     });
   }
 
-  const mesh = new THREE.Mesh(geometry, material);
+  const mesh = new THREE.Mesh(reuseGeometry(geometry, shape, texture), material);
 
   if (flipX) mesh.scale.x = -1;
   if (flipY) mesh.scale.y = -1;
@@ -729,32 +731,26 @@ function createQuadMesh(shape, color, texture = null, nodeName = '') {
     }
   }
 
-  // MeshLambertMaterial for proper lighting
-  // FIX: Facial overlays (Eyes, Eyebrows, Face, Mouth) should NOT write depth
-  const isFacialOverlay = nodeName.includes('Eye') ||
-                          nodeName.includes('Eyebrow') ||
-                          nodeName.includes('Face') ||
-                          nodeName.includes('Mouth');
-
+  // Alpha-clipped geometry retains depth, including facial parts behind hair.
   let material;
   if (texture) {
-    material = new THREE.MeshLambertMaterial({
+    material = createCachedMaterial({
       map: texture,
       color: 0xffffff,
       alphaTest: 1 / 255,
       transparent: true,
       side: THREE.DoubleSide,
-      depthWrite: !isFacialOverlay,
+      depthWrite: true,
       depthTest: true
     });
   } else {
-    material = new THREE.MeshLambertMaterial({
+    material = createCachedMaterial({
       color: color,
       side: THREE.DoubleSide
     });
   }
 
-  const mesh = new THREE.Mesh(geometry, material);
+  const mesh = new THREE.Mesh(reuseGeometry(geometry, shape, texture), material);
 
   if (flipX) mesh.scale.x = -1;
   if (flipY) mesh.scale.y = -1;
@@ -827,9 +823,7 @@ function renderPlayerNode(node, parent, skinColor, bodyTexture, hiddenParts = ne
     }
     if (mesh) {
       if (polygonOffsetParts.has(nodeName)) {
-        mesh.material.polygonOffset = true;
-        mesh.material.polygonOffsetFactor = 1;
-        mesh.material.polygonOffsetUnits = 1;
+        setMaterialState(mesh, { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
       }
       group.add(mesh);
     }
@@ -845,59 +839,22 @@ function renderPlayerNode(node, parent, skinColor, bodyTexture, hiddenParts = ne
 }
 
 /**
- * Apply OIT (Order-Independent Transparency) sorting to scene
- * Sorts transparent meshes back-to-front by distance to camera
+ * Count transparent geometry; Three.js handles ordinary object sorting.
+ * Native portraits do not implement browser depth peeling.
  */
-function applyOITSorting(scene, camera) {
-  const cameraWorldPos = new THREE.Vector3();
-  camera.getWorldPosition(cameraWorldPos);
-
-  const transparentMeshes = [];
-  const opaqueMeshes = [];
-
-  scene.traverse((object) => {
-    if (!object.isMesh || !object.visible) return;
-    if (!object.material) return;
-
-    const mat = object.material;
-    const isTransparent = object.userData.oitTransparent === true ||
-      (mat.transparent === true && (mat.opacity < 1 || mat.alphaTest === 0));
-
-    if (isTransparent) {
-      const worldPos = new THREE.Vector3();
-      object.getWorldPosition(worldPos);
-      const distance = worldPos.distanceTo(cameraWorldPos);
-      transparentMeshes.push({ mesh: object, distance });
-    } else {
-      opaqueMeshes.push(object);
-    }
+function prepareTransparency(scene) {
+  // Native portraits use Three.js object sorting and alpha-clipped depth writing.
+  // This is not browser depth peeling: do not invent category ordering or disable depth.
+  let count = 0;
+  scene.traverse(object => {
+    if (object.isMesh && object.visible && object.material?.transparent) count++;
   });
-
-  // Sort transparent meshes back-to-front (furthest first)
-  transparentMeshes.sort((a, b) => b.distance - a.distance);
-
-  // Opaque meshes render first (low render order)
-  for (const mesh of opaqueMeshes) {
-    mesh.renderOrder = 0;
-  }
-
-  // Transparent meshes render after opaque, in back-to-front order
-  let renderOrder = 1000;
-  for (const item of transparentMeshes) {
-    item.mesh.renderOrder = renderOrder++;
-    // Ensure proper transparency settings
-    item.mesh.material.transparent = true;
-    item.mesh.material.depthWrite = false;
-    item.mesh.material.depthTest = true;
-  }
-
-  return transparentMeshes.length;
+  return count;
 }
 
 /**
  * Render a cosmetic node recursively
  * FIX P0: Properly apply zOffset as local position for attached bones
- * FIX P0: Set explicit renderOrder for facial cosmetics layering
  * Uses original model textures without synthesized eye backgrounds.
  */
 function renderCosmeticNode(node, parent, character, color, texture = null, partType = '', zOffset = 0) {
@@ -907,75 +864,39 @@ function renderCosmeticNode(node, parent, character, color, texture = null, part
   let attachedToPlayerBone = false;
 
   if (nodeName && node.shape?.settings?.isPiece === true) {
-    const matchingBone = character.getObjectByName(nodeName);
+    const matchingBone = character.getObjectByName(nodeName) || character.getObjectByName(nodeName + '_cosmetic');
     if (matchingBone) {
       targetParent = matchingBone;
       attachedToPlayerBone = true;
     }
   }
 
+  if (attachedToPlayerBone) {
+    // Game assembly aliases piece roots to the existing bone and appends only children.
+    for (const child of node.children || []) {
+      renderCosmeticNode(child, targetParent, character, color, texture, partType, zOffset);
+    }
+    return;
+  }
+
   const group = new THREE.Group();
   group.name = nodeName + '_cosmetic';
 
-  if (attachedToPlayerBone) {
-    // A piece root uses the existing bone transform, not its template pose.
-    group.quaternion.identity();
-    // FIX P0: Apply zOffset as local Z position (bone provides XY position)
-    // This ensures facial cosmetics layer correctly even when attached to bones
-    if (zOffset) {
-      group.position.set(0, 0, zOffset);
-    }
-  } else {
-    applyTransform(group, node);
-    // Apply zOffset on top of existing position for non-attached nodes
-    if (zOffset) {
-      group.position.z += zOffset;
-    }
-  }
+  applyTransform(group, node);
+  if (zOffset) group.position.z += zOffset;
 
   if (node.shape && node.shape.visible !== false && node.shape.type !== 'none') {
     let mesh = null;
 
     // DEBUG: Log shape data for face cosmetics
     if (['face', 'eyes', 'eyebrows', 'mouth', 'facialHair'].includes(partType)) {
-      console.log(`[SSR DEBUG] ${partType}/${nodeName}: type=${node.shape.type}, hasTexture=${!!texture}, hasTextureLayout=${!!node.shape.textureLayout}, settings=${JSON.stringify(node.shape.settings)}`);
+      if (DEBUG_RENDER) console.log(`[SSR DEBUG] ${partType}/${nodeName}: type=${node.shape.type}, hasTexture=${!!texture}, hasTextureLayout=${!!node.shape.textureLayout}, settings=${JSON.stringify(node.shape.settings)}`);
     }
 
     if (node.shape.type === 'box') {
       mesh = createBoxMesh(node.shape, color, texture, nodeName);
     } else if (node.shape.type === 'quad') {
       mesh = createQuadMesh(node.shape, color, texture, nodeName);
-    }
-
-    // FIX P0: Set explicit renderOrder for ALL facial cosmetics based on partType
-    // Higher renderOrder = renders later = appears in front
-    if (mesh) {
-      if (partType === 'face') {
-        mesh.renderOrder = 100;
-      } else if (partType === 'facialHair') {
-        mesh.renderOrder = 102;  // > face so beard appears in front
-      } else if (partType === 'mouth') {
-        mesh.renderOrder = 104;
-      } else if (partType === 'eyes') {
-        // FIX P1: OIT layer ordering for eye components
-        if (nodeName.includes('Background')) {
-          // Preserve the model texture, including opaque eye whites.
-          mesh.renderOrder = 105;
-          mesh.material.depthWrite = false;  // Background doesn't write depth
-          mesh.userData.oitTransparent = true;
-          mesh.userData.oitLayer = 0;  // Back layer
-        } else if (nodeName.includes('Eye') && !nodeName.includes('Attachment')) {
-          mesh.renderOrder = 106;
-          mesh.material.depthWrite = true;   // Pupil writes depth
-          mesh.userData.oitTransparent = true;
-          mesh.userData.oitLayer = 1;  // Front layer
-        }
-      } else if (partType === 'eyebrows') {
-        mesh.renderOrder = 108;
-      } else if (partType === 'haircut') {
-        mesh.renderOrder = 50;  // Below face cosmetics
-      }
-      mesh.material.transparent = true;
     }
 
     if (mesh) group.add(mesh);
@@ -986,7 +907,7 @@ function renderCosmeticNode(node, parent, character, color, texture = null, part
   if (node.children) {
     for (const child of node.children) {
       const childName = child.name || child.id || '';
-      const childBone = character.getObjectByName(childName);
+      const childBone = character.getObjectByName(childName) || character.getObjectByName(childName + '_cosmetic');
       if (childBone && child.shape?.settings?.isPiece === true) {
         renderCosmeticNode(child, childBone, character, color, texture, partType, zOffset);
       } else {
@@ -1015,12 +936,13 @@ async function buildCharacter(modelData, character) {
     }
   }
   if (modelData.parts?.overtop || modelData.parts?.undertop) {
-    hiddenParts.add('Belly');
-    hiddenParts.add('Chest');
+    polygonOffsetParts.add('Belly');
+    polygonOffsetParts.add('Chest');
+    for (const name of ['L-Arm', 'R-Arm', 'L-Forearm', 'R-Forearm']) polygonOffsetParts.add(name);
   }
   if (modelData.parts?.shoes) {
-    hiddenParts.add('L-Foot');
-    hiddenParts.add('R-Foot');
+    polygonOffsetParts.add('L-Foot');
+    polygonOffsetParts.add('R-Foot');
   }
   // Note: 'HeadTop' and 'HairBase' don't exist in Player.blockymodel
   // Haircuts are separate cosmetic models that attach to the Head bone
@@ -1029,9 +951,8 @@ async function buildCharacter(modelData, character) {
   try {
     const bodyPart = modelData.body || modelData.parts?.bodyCharacteristic;
     const bodyModelPath = bodyPart?.model || 'Characters/Player.blockymodel';
-    const playerModelBuffer = assets.extractAsset(bodyModelPath.startsWith('Common/') ? bodyModelPath : 'Common/' + bodyModelPath);
-    if (playerModelBuffer) {
-      const playerModel = JSON.parse(playerModelBuffer.toString());
+    const playerModel = loadModel(bodyModelPath);
+    if (playerModel) {
 
       // Load body texture
       const bodyTexturePath = bodyPart?.greyscaleTexture || (modelData.bodyType === 'Muscular'
@@ -1080,7 +1001,7 @@ async function buildCharacter(modelData, character) {
 
     // Debug logging for cosmetic loading
     if (key === 'haircut' || key === 'facialHair') {
-      console.log(`[NativeRenderer] Processing ${key}:`, {
+      if (DEBUG_RENDER) console.log(`[NativeRenderer] Processing ${key}:`, {
         partExists: !!part,
         hasModel: !!part?.model,
         model: part?.model,
@@ -1116,11 +1037,11 @@ async function buildCharacter(modelData, character) {
       const isSkinPart = part.gradientSet === 'Skin' || ['face', 'ears', 'mouth'].includes(key);
 
       // DEBUG: Log texture loading paths
-      console.log(`[SSR TEXTURE] ${key}: texture=${part.texture}, greyscale=${part.greyscaleTexture}, gradientTexture=${part.gradientTexture}, isSkinPart=${isSkinPart}`);
+      if (DEBUG_RENDER) console.log(`[SSR TEXTURE] ${key}: texture=${part.texture}, greyscale=${part.greyscaleTexture}, gradientTexture=${part.gradientTexture}, isSkinPart=${isSkinPart}`);
 
       if (part.texture) {
         texture = await loadTextureFromAsset(part.texture);
-        console.log(`[SSR TEXTURE] ${key}: Direct texture loaded = ${!!texture}`);
+        if (DEBUG_RENDER) console.log(`[SSR TEXTURE] ${key}: Direct texture loaded = ${!!texture}`);
       } else if (part.greyscaleTexture) {
         let gradientPath = part.gradientTexture;
         let baseCol = rawBaseColor;
@@ -1130,11 +1051,11 @@ async function buildCharacter(modelData, character) {
           baseCol = skinColorHex;
         }
 
-        console.log(`[SSR TEXTURE] ${key}: Creating tinted texture - greyscale=${part.greyscaleTexture}, gradient=${gradientPath}, baseCol=${baseCol}`);
+        if (DEBUG_RENDER) console.log(`[SSR TEXTURE] ${key}: Creating tinted texture - greyscale=${part.greyscaleTexture}, gradient=${gradientPath}, baseCol=${baseCol}`);
         texture = await createTintedTexture(part.greyscaleTexture, baseCol, gradientPath);
-        console.log(`[SSR TEXTURE] ${key}: Tinted texture created = ${!!texture}`);
+        if (DEBUG_RENDER) console.log(`[SSR TEXTURE] ${key}: Tinted texture created = ${!!texture}`);
       } else {
-        console.log(`[SSR TEXTURE] ${key}: No texture path provided!`);
+        if (DEBUG_RENDER) console.log(`[SSR TEXTURE] ${key}: No texture path provided!`);
       }
 
       if ((part.texture || part.greyscaleTexture) && !texture) {
@@ -1146,12 +1067,11 @@ async function buildCharacter(modelData, character) {
       try {
         let modelPath = part.model;
         if (!modelPath.startsWith('Common/')) modelPath = 'Common/' + modelPath;
-        const modelBuffer = assets.extractAsset(modelPath);
-        if (modelBuffer) {
-          const model = JSON.parse(modelBuffer.toString());
+        const model = loadModel(modelPath);
+        if (model) {
           if (model.nodes) {
             if (key === 'haircut' || key === 'facialHair' || key === 'eyes') {
-              console.log(`[NativeRenderer] Loaded ${key} model from ${modelPath}:`, {
+              if (DEBUG_RENDER) console.log(`[NativeRenderer] Loaded ${key} model from ${modelPath}:`, {
                 nodeCount: model.nodes.length,
                 rootNodeNames: model.nodes.map(n => n.name || n.id),
                 hasTexture: !!texture,
@@ -1253,7 +1173,7 @@ async function renderHead(uuid, bgColor = 'black', width = 200, height = 200) {
 
   // Create renderer
   timings.renderSetup = Date.now();
-  const { renderer, glContext } = createRenderer(width, height);
+  const { renderer, glContext } = acquireRenderer(width, height);
 
   // Create scene
   const scene = new THREE.Scene();
@@ -1305,9 +1225,9 @@ async function renderHead(uuid, bgColor = 'black', width = 200, height = 200) {
   await buildCharacter(modelData, character);
   timings.buildEnd = Date.now();
 
-  // Apply OIT sorting for proper transparency rendering
+  // Prepare ordinary native transparency (not browser depth peeling).
   timings.oitStart = Date.now();
-  const transparentCount = applyOITSorting(scene, camera);
+  const transparentCount = prepareTransparency(scene);
   timings.oitEnd = Date.now();
 
   // Render
@@ -1320,9 +1240,7 @@ async function renderHead(uuid, bgColor = 'black', width = 200, height = 200) {
   const pixels = new Uint8Array(width * height * 4);
   glContext.readPixels(0, 0, width, height, glContext.RGBA, glContext.UNSIGNED_BYTE, pixels);
 
-  // FIX P2: Removed manual gamma correction
-  // Three.js now outputs in sRGB space directly (configured in createRenderer)
-  // This avoids the washed-out colors caused by incorrect gamma curve
+  // Pixel extraction preserves the configured linear output without another conversion.
 
   // Flip vertically (OpenGL is bottom-up)
   const flipped = new Uint8Array(width * height * 4);
@@ -1340,7 +1258,7 @@ async function renderHead(uuid, bgColor = 'black', width = 200, height = 200) {
   timings.extractEnd = Date.now();
 
   // Cleanup
-  renderer.dispose();
+  disposeScene(scene);
 
   const totalTime = Date.now() - startTime;
 
@@ -1378,6 +1296,7 @@ async function renderHeadFromSkinData(skinData, bgColor = 'black', width = 200, 
   // Resolve model data from skin
   const configs = assets.loadCosmeticConfigs();
   const gradientSets = assets.loadGradientSets();
+  const eyeColors = assets.loadEyeColors();
 
   if (!configs) {
     throw new Error('Could not load cosmetic configs');
@@ -1435,7 +1354,7 @@ async function renderHeadFromSkinData(skinData, bgColor = 'black', width = 200, 
 
   // Create renderer
   timings.renderSetup = Date.now();
-  const { renderer, glContext } = createRenderer(width, height);
+  const { renderer, glContext } = acquireRenderer(width, height);
 
   // Create scene
   const scene = new THREE.Scene();
@@ -1485,9 +1404,9 @@ async function renderHeadFromSkinData(skinData, bgColor = 'black', width = 200, 
   await buildCharacter(modelData, character);
   timings.buildEnd = Date.now();
 
-  // Apply OIT sorting
+  // Prepare ordinary native transparency (not browser depth peeling).
   timings.oitStart = Date.now();
-  applyOITSorting(scene, camera);
+  prepareTransparency(scene);
   timings.oitEnd = Date.now();
 
   // Render
@@ -1500,7 +1419,7 @@ async function renderHeadFromSkinData(skinData, bgColor = 'black', width = 200, 
   const pixels = new Uint8Array(width * height * 4);
   glContext.readPixels(0, 0, width, height, glContext.RGBA, glContext.UNSIGNED_BYTE, pixels);
 
-  // Note: No manual gamma correction needed - Three.js handles sRGB output via outputColorSpace
+  // Pixel extraction preserves the configured linear output.
 
   // Flip vertically
   const flipped = new Uint8Array(width * height * 4);
@@ -1518,7 +1437,7 @@ async function renderHeadFromSkinData(skinData, bgColor = 'black', width = 200, 
   timings.extractEnd = Date.now();
 
   // Cleanup
-  renderer.dispose();
+  disposeScene(scene);
 
   const totalTime = Date.now() - startTime;
 
@@ -1552,6 +1471,7 @@ async function renderFullBodyFromSkinData(skinData, bgColor = 'black', width = 4
   // Resolve model data from skin (same as renderHeadFromSkinData)
   const configs = assets.loadCosmeticConfigs();
   const gradientSets = assets.loadGradientSets();
+  const eyeColors = assets.loadEyeColors();
 
   if (!configs) {
     throw new Error('Could not load cosmetic configs');
@@ -1609,7 +1529,7 @@ async function renderFullBodyFromSkinData(skinData, bgColor = 'black', width = 4
 
   // Create renderer
   timings.renderSetup = Date.now();
-  const { renderer, glContext } = createRenderer(width, height);
+  const { renderer, glContext } = acquireRenderer(width, height);
 
   // Create scene
   const scene = new THREE.Scene();
@@ -1659,9 +1579,9 @@ async function renderFullBodyFromSkinData(skinData, bgColor = 'black', width = 4
   await buildCharacter(modelData, character);
   timings.buildEnd = Date.now();
 
-  // Apply OIT sorting
+  // Prepare ordinary native transparency (not browser depth peeling).
   timings.oitStart = Date.now();
-  applyOITSorting(scene, camera);
+  prepareTransparency(scene);
   timings.oitEnd = Date.now();
 
   // Render
@@ -1690,7 +1610,7 @@ async function renderFullBodyFromSkinData(skinData, bgColor = 'black', width = 4
   timings.extractEnd = Date.now();
 
   // Cleanup
-  renderer.dispose();
+  disposeScene(scene);
 
   const totalTime = Date.now() - startTime;
 
@@ -1715,11 +1635,12 @@ function getStatus() {
   return {
     available: isAvailable(),
     error: initError?.message || null,
+    resources: { contextsCreated, activeContexts: sharedRenderer ? 1 : 0, queuedRenders, textures: textureCache.size, models: modelCache.size, materials: materialCache.size, geometries: geometryCache.size },
     dependencies: {
       three: THREE !== null,
       gl: createContext !== null,
       sharp: sharp !== null,
-      canvas: createCanvas !== null
+      canvas: false // DataTexture rendering does not require native canvas
     }
   };
 }
@@ -1729,9 +1650,10 @@ module.exports = {
   isAvailable,
   getInitError,
   getStatus,
-  renderHeadFromSkinData,
-  renderFullBodyFromSkinData,
-  renderHead,
+  renderHeadFromSkinData: (...args) => queueRender(() => renderHeadFromSkinData(...args)),
+  renderFullBodyFromSkinData: (...args) => queueRender(() => renderFullBodyFromSkinData(...args)),
+  renderHead: (...args) => queueRender(() => renderHead(...args)),
+  resetRenderResources,
   createRenderer,
   loadTextureFromAsset,
   createTintedTexture

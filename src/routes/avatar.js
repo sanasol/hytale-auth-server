@@ -19,7 +19,7 @@ function headRenderVersion() {
   if (renderVersion) return renderVersion;
   const hash = crypto.createHash('sha256');
   hash.update('head-128-v2');
-  for (const file of [path.join(__dirname, '../../assets/avatar.js'), require.resolve('../services/assets')]) {
+  for (const file of [path.join(__dirname, '../../assets/avatar.js'), path.join(__dirname, '../../assets/depth-peeling.js'), require.resolve('../services/assets'), require.resolve('../services/nativeRenderer')]) {
     hash.update(fs.readFileSync(file));
   }
   try {
@@ -92,11 +92,16 @@ function getHeadCacheFromDisk(cacheKey) {
  * Save head image to disk
  */
 function saveHeadCacheToDisk(cacheKey, data) {
+  const filePath = path.join(HEAD_CACHE_DIR, `${cacheKey}.png`);
+  const staging = `${filePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   try {
-    const filePath = path.join(HEAD_CACHE_DIR, `${cacheKey}.png`);
-    fs.writeFileSync(filePath, data);
+    // Readers in other auth workers must never observe a truncated/partial PNG.
+    fs.writeFileSync(staging, data);
+    fs.renameSync(staging, filePath);
   } catch (err) {
     console.error('Error saving head cache to disk:', err.message);
+  } finally {
+    try { fs.unlinkSync(staging); } catch {}
   }
 }
 
@@ -144,6 +149,8 @@ async function handleAvatarRoutes(req, res, urlPath, body = {}) {
     await handleAvatarPreview(req, res, uuid, body);
   } else if (action === 'head') {
     await serveHeadEmbed(req, res, uuid);
+  } else if (action === 'head.png') {
+    await serveServerHead(req, res, uuid);
   } else if (action === 'head-cache' && req.method === 'POST') {
     await handleHeadImageCache(req, res, uuid);
   } else {
@@ -320,6 +327,21 @@ async function serveHeadEmbed(req, res, uuid) {
   const userData = await storage.getUserData(uuid);
   const cacheKey = headCacheKey(uuid, bgParam, userData.skin);
 
+  if (!noCache && userData.skin && process.env.AVATAR_SERVER_PORTRAITS !== '0') {
+    try {
+      const serverKey = cacheKey + '_server';
+      const { cached, timings } = await getServerPortrait(serverKey, userData.skin, bgParam);
+      const headers = { 'Content-Type': 'image/png', 'Cache-Control': 'private, no-cache, max-age=0, must-revalidate', 'Cloudflare-CDN-Cache-Control': 'no-store', ETag: `"${serverKey}"`,
+        'Server-Timing': timings ? `render;dur=${Number(timings.total) || 0}` : 'cache;desc="hit"' };
+      if (req.headers['if-none-match'] === headers.ETag) { res.writeHead(304, headers); res.end(); return; }
+      if (req.method === 'HEAD') { res.writeHead(200, headers); res.end(); return; }
+      sendBinary(res, 200, cached.data, 'image/png', headers);
+      return;
+    } catch (error) {
+      console.warn('Server portrait unavailable; using browser fallback:', error.message);
+    }
+  }
+
   if (!noCache) {
     const cached = getHeadCacheFromDisk(cacheKey);
     if (cached) {
@@ -396,6 +418,52 @@ function serveAvatarViewer(req, res, uuid) {
 
   // Fallback to inline viewer
   const html = generateAvatarViewerHtml(uuid);
+  sendHtml(res, 200, html);
+}
+
+
+const portraitJobs = new Map();
+async function getServerPortrait(cacheKey, skin, background) {
+  const cached = getHeadCacheFromDisk(cacheKey);
+  if (cached) return { cached };
+  let job = portraitJobs.get(cacheKey);
+  if (!job) {
+    job = require('../services/portraitRenderer').renderHead(skin, background).then(result => {
+      saveHeadCacheToDisk(cacheKey, result.buffer);
+      return result;
+    }).finally(() => portraitJobs.delete(cacheKey));
+    portraitJobs.set(cacheKey, job);
+  }
+  const result = await job;
+  return { cached: { data: result.buffer, mtime: new Date() }, timings: result.timings };
+}
+
+async function serveServerHead(req, res, uuid) {
+  if (!['GET', 'HEAD'].includes(req.method)) { sendJson(res, 405, { error: 'GET required' }); return; }
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const background = normalizeHeadBackground(url.searchParams.get('bg') || 'black');
+  const userData = await storage.getUserData(uuid);
+  if (!userData.skin) { sendJson(res, 404, { error: 'Character skin not found' }); return; }
+  const cacheKey = headCacheKey(uuid, background, userData.skin) + '_server';
+  try {
+    const { cached, timings } = await getServerPortrait(cacheKey, userData.skin, background);
+    const etag = `"${cacheKey}"`;
+    const headers = { 'Content-Type': 'image/png', 'Cache-Control': 'private, no-cache, max-age=0, must-revalidate', 'Cloudflare-CDN-Cache-Control': 'no-store', ETag: etag,
+      'Server-Timing': timings ? `render;dur=${Number(timings.total) || 0}` : 'cache;desc="hit"' };
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304, headers); res.end(); return; }
+    if (req.method === 'HEAD') { res.writeHead(200, headers); res.end(); return; }
+    sendBinary(res, 200, cached.data, 'image/png', headers);
+  } catch (error) {
+    console.error('Portrait render failed:', uuid, error.message);
+    res.setHeader('Retry-After', '1');
+    sendJson(res, 503, { error: 'Portrait renderer unavailable' });
+  }
+}
+
+function handleAvatarAuditPage(req, res) {
+  const file = path.join(__dirname, '../../assets/avatar-audit.html');
+  let html = fs.readFileSync(file, 'utf8').replace('{{RENDER_VERSION}}', headRenderVersion());
+  html = html.replace(/(src="\/assets\/(?:avatar|avatar-audit|depth-peeling)\.js)"/g, `$1?v=${headRenderVersion()}"`);
   sendHtml(res, 200, html);
 }
 
@@ -868,6 +936,8 @@ module.exports = {
   handleAvatarModel,
   handleAvatarPreview,
   handleCustomizerRoute,
+  handleAvatarAuditPage,
+  serveServerHead,
   handleTestHeadPage,
   invalidateHeadCache,
   initHeadCache,
