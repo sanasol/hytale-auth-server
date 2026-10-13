@@ -171,6 +171,9 @@
       fill: rgba(220, 240, 255, 1);
     }
 
+    .category-btn img { width: 32px; height: 32px; object-fit: contain; }
+    .subcategory-btn img { width: 28px; height: 28px; object-fit: contain; }
+
     /* Main Content Area */
     .main-content {
       flex: 1;
@@ -242,6 +245,7 @@
       padding-right: 8px;
       margin-bottom: 12px;
       align-content: start;
+      grid-auto-rows: max-content;
     }
 
     .style-grid::-webkit-scrollbar {
@@ -259,7 +263,7 @@
     }
 
     .style-item {
-      aspect-ratio: 1;
+      aspect-ratio: 92 / 149;
       background: rgba(30, 50, 75, 0.5);
       border: 2px solid rgba(60, 90, 130, 0.3);
       border-radius: 6px;
@@ -321,6 +325,8 @@
     }
 
     .thumbnail-3d {
+      position: absolute;
+      inset: 0;
       width: 100%;
       height: 100%;
       display: flex;
@@ -724,64 +730,38 @@
   <script src="/assets/avatar.js"></script>
   <script src="/assets/thumbnail-renderer.js"></script>
   <script>
-    // Category definitions matching Hytale's structure with distinctive icons
+    // MyAvatarPage.ui / native category grouping from the installed 0.7 client.
+    const categoryIcon = name => `<img src="/assets/category-icons/${name}@2x.png" data-icon="${name}" alt="" aria-hidden="true">`;
     const CATEGORIES = {
-      head: {
-        name: 'Head',
-        icon: `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12c0 1.85.5 3.58 1.37 5.07L2 22l4.93-1.37C8.42 21.5 10.15 22 12 22c5.52 0 10-4.48 10-10S17.52 2 12 2zm0 18c-1.85 0-3.58-.5-5.07-1.37l-.36-.22-3.72 1.03 1.03-3.72-.22-.36C3.5 14.58 3 12.85 3 11c0-4.96 4.04-9 9-9s9 4.04 9 9-4.04 9-9 9z"/><circle cx="9" cy="10" r="1.5"/><circle cx="15" cy="10" r="1.5"/></svg>`,
-        subcategories: {
-          eyes: { name: 'Eyes', key: 'eyes', icon: `<svg viewBox="0 0 24 24"><path d="M12 4C7 4 2.73 7.11 1 11.5 2.73 15.89 7 19 12 19s9.27-3.11 11-7.5C21.27 7.11 17 4 12 4zm0 12.5c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>` },
-          eyebrows: { name: 'Eyebrows', key: 'eyebrows', icon: `<svg viewBox="0 0 24 24"><path d="M3 9c0-1 1-3 5-3s4.5 1.5 4.5 1.5S13 6 17 6c4 0 5 2 5 3H3z"/><path d="M3 14c0-1 1-3 5-3s4.5 1.5 4.5 1.5S13 11 17 11c4 0 5 2 5 3H3z" opacity="0.5"/></svg>` },
-          haircut: { name: 'Haircut', key: 'haircut', icon: `<svg viewBox="0 0 24 24"><path d="M12 2C9.24 2 7 4.24 7 7v4c0 2.76 2.24 5 5 5s5-2.24 5-5V7c0-2.76-2.24-5-5-5z"/><path d="M4 7c0-2 1-4 4-5 0 0-2 1-2 4v5c0 3.31 2.69 6 6 6s6-2.69 6-6V6c0-3-2-4-2-4 3 1 4 3 4 5v5c0 4.42-3.58 8-8 8s-8-3.58-8-8V7z"/></svg>` },
-          face: { name: 'Face', key: 'face', icon: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="9" cy="10" r="1.5" fill="rgba(0,0,0,0.3)"/><circle cx="15" cy="10" r="1.5" fill="rgba(0,0,0,0.3)"/><path d="M8 15c0 0 2 2 4 2s4-2 4-2" stroke="rgba(0,0,0,0.3)" stroke-width="1.5" fill="none"/></svg>` },
-          facialHair: { name: 'Facial Hair', key: 'facialHair', icon: `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12c0 2.5.92 4.79 2.44 6.54C5.5 17.5 8.5 16 12 16s6.5 1.5 7.56 2.54A9.96 9.96 0 0022 12c0-5.52-4.48-10-10-10z"/><path d="M7 14c0 0 2 4 5 4s5-4 5-4c0 2-2.24 5-5 5s-5-3-5-5z"/></svg>` },
-          mouth: { name: 'Mouth', key: 'mouth', icon: `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M7 13c0 0 2 3 5 3s5-3 5-3-2 4-5 4-5-4-5-4z" fill="rgba(0,0,0,0.3)"/></svg>` },
-          ears: { name: 'Ears', key: 'ears', icon: `<svg viewBox="0 0 24 24"><path d="M5 12c0-3.87 3.13-7 7-7s7 3.13 7 7"/><path d="M3 12c0 3 1.5 5 3 6l1-2c-1-.5-2-2-2-4 0-2.76 2.24-5 5-5h4c2.76 0 5 2.24 5 5 0 2-1 3.5-2 4l1 2c1.5-1 3-3 3-6 0-4.42-3.58-8-8-8H9c-4.42 0-8 3.58-8 8h2z"/></svg>` },
-          headAccessory: { name: 'Head Accessory', key: 'headAccessory', icon: `<svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5" fill="none" stroke="currentColor" stroke-width="2"/></svg>` },
-          faceAccessory: { name: 'Face Accessory', key: 'faceAccessory', icon: `<svg viewBox="0 0 24 24"><rect x="2" y="8" width="20" height="8" rx="2"/><circle cx="7" cy="12" r="3"/><circle cx="17" cy="12" r="3"/><path d="M10 12h4"/></svg>` },
-          earAccessory: { name: 'Ear Accessory', key: 'earAccessory', icon: `<svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="12" r="3"/><path d="M6 15v4M18 15v4" stroke="currentColor" stroke-width="2"/></svg>` }
-        }
-      },
-      torso: {
-        name: 'Torso',
-        icon: `<svg viewBox="0 0 24 24"><path d="M12 2L8 6v2H6v12h12V8h-2V6l-4-4zm0 2.83L14 7v1h2v10H8V8h2V7l2-2.17z"/></svg>`,
-        subcategories: {
-          undertop: { name: 'Undertop', key: 'undertop', icon: `<svg viewBox="0 0 24 24"><path d="M12 4L8 8H6v12h12V8h-2l-4-4z" opacity="0.5"/><path d="M9 10h6v8H9z"/></svg>` },
-          overtop: { name: 'Overtop', key: 'overtop', icon: `<svg viewBox="0 0 24 24"><path d="M12 2L6 8v12h12V8l-6-6zm0 2.83L16 9v9H8V9l4-4.17z"/></svg>` }
-        }
-      },
-      arms: {
-        name: 'Arms',
-        icon: `<svg viewBox="0 0 24 24"><path d="M4 10c0-1 .5-2 1.5-2S7 9 7 10v7h3V8c0-1 .5-2 1.5-2s1.5 1 1.5 2v9h3v-7c0-1 .5-2 1.5-2s1.5 1 1.5 2v10H4V10z"/></svg>`,
-        subcategories: {
-          gloves: { name: 'Gloves', key: 'gloves', icon: `<svg viewBox="0 0 24 24"><path d="M14 2v6h2V2h-2zm-4 0v6h2V2h-2zm-4 6v10c0 2 2 4 4 4h4c2 0 4-2 4-4V8H6zm2 2h8v8c0 1-1 2-2 2h-4c-1 0-2-1-2-2v-8z"/></svg>` }
-        }
-      },
-      legs: {
-        name: 'Legs',
-        icon: `<svg viewBox="0 0 24 24"><path d="M8 2h8v8H8z" opacity="0.3"/><path d="M8 10h3v12H8zm5 0h3v12h-3z"/></svg>`,
-        subcategories: {
-          pants: { name: 'Pants', key: 'pants', icon: `<svg viewBox="0 0 24 24"><path d="M6 2h12v6H6z" opacity="0.3"/><path d="M6 8h5v14H6zm7 0h5v14h-5z"/></svg>` },
-          overpants: { name: 'Overpants', key: 'overpants', icon: `<svg viewBox="0 0 24 24"><path d="M5 2h14v4H5z"/><path d="M5 6h6v16H5zm8 0h6v16h-6z"/></svg>` },
-          shoes: { name: 'Shoes', key: 'shoes', icon: `<svg viewBox="0 0 24 24"><path d="M4 16c0 2 2 4 4 4h8c2 0 4-2 4-4v-2H4v2z"/><path d="M6 12h4v2H6zm8 0h4v2h-4z"/></svg>` }
-        }
-      },
-      general: {
-        name: 'General',
-        icon: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/></svg>`,
-        subcategories: {
-          underwear: { name: 'Underwear', key: 'underwear', icon: `<svg viewBox="0 0 24 24"><path d="M6 6h12v4H6z" opacity="0.3"/><path d="M6 10h5v6l-3 4H6v-10zm7 0h5v10h-2l-3-4v-6z"/></svg>` },
-          bodyCharacteristic: { name: 'Body & Skin', key: 'bodyCharacteristic', icon: `<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="3"/><path d="M8 10h8v3H8z"/><path d="M9 13h2v9H9zm4 0h2v9h-2z"/><circle cx="6" cy="18" r="2" fill="#ba7f5b"/><circle cx="18" cy="18" r="2" fill="#6f3b2c"/></svg>` },
-          skinFeature: { name: 'Skin Features', key: 'skinFeature', icon: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="8" cy="10" r="1"/><circle cx="16" cy="10" r="1"/><circle cx="10" cy="14" r="1"/><circle cx="14" cy="16" r="1"/></svg>` }
-        }
-      },
-      capes: {
-        name: 'Capes',
-        icon: `<svg viewBox="0 0 24 24"><path d="M12 2c-2 0-4 1-4 1v18s2 1 4 1 4-1 4-1V3s-2-1-4-1z"/><path d="M8 3C6 4 4 6 4 10v10c2-2 4-3 4-3V3zm8 0v14s2 1 4 3V10c0-4-2-6-4-7z" opacity="0.5"/></svg>`,
-        subcategories: {
-          cape: { name: 'Capes', key: 'cape', icon: `<svg viewBox="0 0 24 24"><path d="M12 2c-3 0-6 1-6 1v18s3 1 6 1 6-1 6-1V3s-3-1-6-1z"/></svg>` }
-        }
-      }
+      head: { name: "Head", icon: categoryIcon("Head"), subcategories: {
+        haircut: {name: "Haircut", key: "haircut", icon: categoryIcon("Haircut")},
+        eyebrows: {name: "Eyebrows", key: "eyebrows", icon: categoryIcon("Eyebrows")},
+        eyes: {name: "Eyes", key: "eyes", icon: categoryIcon("Eyes")},
+        facialHair: {name: "Facial Hair", key: "facialHair", icon: categoryIcon("FacialHair")},
+        headAccessory: {name: "Head Accessory", key: "headAccessory", icon: categoryIcon("HeadAccessory")},
+        faceAccessory: {name: "Face Accessory", key: "faceAccessory", icon: categoryIcon("FaceAccessory")},
+        earAccessory: {name: "Ear Accessory", key: "earAccessory", icon: categoryIcon("EarAccessory")},
+      }},
+      general: { name: "General", icon: categoryIcon("General"), subcategories: {
+        underwear: {name: "Underwear", key: "underwear", icon: categoryIcon("Underwear")},
+        bodyCharacteristic: {name: "Body & Skin", key: "bodyCharacteristic", icon: categoryIcon("BodyCharacteristic")},
+        face: {name: "Face", key: "face", icon: categoryIcon("Face")},
+        mouth: {name: "Mouth", key: "mouth", icon: categoryIcon("Mouth")},
+        ears: {name: "Ears", key: "ears", icon: categoryIcon("Ears")},
+      }},
+      torso: { name: "Torso", icon: categoryIcon("Torso"), subcategories: {
+        undertop: {name: "Undertop", key: "undertop", icon: categoryIcon("Undertop")},
+        overtop: {name: "Overtop", key: "overtop", icon: categoryIcon("Overtop")},
+        gloves: {name: "Gloves", key: "gloves", icon: categoryIcon("Gloves")},
+      }},
+      legs: { name: "Legs", icon: categoryIcon("Legs"), subcategories: {
+        pants: {name: "Pants", key: "pants", icon: categoryIcon("Pants")},
+        overpants: {name: "Overpants", key: "overpants", icon: categoryIcon("Overpants")},
+        shoes: {name: "Shoes", key: "shoes", icon: categoryIcon("Shoes")},
+      }},
+      capes: { name: "Capes", icon: categoryIcon("Capes"), subcategories: {
+        cape: {name: "Capes", key: "cape", icon: categoryIcon("Cape")},
+      }},
     };
 
     // Current state
@@ -862,6 +842,8 @@
         const btn = document.createElement('button');
         btn.className = 'category-btn group-header';
         btn.dataset.category = key;
+        btn.title = category.name;
+        btn.setAttribute("aria-label", category.name);
         btn.innerHTML = category.icon;
         btn.onclick = () => selectCategory(key);
 
@@ -878,6 +860,13 @@
       }
     }
 
+    function updateCategoryIcons() {
+      document.querySelectorAll('[data-icon]').forEach(img => {
+        const selected = img.closest('button').classList.contains('active');
+        img.src = `/assets/category-icons/${img.dataset.icon}${selected ? 'Selected' : ''}@2x.png`;
+      });
+    }
+
     function selectCategory(categoryKey) {
       currentCategory = categoryKey;
       const category = CATEGORIES[categoryKey];
@@ -886,6 +875,8 @@
       document.querySelectorAll('.category-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.category === categoryKey);
       });
+
+      updateCategoryIcons();
 
       // Update subcategory sidebar
       const subSidebar = document.getElementById('subcategory-sidebar');
@@ -897,6 +888,7 @@
         btn.dataset.subcategory = subKey;
         btn.innerHTML = sub.icon;
         btn.title = sub.name;
+        btn.setAttribute("aria-label", sub.name);
         btn.onclick = () => selectSubcategory(subKey);
         subSidebar.appendChild(btn);
       }
@@ -915,6 +907,8 @@
       document.querySelectorAll('.subcategory-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.subcategory === subKey);
       });
+
+      updateCategoryIcons();
 
       // Update breadcrumb
       document.getElementById('breadcrumb-category').textContent = category.name.toUpperCase();
@@ -974,8 +968,10 @@
     }
 
     function loadStylesForCategory(categoryKey) {
+      thumbnailRenderer?.cancelPending?.();
       const grid = document.getElementById('style-grid');
       grid.innerHTML = '';
+      grid.scrollTop = 0;
 
       const selectedId = currentSkin[categoryKey];
       const selectedColor = currentColors[categoryKey];
@@ -1051,7 +1047,11 @@
     // Render a 3D thumbnail asynchronously
     async function render3DThumbnail(container, category, itemId, colorId, skinTone) {
       try {
-        const dataUrl = await thumbnailRenderer.renderThumbnail(category, itemId, colorId, skinTone);
+        const context = {};
+        for (const key of ['bodyCharacteristic', 'underwear', 'haircut', 'facialHair', 'eyebrows', 'eyes', 'ears', 'mouth', 'face']) {
+          context[key] = currentSkin[key] ? {id: currentSkin[key], color: currentColors[key], variant: currentVariants[key]} : null;
+        }
+        const dataUrl = await thumbnailRenderer.renderThumbnail(category, itemId, colorId, skinTone, null, context);
         if (dataUrl) {
           container.innerHTML = `<img src="${dataUrl}" alt="${itemId}">`;
         } else {

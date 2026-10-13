@@ -11,119 +11,34 @@
  */
 
 const THUMB_SIZE = 128;
+const THUMB_HEIGHT = Math.round(THUMB_SIZE * 149 / 92);
+const THUMB_BASE_CONTEXT = ['bodyCharacteristic', 'underwear', 'haircut', 'facialHair', 'eyebrows', 'eyes', 'ears', 'mouth', 'face'];
 const THUMB_SCALE = 0.01; // Same as avatar.js
 const DEBUG_THUMBNAILS = false;
 const DEBUG_TEXTURES = false;
 
-// Camera settings per category region
-// Based on actual body part world positions:
-// - Head center: ~0.88
-// - Chest center: ~0.71
-// - Belly center: ~0.63
-// - Pelvis: ~0.51
-// - Thighs: ~0.39
-// - Calves: ~0.28
-// - Feet: ~0.27
-const CAMERA_CONFIGS = {
-  // Head: 45-degree angle view, further back to fit whole head/haircut
-  head: {
-    position: new THREE.Vector3(-0.7, 1.1, -1.3),
-    lookAt: new THREE.Vector3(0, 0.95, 0),
-    fov: 28
-  },
-  torso: {
-    position: new THREE.Vector3(0, 0.68, -1.4),
-    lookAt: new THREE.Vector3(0, 0.62, 0),
-    fov: 40
-  },
-  // Gloves: Focus on right hand only with closer camera
-  gloves: {
-    position: new THREE.Vector3(-0.35, 0.48, -0.6),
-    lookAt: new THREE.Vector3(-0.18, 0.45, 0),
-    fov: 35
-  },
-  legs: {
-    position: new THREE.Vector3(0, 0.38, -1.6),
-    lookAt: new THREE.Vector3(0, 0.35, 0),
-    fov: 38
-  },
-  // Cape: Camera behind character to see the back (character still faces front with Math.PI)
-  cape: {
-    position: new THREE.Vector3(0, 0.68, 1.1),
-    lookAt: new THREE.Vector3(0, 0.62, 0),
-    fov: 45
-    // No characterRotation override - uses default Math.PI so character faces -Z
-    // Camera at +Z sees the back of the character
-  }
-};
-
-// Map cosmetic categories to camera regions
-const CATEGORY_TO_REGION = {
-  haircut: 'head',
-  eyebrows: 'head',
-  eyes: 'head',
-  face: 'head',
-  mouth: 'head',
-  facialHair: 'head',
-  headAccessory: 'head',
-  faceAccessory: 'head',
-  earAccessory: 'head',
-  ears: 'head',
-  undertop: 'torso',
-  overtop: 'torso',
-  gloves: 'gloves',  // Uses dedicated gloves camera config
-  pants: 'legs',
-  overpants: 'legs',
-  underwear: 'legs',
-  shoes: 'legs',
-  cape: 'cape',
-  skinFeature: 'torso',
-  bodyCharacteristic: 'torso'
-};
-
-// Body parts to render per region
-// Note: We render ALL body parts to maintain hierarchy for cosmetic attachment,
-// but we visually show only relevant ones by hiding others
-const REGION_BODY_PARTS = {
-  head: new Set([
-    'Head', 'HeadTop', 'HairBase', 'Neck', 'NeckTop',
-    'L-Eyelid', 'R-Eyelid', 'L-Eyelid-Bot', 'R-Eyelid-Bot',
-    // Attachment points
-    'L-Eyebrow-Attachment', 'R-Eyebrow-Attachment',
-    'L-Eye-Attachment', 'R-Eye-Attachment',
-    'Mouth-Attachment', 'L-Ear-Attachment', 'R-Ear-Attachment'
-  ]),
-  torso: new Set([
-    'Pelvis', 'Belly', 'Chest', 'Neck', 'NeckTop',
-    'L-Shoulder', 'R-Shoulder', 'L-Arm', 'R-Arm',
-    'L-Forearm', 'R-Forearm', 'L-Shoulder2', 'R-Shoulder2',
-    'Back-Attachment'
-  ]),
-  // Gloves: Show only right arm/hand for focused preview
-  gloves: new Set([
-    'R-Shoulder', 'R-Arm', 'R-Forearm', 'R-Hand', 'R-Attachment'
-  ]),
-  legs: new Set([
-    'Pelvis', 'L-Thigh', 'R-Thigh', 'L-Calf', 'R-Calf',
-    'L-Foot', 'R-Foot'
-  ]),
-  cape: new Set([
-    'Pelvis', 'Belly', 'Chest', 'Neck', 'NeckTop',
-    'L-Shoulder', 'R-Shoulder', 'L-Shoulder2', 'R-Shoulder2',
-    'Back-Attachment'
-  ])
-};
-
-// Parts to hide when rendering specific cosmetics
-const HIDE_PARTS_FOR_COSMETIC = {
-  pants: [], // Short garments require the base legs underneath.
-  overpants: [],
-  underwear: [],
-  shoes: [],
-  overtop: [],
-  undertop: [],
-  haircut: ['HeadTop', 'HairBase'],
-  gloves: []
+// Native item-preview model presets: HytaleClient 0x100cf9a40.
+// Game uses authored coordinates /12; our model uses *THUMB_SCALE.
+const GAME_PREVIEW_PRESETS = {
+  bodyCharacteristic: { translation: [0, -4.9, -8], yaw: 22.5, scale: 1 },
+  underwear: { translation: [0, -4.9, -8], yaw: 22.5, scale: 1 },
+  undertop: { translation: [0, -4.9, -8], yaw: 22.5, scale: 1 },
+  overtop: { translation: [0, -4.9, -8], yaw: 22.5, scale: 1 },
+  gloves: { translation: [0, -4.9, -8], yaw: 22.5, scale: 1 },
+  haircut: { translation: [0, -8.3, -8], yaw: 22.5, scale: 1 },
+  headAccessory: { translation: [0, -8.3, -8], yaw: 22.5, scale: 1 },
+  faceAccessory: { translation: [0, -8.3, -8], yaw: 22.5, scale: 1 },
+  facialHair: { translation: [0, -6.7, -8], yaw: 22.5, scale: 1 },
+  eyebrows: { translation: [-0.2, -8.3, -6.5], yaw: 22.5, scale: 1 },
+  eyes: { translation: [-0.2, -8.3, -6], yaw: 22.5, scale: 1 },
+  mouth: { translation: [-0.2, -8.3, -6], yaw: 22.5, scale: 1 },
+  face: { translation: [-0.2, -8.3, -6], yaw: 22.5, scale: 1 },
+  ears: { translation: [-1.2, -7.9, -3.6], yaw: -22.5, scale: 1 },
+  earAccessory: { translation: [-1.2, -7.9, -3.6], yaw: -22.5, scale: 1 },
+  pants: { translation: [0, -2.5, -8], yaw: 22.5, scale: 1 },
+  overpants: { translation: [0, -2.5, -8], yaw: 22.5, scale: 1 },
+  shoes: { translation: [0, -2.2, -8], yaw: 22.5, scale: 1 },
+  cape: { translation: [-0.2, -2.8, -8], yaw: 202.5, scale: 0.7 },
 };
 
 class ThumbnailRenderer {
@@ -145,6 +60,7 @@ class ThumbnailRenderer {
     // Render queue to prevent concurrent renders
     this.renderQueue = [];
     this.isRendering = false;
+    this.requestTimeoutMs = 10000;
   }
 
   async init() {
@@ -152,7 +68,7 @@ class ThumbnailRenderer {
 
     // Create hidden container
     this.container = document.createElement('div');
-    this.container.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:128px;height:128px;';
+    this.container.style.cssText = `position:absolute;left:-9999px;top:-9999px;width:${THUMB_SIZE}px;height:${THUMB_HEIGHT}px;`;
     document.body.appendChild(this.container);
 
     // Create renderer
@@ -161,7 +77,7 @@ class ThumbnailRenderer {
       alpha: true,
       preserveDrawingBuffer: true
     });
-    this.renderer.setSize(THUMB_SIZE, THUMB_SIZE);
+    this.renderer.setSize(THUMB_SIZE, THUMB_HEIGHT);
     this.renderer.setPixelRatio(1);
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.autoClear = true;
@@ -171,7 +87,7 @@ class ThumbnailRenderer {
     this.scene = new THREE.Scene();
 
     // Create camera (will be configured per render)
-    this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+    this.camera = new THREE.PerspectiveCamera(45, THUMB_SIZE / THUMB_HEIGHT, 0.1, 100);
 
     // Setup lights - FIX P0: Reduced intensity to ~1.0 total (was 1.8x causing overexposure)
     this.lights = new THREE.Group();
@@ -209,13 +125,14 @@ class ThumbnailRenderer {
    * @param {string} skinTone - Skin tone (default '01')
    * @returns {Promise<string|null>} Data URL or null on failure
    */
-  async renderThumbnail(category, itemId, colorId, skinTone = '01') {
+  async renderThumbnail(category, itemId, colorId, skinTone = '01', variantId = null, previewContext = {}) {
+    const context = this._snapshotPreviewContext(previewContext);
     if (!this.initialized) {
       await this.init();
     }
 
     // Check cache first (can return immediately without queueing)
-    const cacheKey = `${category}:${itemId}:${colorId || 'default'}:${skinTone}`;
+    const cacheKey = `${category}:${itemId}:${colorId || 'default'}:${skinTone}:${variantId || 'default'}:${JSON.stringify(context)}`;
     if (this.thumbnailCache.has(cacheKey)) {
       if (DEBUG_THUMBNAILS) console.log('[ThumbnailRenderer] Cache hit:', cacheKey);
       return this.thumbnailCache.get(cacheKey);
@@ -223,7 +140,7 @@ class ThumbnailRenderer {
 
     // Queue the render to prevent concurrent access to shared renderer
     return new Promise((resolve) => {
-      this.renderQueue.push({ category, itemId, colorId, skinTone, cacheKey, resolve });
+      this.renderQueue.push({ category, itemId, colorId, skinTone, variantId, context, cacheKey, resolve });
       this._processQueue();
     });
   }
@@ -236,7 +153,7 @@ class ThumbnailRenderer {
     this.isRendering = true;
 
     while (this.renderQueue.length > 0) {
-      const { category, itemId, colorId, skinTone, cacheKey, resolve } = this.renderQueue.shift();
+      const { category, itemId, colorId, skinTone, variantId, context, cacheKey, resolve } = this.renderQueue.shift();
 
       // Double-check cache (might have been rendered while in queue)
       if (this.thumbnailCache.has(cacheKey)) {
@@ -247,7 +164,7 @@ class ThumbnailRenderer {
       if (DEBUG_THUMBNAILS) console.log(`[ThumbnailRenderer] Rendering ${category}/${itemId} color=${colorId} skin=${skinTone}`);
 
       try {
-        const dataUrl = await this._doRender(category, itemId, colorId, skinTone, cacheKey);
+        const dataUrl = await this._doRender(category, itemId, colorId, skinTone, cacheKey, variantId, context);
         resolve(dataUrl);
       } catch (err) {
         console.error(`[ThumbnailRenderer] Error rendering ${category}/${itemId}:`, err);
@@ -258,38 +175,21 @@ class ThumbnailRenderer {
     this.isRendering = false;
   }
 
-  async _doRender(category, itemId, colorId, skinTone, cacheKey) {
+  async _doRender(category, itemId, colorId, skinTone, cacheKey, variantId = null, context = {}) {
     try {
       // Clear previous scene
       this._clearCharacter();
 
-      // Get camera config for this category
-      const region = CATEGORY_TO_REGION[category] || 'torso';
-      const cameraConfig = CAMERA_CONFIGS[region];
+      this._applyGamePreviewPreset(category);
 
-      if (DEBUG_THUMBNAILS) console.log(`[ThumbnailRenderer] Region: ${region}, Camera pos: (${cameraConfig.position.x}, ${cameraConfig.position.y}, ${cameraConfig.position.z})`);
-
-      // Position camera
-      this.camera.fov = cameraConfig.fov;
-      this.camera.position.copy(cameraConfig.position);
-      this.camera.lookAt(cameraConfig.lookAt);
-      this.camera.updateProjectionMatrix();
-
-      // Set character rotation (face camera or show back for capes)
-      this.character.rotation.y = cameraConfig.characterRotation !== undefined
-        ? cameraConfig.characterRotation
-        : Math.PI;
-
+      // Copy the current base body for every cosmetic preview.
+      const contextBody = category === 'bodyCharacteristic' ? null : await this._resolveContextPart('bodyCharacteristic', context);
+      if (context.bodyCharacteristic?.colorId) skinTone = context.bodyCharacteristic.colorId;
       // Get skin color info
+      if (category === 'bodyCharacteristic' && colorId) skinTone = colorId;
       const skinColor = this._getSkinToneColor(skinTone);
       const skinColorHex = '#' + skinColor.toString(16).padStart(6, '0');
       const skinToneGradient = this._getSkinToneGradientPath(skinTone);
-
-      // Build partial body for this region
-      const bodyParts = REGION_BODY_PARTS[region] || new Set();
-      const hideParts = new Set(HIDE_PARTS_FOR_COSMETIC[category] || []);
-
-      await this._buildPartialBody(bodyParts, hideParts, skinColor, skinColorHex, skinToneGradient);
 
       // Fetch item data from API
       const itemData = await this._fetchItemData(category, itemId);
@@ -299,14 +199,24 @@ class ThumbnailRenderer {
       }
 
       // Resolve item texture/model paths
-      const resolvedPart = this._resolveItemPart(itemData, colorId);
+      const resolvedPart = this._resolveItemPart(itemData, colorId, variantId);
       if (!resolvedPart || !resolvedPart.model) {
         console.warn(`[ThumbnailRenderer] No model for ${category}/${itemId}`);
         return null;
       }
 
+      // Body characteristics select the actual base texture (including Goblin),
+      // not a second full Player model over a regular partial body.
+      const bodyParts = null;
+      const hideParts = new Set();
+      await this._buildPartialBody(bodyParts, hideParts, skinColor, skinColorHex, skinToneGradient,
+        category === 'bodyCharacteristic' ? resolvedPart : contextBody);
+
+      await this._renderPreviewContext(category, resolvedPart, skinColor, skinColorHex, skinToneGradient, context);
+
       // Load and render the cosmetic
-      await this._renderCosmetic(category, resolvedPart, skinColor, skinColorHex, skinToneGradient);
+      if (category !== 'bodyCharacteristic') await this._renderCosmetic(category, resolvedPart, skinColor, skinColorHex, skinToneGradient);
+
 
       // Render and capture
       this.renderer.clear();
@@ -321,6 +231,23 @@ class ThumbnailRenderer {
       console.error(`[ThumbnailRenderer] Error in _doRender:`, err);
       return null;
     }
+  }
+
+  cancelPending() {
+    // A category change must not wait behind every thumbnail from the old grid.
+    for (const job of this.renderQueue.splice(0)) job.resolve(null);
+  }
+
+  _applyGamePreviewPreset(category) {
+    const preset = GAME_PREVIEW_PRESETS[category];
+    if (!preset) throw new Error(`No game preview preset for ${category}`);
+    this.camera.fov = 45;
+    this.camera.position.set(0, 0, 0);
+    this.camera.lookAt(0, 0, -1);
+    this.camera.updateProjectionMatrix();
+    this.character.position.fromArray(preset.translation).multiplyScalar(12 * THUMB_SCALE);
+    this.character.rotation.set(0, preset.yaw * Math.PI / 180, 0);
+    this.character.scale.setScalar(preset.scale);
   }
 
   _clearCharacter() {
@@ -380,9 +307,9 @@ class ThumbnailRenderer {
     }
   }
 
-  async _buildPartialBody(includeParts, hideParts, skinColor, skinColorHex, skinToneGradient) {
+  async _buildPartialBody(includeParts, hideParts, skinColor, skinColorHex, skinToneGradient, bodyDefinition = null) {
     // Load player model
-    const playerModel = await this._fetchModel('Common/Characters/Player.blockymodel');
+    const playerModel = await this._fetchModel(bodyDefinition?.model ? 'Common/' + bodyDefinition.model.replace(/^Common\//, '') : 'Common/Characters/Player.blockymodel');
     if (!playerModel) {
       if (DEBUG_THUMBNAILS) console.error('[ThumbnailRenderer] Failed to load Player.blockymodel');
       return;
@@ -391,7 +318,7 @@ class ThumbnailRenderer {
     if (DEBUG_THUMBNAILS) console.log('[ThumbnailRenderer] Loaded player model, nodes:', playerModel.nodes?.length);
 
     // Load body texture
-    const bodyTexturePath = 'Characters/Player_Textures/Player_Greyscale.png';
+    const bodyTexturePath = bodyDefinition?.greyscaleTexture || 'Characters/Player_Textures/Player_Greyscale.png';
     const bodyTexture = await this._createTintedTexture(bodyTexturePath, skinColorHex, skinToneGradient);
 
     if (DEBUG_THUMBNAILS) console.log('[ThumbnailRenderer] Body texture:', bodyTexture ? 'loaded' : 'FAILED');
@@ -436,7 +363,7 @@ class ThumbnailRenderer {
     // Determine if we should render a mesh for this node
     // We need the bone hierarchy intact for cosmetic attachment, but only show relevant parts
     const shouldHide = hideParts.has(nodeName);
-    const shouldShow = includeParts.has(nodeName) && !shouldHide;
+    const shouldShow = (!includeParts || includeParts.has(nodeName)) && !shouldHide;
 
     // Always render the mesh for bone hierarchy, but make it invisible if not in includeParts
     if (node.shape && node.shape.visible !== false && node.shape.type === 'box') {
@@ -471,6 +398,68 @@ class ThumbnailRenderer {
         await this._renderPartialPlayerNode(child, group, skinColor, bodyTexture, includeParts, hideParts, depth + 1);
       }
     }
+  }
+
+  _snapshotPreviewContext(source = {}) {
+    source = source || {};
+    const result = {};
+    for (const key of THUMB_BASE_CONTEXT) {
+      if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+      const value = source[key];
+      if (!value) { result[key] = null; continue; }
+      if (typeof value === 'string') {
+        const [id, colorId, variantId] = value.split('.');
+        result[key] = { id, colorId: colorId || null, variantId: variantId || null };
+      } else if (typeof value === 'object' && (value.id || value.itemId)) {
+        result[key] = { id: String(value.id || value.itemId), colorId: value.colorId || value.color ? String(value.colorId || value.color) : null, variantId: value.variantId || value.variant ? String(value.variantId || value.variant) : null };
+      }
+    }
+    return result;
+  }
+
+  async _defaultCatalogue() {
+    let catalogue = this.modelCache.get('default-cosmetic-catalogue');
+    if (!catalogue) {
+      const response = await fetch('/cosmetics/list', { signal: AbortSignal.timeout(this.requestTimeoutMs) });
+      if (!response.ok) throw new Error('Could not load default cosmetics');
+      catalogue = await response.json();
+      this.modelCache.set('default-cosmetic-catalogue', catalogue);
+    }
+    return catalogue;
+  }
+
+  async _resolveContextPart(key, context) {
+    // Explicit empty optional fields remain empty. Unavailable/missing current
+    // assets use actual declared defaults, never a guessed cosmetic identifier.
+    if (Object.prototype.hasOwnProperty.call(context, key) && context[key] === null) return null;
+    const selected = context[key];
+    if (selected?.id) {
+      const current = this._resolveItemPart(await this._fetchItemData(key, selected.id), selected.colorId, selected.variantId);
+      if (current?.model) return current;
+    }
+    const catalogue = await this._defaultCatalogue();
+    const fallback = catalogue.items?.[key]?.find(item => item.isDefault);
+    if (!fallback) return null;
+    return this._resolveItemPart(await this._fetchItemData(key, fallback.id), fallback.colors?.[0]);
+  }
+
+  async _renderPreviewContext(category, selectedPart, skinColor, skinColorHex, skinToneGradient, context = {}) {
+    const keys = ['underwear', 'haircut', 'facialHair', 'eyebrows', 'eyes', 'ears', 'mouth', 'face'];
+    const hidden = new Set((selectedPart.hidesSkinProperties || []).map(key => key.toLowerCase()));
+    for (const key of keys) {
+      if (key === category || hidden.has(key.toLowerCase())) continue;
+      let part = await this._resolveContextPart(key, context);
+      // Match the avatar API's compatibility rule for hats over long hair.
+      if (key === 'haircut' && selectedPart.headAccessoryType === 'HalfCovering' && part?.requiresGenericHaircut && part.hairType) {
+        const generic = await this._fetchItemData('haircut', `Generic${part.hairType}`);
+        part = this._resolveItemPart(generic, context.haircut?.colorId) || part;
+      }
+      if (part?.model) await this._renderCosmetic(key, part, skinColor, skinColorHex, skinToneGradient);
+    }
+  }
+
+  async _renderDefaultFacialContext(category, selectedPart, skinColor, skinColorHex, skinToneGradient) {
+    return this._renderPreviewContext(category, selectedPart, skinColor, skinColorHex, skinToneGradient);
   }
 
   async _renderCosmetic(category, part, skinColor, skinColorHex, skinToneGradient) {
@@ -622,7 +611,7 @@ class ThumbnailRenderer {
     }
 
     try {
-      const response = await fetch(`/cosmetics/item/${category}/${itemId}`);
+      const response = await fetch(`/cosmetics/item/${encodeURIComponent(category)}/${encodeURIComponent(itemId)}`, { signal: AbortSignal.timeout(this.requestTimeoutMs) });
       if (!response.ok) return null;
       const data = await response.json();
       this.modelCache.set(cacheKey, data);
@@ -633,75 +622,28 @@ class ThumbnailRenderer {
     }
   }
 
-  _resolveItemPart(itemData, colorId) {
-    if (!itemData || !itemData.item) return null;
-
+  _resolveItemPart(itemData, colorId, variantId = null) {
+    if (!itemData?.item) return null;
     const item = itemData.item;
-    const gradientSets = itemData.gradientSets || [];
-
-    const result = {
-      model: null,
-      texture: null,
-      greyscaleTexture: null,
-      gradientTexture: null,
-      gradientSet: null,
-      baseColor: null
-    };
-
-    // Helper to get gradient texture path from gradient set
-    const getGradientTexture = (gradientSetId, colorIdToUse) => {
-      if (!gradientSetId || !colorIdToUse) return null;
-      const gradientSetConfig = gradientSets.find(g => g.Id === gradientSetId);
-      if (gradientSetConfig && gradientSetConfig.Gradients && gradientSetConfig.Gradients[colorIdToUse]) {
-        return {
-          texture: gradientSetConfig.Gradients[colorIdToUse].Texture,
-          baseColor: gradientSetConfig.Gradients[colorIdToUse].BaseColor
-        };
-      }
-      return null;
-    };
-
-    // Handle items with Variants (like capes)
-    if (item.Variants) {
-      const variant = item.Variants['Neck_Piece'] || Object.values(item.Variants)[0];
-      if (variant) {
-        result.model = variant.Model;
-        result.greyscaleTexture = variant.GreyscaleTexture;
-
-        if (variant.Textures && colorId && variant.Textures[colorId]) {
-          result.texture = variant.Textures[colorId].Texture;
-          result.baseColor = variant.Textures[colorId].BaseColor;
-        } else if (variant.GreyscaleTexture && item.GradientSet) {
-          result.gradientSet = item.GradientSet;
-          const gradientData = getGradientTexture(item.GradientSet, colorId);
-          if (gradientData) {
-            result.gradientTexture = gradientData.texture;
-            result.baseColor = gradientData.baseColor;
-          }
-        }
-      }
-      if (DEBUG_THUMBNAILS) console.log('[_resolveItemPart] Variant item:', { model: result.model, greyscale: result.greyscaleTexture, gradient: result.gradientTexture });
-      return result;
-    }
-
-    // Standard item without variants
-    result.model = item.Model;
-    result.greyscaleTexture = item.GreyscaleTexture;
-    result.gradientSet = item.GradientSet;
-
-    if (item.Textures && colorId && item.Textures[colorId]) {
-      result.texture = item.Textures[colorId].Texture;
-      result.baseColor = item.Textures[colorId].BaseColor;
-    } else if (item.GreyscaleTexture && item.GradientSet) {
-      const gradientData = getGradientTexture(item.GradientSet, colorId);
-      if (gradientData) {
-        result.gradientTexture = gradientData.texture;
-        result.baseColor = gradientData.baseColor;
+    const variant = item.Variants && (item.Variants[variantId] || Object.values(item.Variants)[0]);
+    const effective = variant ? { ...item, ...variant } : item;
+    const result = { model: effective.Model, gradientSet: effective.GradientSet, hidesSkinProperties: effective.HidesSkinProperties || [],
+      headAccessoryType: effective.HeadAccessoryType, hairType: effective.HairType, requiresGenericHaircut: effective.RequiresGenericHaircut };
+    const textures = effective.Textures || {};
+    const textureKey = colorId && textures[colorId]?.Texture ? colorId :
+      (!effective.GreyscaleTexture && Object.keys(textures).find(key => textures[key]?.Texture));
+    if (textureKey) {
+      result.texture = textures[textureKey].Texture;
+      result.baseColor = textures[textureKey].BaseColor;
+    } else if (effective.GreyscaleTexture) {
+      result.greyscaleTexture = effective.GreyscaleTexture;
+      const gradients = (itemData.gradientSets || []).find(set => set.Id === effective.GradientSet)?.Gradients || {};
+      const gradientKey = gradients[colorId] ? colorId : Object.keys(gradients)[0];
+      if (gradientKey) {
+        result.gradientTexture = gradients[gradientKey].Texture;
+        result.baseColor = gradients[gradientKey].BaseColor;
       }
     }
-
-    if (DEBUG_THUMBNAILS) console.log('[_resolveItemPart] Standard item:', { model: result.model, greyscale: result.greyscaleTexture, gradient: result.gradientTexture, texture: result.texture });
-
     return result;
   }
 
@@ -725,8 +667,12 @@ class ThumbnailRenderer {
     for (const tryPath of uniquePaths) {
       try {
         const texture = await new Promise((resolve, reject) => {
+          let expired = false;
+          const timeout = setTimeout(() => { expired = true; reject(new Error('Texture request timed out')); }, this.requestTimeoutMs);
           this.textureLoader.load(tryPath,
             (tex) => {
+              clearTimeout(timeout);
+              if (expired) { tex.dispose(); return; }
               tex.magFilter = THREE.NearestFilter;
               tex.minFilter = THREE.NearestFilter;
               tex.wrapS = THREE.ClampToEdgeWrapping;
@@ -741,12 +687,13 @@ class ThumbnailRenderer {
               resolve(tex);
             },
             undefined,
-            () => reject(new Error('Failed to load'))
+            () => { clearTimeout(timeout); reject(new Error('Failed to load')); }
           );
         });
         this.textureCache.set(path, texture);
         return texture;
       } catch (e) {
+        if (e.message === 'Texture request timed out') return null;
         // Try next path
       }
     }
@@ -758,7 +705,7 @@ class ThumbnailRenderer {
     if (this.modelCache.has(path)) return this.modelCache.get(path);
 
     try {
-      const response = await fetch('/asset/' + path);
+      const response = await fetch('/asset/' + path, { signal: AbortSignal.timeout(this.requestTimeoutMs) });
       if (!response.ok) return null;
       const model = await response.json();
       this.modelCache.set(path, model);

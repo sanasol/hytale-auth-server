@@ -47,6 +47,7 @@ COPY src/ ./src/
 # Copy static assets
 COPY assets/avatar.js ./assets/
 COPY assets/customizer.html ./assets/
+COPY assets/category-icons/ ./assets/category-icons/
 COPY assets/thumbnail-renderer.js ./assets/
 COPY assets/depth-peeling.js ./assets/
 COPY assets/avatar-audit.html assets/avatar-audit.js ./assets/

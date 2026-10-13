@@ -484,7 +484,9 @@ function handleCustomizerRoute(req, res, urlPath) {
     if (fs.existsSync(viewerPath)) {
       let html = fs.readFileSync(viewerPath, 'utf8');
       html = html.replace(/\{\{UUID\}\}/g, uuid);
-      html = html.replace(/(src="\/assets\/(?:avatar|depth-peeling|thumbnail-renderer)\.js)"/g, `$1?v=${headRenderVersion()}"`);
+      const customizerVersion = crypto.createHash('sha256').update(headRenderVersion())
+        .update(fs.readFileSync(path.join(__dirname, '../../assets/thumbnail-renderer.js'))).digest('hex').slice(0, 16);
+      html = html.replace(/(src="\/assets\/(?:avatar|depth-peeling|thumbnail-renderer)\.js)"/g, `$1?v=${customizerVersion}"`);
       sendHtml(res, 200, html);
       return;
     }

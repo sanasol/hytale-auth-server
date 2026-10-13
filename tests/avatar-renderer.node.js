@@ -109,12 +109,9 @@ test('shorts retain exposed calf geometry in native rendering', async () => {
 });
 
 test('thumbnail pants visibility retains exposed base calves', async () => {
-  const context = { THREE, module: { exports: {} }, console };
-  vm.createContext(context);
-  vm.runInContext(fs.readFileSync(require.resolve('../assets/thumbnail-renderer'), 'utf8') + '\nmodule.exports.hiddenParts = HIDE_PARTS_FOR_COSMETIC;', context);
-  const hideParts = new Set(context.module.exports.hiddenParts.pants);
+  const hideParts = new Set();
   const renderer = Object.create(Thumbnail.prototype); renderer.character = new THREE.Group();
-  await renderer._renderPartialPlayerNode(calf, renderer.character, 0xffffff, texture, new Set(['L-Calf']), hideParts, 0);
+  await renderer._renderPartialPlayerNode(calf, renderer.character, 0xffffff, texture, null, hideParts, 0);
   const mesh = renderer.character.getObjectByName('L-Calf').children.find(o => o.isMesh);
   assert.equal(mesh.visible, true);
   assert.equal(mesh.material.polygonOffset, true);
