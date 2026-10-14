@@ -53,6 +53,7 @@ public class IdentityProtectionChecker {
      * @return true if Omni-Auth is allowed (identity not protected), false if blocked
      */
     public static boolean isOmniAllowed(String uuid, String username) {
+        if (!DualAuthConfig.IDENTITY_PROTECTION) return true;
         if (uuid == null) return true; // No UUID — can't check, allow
 
         // Check cache first

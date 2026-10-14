@@ -28,7 +28,7 @@ Previously, authentication was handled via a **Static ASM Patcher**. While effec
 *   ✅ **Auto-Fetch Identity**: If no server tokens are provided, the agent can automatically fetch a valid server identity from your F2P domain.
 *   ✅ **Player Identity Registry**: Thread-safe `ConcurrentHashMap` tracks all online players with auth type (Official/F2P/Omni), accessible from any mod or plugin.
 *   ✅ **In-Game Commands**: `/authinfo` and `/authlist` for real-time player auth inspection.
-*   ✅ **Identity Protection**: Omni-Auth tokens are checked against the auth server's identity protection API to block impersonation of password-protected players.
+*   ✅ **Optional Identity Protection**: Enable `HYTALE_IDENTITY_PROTECTION=true` to check Omni-Auth UUIDs and usernames against the configured auth server. Disabled by default.
 
 ---
 
@@ -74,8 +74,30 @@ The agent is configured via environment variables, allowing for easy deployment 
 | :--- | :--- | :--- | :--- |
 | `HYTALE_AUTH_DOMAIN` | Your custom F2P authentication domain (alternative: `HYTALE_AUTH_SERVER`) | `auth.sanasol.ws` | **Community servers**: Set to your auth domain<br>**Development**: Use `localhost` for local testing<br>**Private networks**: Point to internal auth server |
 | `HYTALE_TRUST_ALL_ISSUERS` | If `true`, enables Omni-Auth (accepts self-signed tokens) | `true` | **Public servers**: Set to `false` for security<br>**Private servers**: Set to `true` for flexibility<br>**Development**: Keep `true` for easy testing |
+| `HYTALE_IDENTITY_PROTECTION` | Check Omni-Auth UUIDs and usernames against the configured F2P auth server | `false` | Enable to reject local tokens for password-protected UUIDs or usernames reserved by another UUID |
 | `HYTALE_TRUST_OFFICIAL` | If `true`, trusts official Hytale issuers (sessions.hytale.com) | `true` | **Mixed servers**: Keep `true` to allow both<br>**F2P-only**: Set to `false` to block officials<br>**Testing**: Disable to force F2P authentication |
 | `HYTALE_TRUSTED_ISSUERS` | Comma-separated list of trusted issuers (treated as public) | (Empty) | **Federated auth**: Add partner domains<br>**Multi-realm**: Trust multiple auth providers<br>**Migration**: Add legacy auth domains<br>**Performance**: Skip JWKS detection for trusted domains |
+
+### Identity protection
+
+By default, Omni-Auth does not query `/api/check-identity`. A nickname or UUID protected on sanasol.ws does not prevent a local session from joining through this path.
+
+**Warning:** When accepting self-signed tokens without identity protection, players can claim another player's UUID, including an administrator's UUID. They may gain that player's permissions and change or destroy worlds and server data. Token signatures do not prove ownership of a UUID.
+
+To enable the identity check, add this environment variable to the game server and restart it:
+
+```sh
+export HYTALE_IDENTITY_PROTECTION=true
+```
+
+For Docker Compose:
+
+```yaml
+environment:
+  HYTALE_IDENTITY_PROTECTION: "true"
+```
+
+The check uses the server configured by `HYTALE_AUTH_SERVER` or `HYTALE_AUTH_DOMAIN` (default: `auth.sanasol.ws`), regardless of the local token's issuer. It applies only to Omni-Auth tokens, caches results for 60 seconds, and still allows them if the API is unreachable or returns a non-200 response. It does not establish ownership for identities outside that service or tokens issued by other trusted auth services. `HYTALE_TRUST_ALL_ISSUERS` controls issuer trust separately.
 
 ### **JWKS & Cache Configuration**
 

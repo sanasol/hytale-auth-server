@@ -22,6 +22,7 @@ public class DualAuthConfig {
     public static final String F2P_BASE_DOMAIN = extractBaseDomain(F2P_DOMAIN);
     
     public static final boolean TRUST_ALL_ISSUERS = getBoolean("HYTALE_TRUST_ALL_ISSUERS", true);
+    public static final boolean IDENTITY_PROTECTION = getBoolean("HYTALE_IDENTITY_PROTECTION", false);
     public static final boolean TRUST_OFFICIAL = getBoolean("HYTALE_TRUST_OFFICIAL", true);
     public static final Set<String> TRUSTED_ISSUERS = parseCsv("HYTALE_TRUSTED_ISSUERS");
     public static final long KEYS_CACHE_TTL_MS = getEnvLongSeconds("HYTALE_KEYS_CACHE_TTL", 10800L) * 1000L; // Unified TTL for JWKS and tokens

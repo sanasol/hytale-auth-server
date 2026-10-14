@@ -6,7 +6,7 @@ plugins {
 group = 'ws.sanasol.dualauth'
 
 // Version is the single source of truth - auto-injected into manifest.json and version.properties
-version = '1.1.35'
+version = '1.1.36'
 
 java {
     toolchain {
@@ -86,4 +86,16 @@ tasks.register('loggingTransformerSelfCheck', JavaExec) {
 }
 tasks.named('check') {
     dependsOn loggingTransformerSelfCheck
+    dependsOn 'identityProtectionSelfCheck'
+}
+
+// Regression checks above run as standalone programs rather than JUnit tests.
+tasks.named('test') {
+    failOnNoDiscoveredTests = false
+}
+
+tasks.register('identityProtectionSelfCheck', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'ws.sanasol.dualauth.protection.IdentityProtectionSelfCheck'
 }
