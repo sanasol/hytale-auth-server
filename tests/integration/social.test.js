@@ -45,6 +45,23 @@ test('social routes: two users, concurrency, privacy, invites, profiles, expiry 
     assert.equal(callbackRan,false);
     assert.equal(await s.redis.get(s.key(a)),beforeDisconnect);
     assert.equal((await call(a,'POST','/friend-requests',{targetUuid:b},tokens[a]+'x')).status,401);
+    const nameKey = `${s.PREFIX}names:${names[1].toLowerCase()}`;
+    const reservationKey = `username_reserved:${names[1].toLowerCase()}`;
+    try {
+      await s.redis.set(`username:${c}`,names[1]);
+      await s.redis.sadd(nameKey,b,c);
+      assert.equal((await call(a,'POST','/friend-requests/by-username',{targetUsername:names[1]})).status,409);
+      await s.redis.set(reservationKey,JSON.stringify({uuid:b,username:names[1]}));
+      assert.equal(await s.resolveName(names[1].toUpperCase()),b);
+      await ok(a,'POST','/friend-requests/by-username',{targetUsername:names[1]});
+      assert.equal((await ok(b,'GET','/friend-requests/incoming')).requests[0].requesterUuid,a);
+      assert.equal((await ok(c,'GET','/friend-requests/incoming')).requests.length,0);
+      await s.redis.set(reservationKey,JSON.stringify({uuid:a,username:names[1]}));
+      await assert.rejects(s.resolveName(names[1]),{status:409});
+    } finally {
+      await s.redis.del(nameKey,reservationKey);
+      await s.redis.set(`username:${c}`,names[2]);
+    }
     await ok(a,'POST','/friend-requests/by-username',{targetUsername:names[1]});
     assert.equal((await ok(b,'GET','/friend-requests/incoming')).requests[0].requesterUuid,a);
     const beforeAccept=(await socialMetrics.read(1)).totals.friendsAccepted;

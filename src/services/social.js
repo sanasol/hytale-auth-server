@@ -69,17 +69,17 @@ async function change(ids, fn) {
 }
 async function resolveName(name) {
   if (typeof name !== 'string' || !name.trim() || name.length > 32 || /[\x00-\x1f\x7f]/.test(name)) fail(400, 'Invalid username');
-  const indexed = await redis.smembers(`${PREFIX}names:${name.toLowerCase()}`);
-  const current = [];
-  for (const id of indexed) if ((await storage.getUsername(id))?.toLowerCase() === name.toLowerCase()) current.push(id);
-  if (current.length === 1) return current[0];
-  if (current.length > 1) fail(409, 'Username is ambiguous');
   const reserved = await redis.get(`${config.redisKeys.USERNAME_RESERVED}${name.toLowerCase()}`);
   if (reserved) {
     let id = reserved;
     try { const v = JSON.parse(reserved); id = v.uuid || v; } catch {}
     if (validId(id) && (await storage.getUsername(id))?.toLowerCase() === name.toLowerCase()) return id;
   }
+  const indexed = await redis.smembers(`${PREFIX}names:${name.toLowerCase()}`);
+  const current = [];
+  for (const id of indexed) if ((await storage.getUsername(id))?.toLowerCase() === name.toLowerCase()) current.push(id);
+  if (current.length === 1) return current[0];
+  if (current.length > 1) fail(409, 'Username is ambiguous');
   if (await redis.get(`${PREFIX}names-ready`)) fail(404, 'Player not found');
   // Bootstrap fallback only; run scripts/index-social-usernames.js after deployment.
   const deadline = Date.now() + 3000;
