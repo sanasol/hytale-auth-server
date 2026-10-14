@@ -78,3 +78,12 @@ jar.enabled = false
 tasks.named('assemble') {
     dependsOn shadowJar
 }
+
+tasks.register('loggingTransformerSelfCheck', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'ws.sanasol.dualauth.agent.transformers.LoggingTransformerSelfCheck'
+}
+tasks.named('check') {
+    dependsOn loggingTransformerSelfCheck
+}

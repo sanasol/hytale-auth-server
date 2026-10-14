@@ -82,6 +82,15 @@ public class LoggingTransformer implements net.bytebuddy.agent.builder.AgentBuil
                     return;
                 }
 
+                // Leave diagnostic records to the native formatter. It preserves
+                // severity, formatted arguments and the complete exception chain.
+                // Advice is inlined: keep this guard limited to java.* APIs.
+                if (record.getThrown() != null
+                        || (record.getParameters() != null && record.getParameters().length > 0)
+                        || record.getLevel().intValue() >= java.util.logging.Level.WARNING.intValue()) {
+                    return;
+                }
+
                 // Get log record information
                 String originalMessage = record.getMessage();
                 String level = record.getLevel().getName();
