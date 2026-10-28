@@ -48,20 +48,13 @@ That's it! No auth server or game server setup needed for testing.
 
 > **Note**: There is no password authentication - anyone can use any username. If you use a username someone else has used, you'll see their cosmetics. Use a unique username for testing.
 
-### Host Your Own Game Server (Free)
+### Host Your Own Game Server on Play.hosting
 
-Use [play.hosting](https://play.hosting) to get a free Hytale game server with F2P support — no hardware or setup needed:
+Play.hosting no longer offers the Hytale preset described by older versions of this guide. A manual setup on a Java 25+ Minecraft server was verified on 2026-10-28.
 
-1. Register at [play.hosting](https://play.hosting)
-2. Create a **Hytale** server
-3. Start the server once and wait for it to fully load
-4. Go to **Files** → open the `mods` folder
-5. Click **New** → **File via URL**
-6. Paste: `https://github.com/sanasol/hytale-auth-server/releases/latest/download/dualauth-agent.jar`
-7. Click **Query** and download the file
-8. Go to **Console** and **Restart** the server
+Follow the **[Hytale on Play.hosting guide](https://git.sanhost.net/sanasol/hytale-play-hosting)** for the downloadable `server.jar` wrapper, matching Hytale server/assets, DualAuth agent and direct UDP connection setup. The wrapper reads the current `SERVER_PORT`, prints the direct node address after boot, and reports real Hytale player counts over Minecraft TCP status.
 
-Your F2P server is ready — both official and F2P players can join.
+Use the direct node IPv4 and current assigned port printed by the wrapper. The shared Minecraft hostname did not carry Hytale QUIC in the tested setup. Recheck the node/port after limbo; this workaround does not guarantee 24/7 uptime.
 
 ### Build from Source
 
