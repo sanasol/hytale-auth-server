@@ -50,7 +50,7 @@ That's it! No auth server or game server setup needed for testing.
 
 ### Host Your Own Game Server on Play.hosting
 
-Play.hosting no longer offers the Hytale preset described by older versions of this guide. A manual setup on a Java 25+ Minecraft server was verified on 2026-10-28.
+Play.hosting no longer offers the Hytale preset described by older versions of this guide. A manual setup on a Java 25+ Minecraft server was verified on 2026-10-28. **Known limitation:** a real Hytale player and a correct TCP online count still did not prevent Play.hosting limbo. This setup is a connectivity experiment, not a reliable solution for continuous active sessions.
 
 Follow the **[Hytale on Play.hosting guide](https://git.sanhost.net/sanasol/hytale-play-hosting)** for the downloadable `server.jar` wrapper, matching Hytale server/assets, DualAuth agent and direct UDP connection setup. The wrapper reads the current `SERVER_PORT`, prints the direct node address after boot, and reports real Hytale player counts over Minecraft TCP status.
 
